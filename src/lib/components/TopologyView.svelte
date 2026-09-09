@@ -173,6 +173,15 @@
 							fill="var(--surface-3)"
 							stroke="var(--border-subtle)"
 						/>
+						<text
+							x={pos.x + 24}
+							y={pos.y + NODE_H / 2 + 4}
+							text-anchor="middle"
+							class="node-glyph"
+							fill={nodeAccent(node)}
+						>
+							{node.name.charAt(0).toUpperCase()}
+						</text>
 						<text x={pos.x + 44} y={pos.y + (compact ? NODE_H / 2 + 4 : 24)} class="node-name">
 							{node.name.length > 16 ? node.name.slice(0, 15) + '…' : node.name}
 						</text>
@@ -216,6 +225,10 @@
 	}
 	.node-sub {
 		font-size: 10px;
+	}
+	.node-glyph {
+		font-size: 11px;
+		font-weight: 700;
 	}
 	.edge-line {
 		fill: none;

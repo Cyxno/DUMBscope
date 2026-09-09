@@ -571,11 +571,15 @@ export class Hub {
 		// Throttle full service snapshots to at most one per second.
 		if (now - this.lastStatusEmit < 1000) return;
 		this.lastStatusEmit = now;
+		const discovered = this.getDiscovered();
+		const services = this.getServices();
 		this.broadcast('services', {
-			services: this.getServices(),
-			discovered: this.getDiscovered(),
+			services,
+			discovered,
 			overview: this.overview()
 		});
+		// The graph changes whenever discovery or health changes; keep it in sync.
+		this.broadcast('topology', buildTopology(discovered, new Map(services.map((s) => [s.key, s]))));
 	}
 
 	// -------------------------------------------------------------------------

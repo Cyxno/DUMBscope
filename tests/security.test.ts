@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
 import {
 	hashPassword,
 	verifyPassword,
@@ -10,7 +10,6 @@ import { validateDumbUrl, isSameOrigin } from '../src/lib/server/security/valida
 import { requestIsHttps } from '../src/lib/server/security/trusted-proxy';
 import { rateLimit, resetRateLimit } from '../src/lib/server/security/rate-limit';
 import { Fingerprints } from '../src/lib/server/incidents/fingerprint';
-import { afterEach, describe, expect, it } from 'vitest';
 
 const httpGet = (headers: Record<string, string> = {}) =>
 	new Request('https://adapter-node-fabricates-this.invalid:8091/x', { headers });

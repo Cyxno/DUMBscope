@@ -275,7 +275,7 @@ describe('incident engine', () => {
 		// Comes back healthy: incident resolves after sustained recovery.
 		const recovered = new Map([[healthy.key, healthy]]);
 		for (let i = 0; i < 10; i++) engine.onStatus(previous, recovered);
-		expect(engine.getActive().filter((i) => i.service === 'sonarr')).toHaveLength(0);
+		expect(engine.getActive().filter((i) => i.fingerprint.includes('sonarr'))).toHaveLength(0);
 	});
 
 	it('opens log-error incidents after a burst and resolves on quiet', () => {

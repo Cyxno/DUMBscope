@@ -56,7 +56,7 @@ jobs:
 
       - name: Smoke test (boots, setup code printed, health OK)
         run: |
-          docker run -d --name dumbscope-smoke -p 8091:8091 dumbscope-smoke
+          docker run -d --name dumbscope-smoke -p 8091:8091 dumbscope:smoke
           for i in $(seq 1 30); do
             if curl -sf http://127.0.0.1:8091/api/health > /dev/null; then break; fi
             sleep 1

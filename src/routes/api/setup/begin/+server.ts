@@ -3,6 +3,7 @@ import { verifySetupCode } from '$lib/server/setup';
 import { rateLimit } from '$lib/server/security/rate-limit';
 import { SETUP_COOKIE, issueSetupCookie } from '$lib/server/security/setup-session';
 import { hasAdminUser } from '$lib/server/security/sessions';
+import { requestIsHttps } from '$lib/server/security/trusted-proxy';
 import { getSettings } from '$lib/server/config/settings';
 import type { RequestHandler } from './$types';
 
@@ -37,6 +38,10 @@ export const POST: RequestHandler = async ({ request, cookies, getClientAddress 
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
+		// Kit defaults Secure=true for non-localhost, which would make the
+		// wizard unusable over plain-HTTP LAN deployments — browsers refuse to
+		// send the cookie back. Match login/complete: Secure only on HTTPS.
+		secure: requestIsHttps(request),
 		maxAge: maxAgeSeconds
 	});
 	return jsonOk({ ok: true, defaultUrl: getSettings().dumbUrl });

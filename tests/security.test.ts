@@ -7,8 +7,48 @@ import {
 	generateSetupCode
 } from '../src/lib/server/security/crypto';
 import { validateDumbUrl, isSameOrigin } from '../src/lib/server/security/validation';
+import { requestIsHttps } from '../src/lib/server/security/trusted-proxy';
 import { rateLimit, resetRateLimit } from '../src/lib/server/security/rate-limit';
 import { Fingerprints } from '../src/lib/server/incidents/fingerprint';
+import { afterEach, describe, expect, it } from 'vitest';
+
+const httpGet = (headers: Record<string, string> = {}) =>
+	new Request('https://adapter-node-fabricates-this.invalid:8091/x', { headers });
+
+describe('requestIsHttps', () => {
+	const savedTrust = process.env.DUMBSCOPE_TRUST_PROXY;
+	const savedHttps = process.env.DUMBSCOPE_HTTPS;
+
+	afterEach(() => {
+		process.env.DUMBSCOPE_TRUST_PROXY = savedTrust;
+		process.env.DUMBSCOPE_HTTPS = savedHttps;
+	});
+
+	it('is false for plain HTTP even though adapter-node fabricates https URLs', () => {
+		delete process.env.DUMBSCOPE_TRUST_PROXY;
+		delete process.env.DUMBSCOPE_HTTPS;
+		expect(requestIsHttps(httpGet())).toBe(false);
+	});
+
+	it('is false when an untrusted proxy claims https', () => {
+		delete process.env.DUMBSCOPE_TRUST_PROXY;
+		delete process.env.DUMBSCOPE_HTTPS;
+		expect(requestIsHttps(httpGet({ 'x-forwarded-proto': 'https' }))).toBe(false);
+	});
+
+	it('is true only for a trusted proxy claiming https', () => {
+		process.env.DUMBSCOPE_TRUST_PROXY = 'true';
+		delete process.env.DUMBSCOPE_HTTPS;
+		expect(requestIsHttps(httpGet({ 'x-forwarded-proto': 'https' }))).toBe(true);
+		expect(requestIsHttps(httpGet({ 'x-forwarded-proto': 'http' }))).toBe(false);
+	});
+
+	it('is true when the operator forces DUMBSCOPE_HTTPS=true', () => {
+		delete process.env.DUMBSCOPE_TRUST_PROXY;
+		process.env.DUMBSCOPE_HTTPS = 'true';
+		expect(requestIsHttps(httpGet())).toBe(true);
+	});
+});
 
 describe('password hashing', () => {
 	it('verifies the right password and rejects wrong ones', () => {

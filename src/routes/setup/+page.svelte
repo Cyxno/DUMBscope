@@ -53,6 +53,8 @@
 				body: JSON.stringify({ code: setupCode })
 			});
 			if (response.ok) {
+				const data = (await response.json()) as { defaultUrl?: string | null };
+				if (data.defaultUrl) dumbUrl = data.defaultUrl;
 				step = 2;
 			} else {
 				const data = (await response.json()) as { error?: string };
@@ -193,7 +195,7 @@
 								<input
 									type="url"
 									bind:value={dumbUrl}
-									placeholder="http://192.168.1.2:3005"
+									placeholder="http://<server-ip>:3005"
 									required
 									class="h-10 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 text-sm outline-none focus:border-border-focus"
 								/>

@@ -147,7 +147,7 @@
 				<input
 					type="url"
 					bind:value={dumbUrl}
-					placeholder="http://192.168.1.2:3005"
+					placeholder="http://<server-ip>:3005"
 					class="h-9 w-full rounded-lg border border-border-subtle bg-surface-2 px-3 text-[13px] outline-none focus:border-border-focus"
 				/>
 			</label>

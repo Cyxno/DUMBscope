@@ -107,7 +107,7 @@ docker run -d \
 
 2. Open `http://HOST:8091`.
 3. Copy the **setup code** from the container log (`docker logs dumbscope`).
-4. Follow the wizard: DUMB URL (e.g. `http://192.168.1.2:3005`) → test →
+4. Follow the wizard: DUMB URL (e.g. `http://192.168.1.100:3005`) → test →
    DUMB credentials (if enabled) → create your admin account.
 
 ### Docker Compose
@@ -124,7 +124,7 @@ services:
       - PUID=99
       - PGID=100
       - UMASK=022
-      # - DUMB_URL=http://192.168.1.2:3005   # optional pre-set for the wizard
+      # - DUMB_URL=http://192.168.1.100:3005   # optional pre-set for the wizard
       # - DUMBSCOPE_TRUST_PROXY=true         # only behind an HTTPS reverse proxy
     volumes:
       - /mnt/user/appdata/dumbscope:/config

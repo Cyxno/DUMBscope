@@ -2,13 +2,19 @@ import { jsonError, jsonOk, readJson } from '$lib/server/security/validation';
 import { verifySetupCode } from '$lib/server/setup';
 import { rateLimit } from '$lib/server/security/rate-limit';
 import { SETUP_COOKIE, issueSetupCookie } from '$lib/server/security/setup-session';
+import { hasAdminUser } from '$lib/server/security/sessions';
+import { getSettings } from '$lib/server/config/settings';
 import type { RequestHandler } from './$types';
 
 /**
  * Verify the setup code from the container log and issue a short-lived,
- * signed setup-session cookie for the remaining wizard steps.
+ * signed setup-session cookie for the remaining wizard steps. The response
+ * includes the seeded DUMB URL (DUMB_URL env default), if any, so the wizard
+ * can prefill the gateway field — never exposed before the code is verified.
  */
 export const POST: RequestHandler = async ({ request, cookies, getClientAddress }) => {
+	if (hasAdminUser()) return jsonError('Setup has already completed', 409);
+
 	const limit = rateLimit(`setup-begin:${getClientAddress()}`, 10, 15 * 60 * 1000);
 	if (!limit.allowed) {
 		return jsonError(
@@ -33,5 +39,5 @@ export const POST: RequestHandler = async ({ request, cookies, getClientAddress 
 		sameSite: 'lax',
 		maxAge: maxAgeSeconds
 	});
-	return jsonOk({ ok: true });
+	return jsonOk({ ok: true, defaultUrl: getSettings().dumbUrl });
 };

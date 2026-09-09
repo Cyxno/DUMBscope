@@ -45,7 +45,7 @@ describe('setup codes', () => {
 
 describe('URL validation', () => {
 	it('accepts and normalizes http(s) URLs', () => {
-		expect(validateDumbUrl('http://192.168.1.2:3005').base).toBe('http://192.168.1.2:3005');
+		expect(validateDumbUrl('http://192.168.1.100:3005').base).toBe('http://192.168.1.100:3005');
 		expect(validateDumbUrl('https://dumb.example.com/').base).toBe('https://dumb.example.com');
 		expect(validateDumbUrl('http://host:3005').wsBase).toBe('ws://host:3005');
 	});

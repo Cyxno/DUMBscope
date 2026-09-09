@@ -8,6 +8,9 @@ import { SESSION_COOKIE, getSessionUser, hasAdminUser } from '$lib/server/securi
 import { getSettings } from '$lib/server/config/settings';
 import { issueSetupCode, setupNeeded } from '$lib/server/setup';
 import { getDb } from '$lib/server/database/db';
+import { installShutdownHooks } from '$lib/server/lifecycle';
+
+installShutdownHooks();
 
 const PUBLIC_PATHS = new Set<string>([
 	'/api/health',

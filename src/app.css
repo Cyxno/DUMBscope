@@ -1,0 +1,238 @@
+@import 'tailwindcss';
+
+/*
+ * DUMBscope design system — tokens first.
+ * Dark is the canonical theme; OLED and Light are deliberate derivatives.
+ * See docs/design-system.md for the rationale behind every scale.
+ */
+
+:root {
+	/* Surfaces */
+	--bg: #08090b;
+	--surface-1: #0d0f12;
+	--surface-2: #13161b;
+	--surface-3: #1a1e24;
+	--surface-overlay: rgba(19, 22, 27, 0.82);
+
+	/* Borders */
+	--border-subtle: rgba(255, 255, 255, 0.06);
+	--border-strong: rgba(255, 255, 255, 0.12);
+	--border-focus: rgba(56, 199, 255, 0.55);
+
+	/* Text */
+	--text-primary: #f2f4f8;
+	--text-secondary: #b6bdc9;
+	--text-muted: #7c8595;
+	--text-faint: #555d6b;
+
+	/* Accent (default cyan; overridable via [data-accent]) */
+	--accent: #38c7ff;
+	--accent-strong: #0ea5e9;
+	--accent-soft: rgba(56, 199, 255, 0.12);
+	--accent-text: #7ddaff;
+
+	/* Status */
+	--healthy: #3ecf6e;
+	--healthy-soft: rgba(62, 207, 110, 0.12);
+	--degraded: #f5b544;
+	--degraded-soft: rgba(245, 181, 68, 0.12);
+	--critical: #f4536b;
+	--critical-soft: rgba(244, 83, 107, 0.12);
+	--unknown: #8b93a5;
+	--unknown-soft: rgba(139, 147, 165, 0.12);
+	--live: #38c7ff;
+	--live-soft: rgba(56, 199, 255, 0.1);
+
+	/* Elevation */
+	--shadow-1: 0 1px 2px rgba(0, 0, 0, 0.4);
+	--shadow-2: 0 4px 16px rgba(0, 0, 0, 0.45);
+	--shadow-3: 0 16px 48px rgba(0, 0, 0, 0.55);
+
+	/* Shape & motion */
+	--radius-sm: 6px;
+	--radius-md: 10px;
+	--radius-lg: 14px;
+	--radius-xl: 20px;
+	--ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+	--speed-fast: 120ms;
+	--speed-normal: 200ms;
+	--speed-slow: 360ms;
+
+	color-scheme: dark;
+}
+
+[data-theme='oled'] {
+	--bg: #000000;
+	--surface-1: #050607;
+	--surface-2: #0b0d10;
+	--surface-3: #12151a;
+	--surface-overlay: rgba(8, 9, 11, 0.88);
+	--border-subtle: rgba(255, 255, 255, 0.08);
+	color-scheme: dark;
+}
+
+[data-theme='light'] {
+	--bg: #f4f5f7;
+	--surface-1: #ffffff;
+	--surface-2: #f7f8fa;
+	--surface-3: #eef0f4;
+	--surface-overlay: rgba(255, 255, 255, 0.9);
+
+	--border-subtle: rgba(13, 18, 28, 0.08);
+	--border-strong: rgba(13, 18, 28, 0.16);
+	--border-focus: rgba(14, 140, 200, 0.5);
+
+	--text-primary: #171b22;
+	--text-secondary: #3f4652;
+	--text-muted: #6b7382;
+	--text-faint: #9aa1ad;
+
+	--accent: #0e8ec8;
+	--accent-strong: #0b76a5;
+	--accent-soft: rgba(14, 142, 200, 0.1);
+	--accent-text: #0b76a5;
+
+	--healthy: #1a9e4b;
+	--healthy-soft: rgba(26, 158, 75, 0.1);
+	--degraded: #b97c0a;
+	--degraded-soft: rgba(185, 124, 10, 0.1);
+	--critical: #d3273f;
+	--critical-soft: rgba(211, 39, 63, 0.08);
+	--unknown: #6b7382;
+	--unknown-soft: rgba(107, 115, 130, 0.1);
+	--live: #0e8ec8;
+	--live-soft: rgba(14, 142, 200, 0.08);
+
+	--shadow-1: 0 1px 2px rgba(16, 24, 40, 0.06);
+	--shadow-2: 0 4px 16px rgba(16, 24, 40, 0.08);
+	--shadow-3: 0 16px 48px rgba(16, 24, 40, 0.14);
+
+	color-scheme: light;
+}
+
+[data-accent='blue'] {
+	--accent: #4d9fff;
+	--accent-strong: #2f7fe6;
+	--accent-soft: rgba(77, 159, 255, 0.12);
+	--accent-text: #8ec2ff;
+	--live: #4d9fff;
+}
+[data-accent='indigo'] {
+	--accent: #8b8dff;
+	--accent-strong: #6f6ff0;
+	--accent-soft: rgba(139, 141, 255, 0.12);
+	--accent-text: #b4b5ff;
+	--live: #8b8dff;
+}
+[data-accent='violet'] {
+	--accent: #b07aff;
+	--accent-strong: #9558f0;
+	--accent-soft: rgba(176, 122, 255, 0.12);
+	--accent-text: #d0adff;
+	--live: #b07aff;
+}
+
+/* Map tokens into Tailwind's theme so utilities exist (bg-surface-1, text-muted, …). */
+@theme inline {
+	--color-bg: var(--bg);
+	--color-surface-1: var(--surface-1);
+	--color-surface-2: var(--surface-2);
+	--color-surface-3: var(--surface-3);
+	--color-border-subtle: var(--border-subtle);
+	--color-border-strong: var(--border-strong);
+	--color-text-primary: var(--text-primary);
+	--color-text-secondary: var(--text-secondary);
+	--color-text-muted: var(--text-muted);
+	--color-text-faint: var(--text-faint);
+	--color-accent: var(--accent);
+	--color-accent-strong: var(--accent-strong);
+	--color-accent-soft: var(--accent-soft);
+	--color-accent-text: var(--accent-text);
+	--color-healthy: var(--healthy);
+	--color-healthy-soft: var(--healthy-soft);
+	--color-degraded: var(--degraded);
+	--color-degraded-soft: var(--degraded-soft);
+	--color-critical: var(--critical);
+	--color-critical-soft: var(--critical-soft);
+	--color-unknown: var(--unknown);
+	--color-unknown-soft: var(--unknown-soft);
+	--color-live: var(--live);
+	--color-live-soft: var(--live-soft);
+	--radius-sm: var(--radius-sm);
+	--radius-md: var(--radius-md);
+	--radius-lg: var(--radius-lg);
+	--radius-xl: var(--radius-xl);
+	--font-sans:
+		'Geist', 'Inter', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+	--font-mono: 'Geist Mono', ui-monospace, 'SF Mono', SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* Base */
+html,
+body {
+	height: 100%;
+}
+
+body {
+	background: var(--bg);
+	color: var(--text-primary);
+	font-family: var(--font-sans);
+	font-size: 14px;
+	line-height: 1.5;
+	-webkit-font-smoothing: antialiased;
+	text-rendering: optimizeLegibility;
+	overscroll-behavior-y: none;
+}
+
+::selection {
+	background: var(--accent-soft);
+	color: var(--text-primary);
+}
+
+:focus-visible {
+	outline: 2px solid var(--border-focus);
+	outline-offset: 2px;
+	border-radius: var(--radius-sm);
+}
+
+/* Tabular numbers for every stat/mono context */
+.tnum {
+	font-variant-numeric: tabular-nums;
+	font-feature-settings: 'tnum';
+}
+
+/* Scrollbars — quiet and thin */
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--border-strong) transparent;
+}
+*::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+*::-webkit-scrollbar-thumb {
+	background: var(--border-strong);
+	border-radius: 8px;
+}
+*::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+/* Reduced motion: kill transitions & animations globally. */
+@media (prefers-reduced-motion: reduce) {
+	*,
+	*::before,
+	*::after {
+		animation-duration: 0.01ms !important;
+		animation-iteration-count: 1 !important;
+		transition-duration: 0.01ms !important;
+	}
+}
+
+[data-reduced-motion='true'] *,
+[data-reduced-motion='true'] *::before,
+[data-reduced-motion='true'] *::after {
+	animation-duration: 0.01ms !important;
+	animation-iteration-count: 1 !important;
+	transition-duration: 0.01ms !important;
+}

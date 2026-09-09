@@ -1,0 +1,15 @@
+node_modules
+build
+.svelte-kit
+.git
+.github
+coverage
+data
+config
+*.md
+!README.md
+tests
+playwright-report
+test-results
+.dockerignore
+Dockerfile

@@ -33,6 +33,8 @@ import { onActivity, recordActivity, recentActivity, type ActivityEntry } from '
 const METRICS_RING_SIZE = 1800; // ~1h at the default 2s interval
 const LOG_RING_SIZE = 5000;
 const STATUS_INTERVAL_FRESH_MS = 15_000;
+/** Minimum spacing between proactive token refreshes. */
+const TOKEN_REFRESH_THROTTLE_MS = 4 * 60_000;
 
 export interface HubEvent {
 	event: string;
@@ -78,6 +80,7 @@ export class Hub {
 	private subscribers = new Map<number, Subscriber>();
 	private nextSubscriberId = 1;
 	private housekeeper: ReturnType<typeof setInterval> | null = null;
+	private lastTokenRefreshAt = 0;
 	private lastStatusEmit = 0;
 	private configured = false;
 	private stopped = false;
@@ -433,6 +436,21 @@ export class Hub {
 		// REST recovery when the bootstrap failed at startup.
 		if (this.connection.streams.rest !== 'live' && this.configured) {
 			void this.bootstrapRest();
+		}
+		// Keep the access token fresh. WS reconnects embed the cached token;
+		// DUMB rejects upgrades carrying an expired one, so after a DUMB
+		// restart the streams would otherwise 401 forever. ensureAuthenticated
+		// no-ops while the token is young; the throttle keeps us from
+		// hammering the gateway.
+		if (
+			this.client &&
+			this.configured &&
+			now - this.lastTokenRefreshAt > TOKEN_REFRESH_THROTTLE_MS
+		) {
+			this.lastTokenRefreshAt = now;
+			void this.client.ensureAuthenticated().catch(() => {
+				// Gateway unreachable: the streams' reconnect/backoff handles it.
+			});
 		}
 		// Freshness: connected but nothing new for a long time → stale.
 		if (

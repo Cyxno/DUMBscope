@@ -65,6 +65,18 @@ const SERVICES = [
 	{ name: 'Seerr', key: 'seerr', version: '2.5.2', port: 5055 }
 ];
 
+// MOCK_SERVICES=N pads the stack with generated services so topology and
+// dashboard layouts can be exercised at scale (e.g. 15, 30+ services).
+const EXTRA = Number(process.env.MOCK_SERVICES || 0) - SERVICES.length;
+for (let i = 0; EXTRA > 0 && i < EXTRA; i += 1) {
+	SERVICES.push({
+		name: `Mock Service ${String(i + 1).padStart(2, '0')}`,
+		key: `mock-service-${i + 1}`,
+		version: `1.0.${i}`,
+		port: 9000 + i
+	});
+}
+
 let tick = 0;
 let postgresDown = false;
 let sonarrCrashing = false;

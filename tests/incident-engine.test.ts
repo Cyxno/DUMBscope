@@ -207,6 +207,77 @@ describe('incident engine', () => {
 		expect(engine.getActive()).toHaveLength(0); // inside grace period
 	});
 
+	it('opens one telemetry-stale incident for a stalled metrics stream and resolves on flow', () => {
+		let clock = Date.now();
+		const engine = new IncidentEngine({}, () => clock);
+
+		// Metrics last arrived minutes ago while status still looks live.
+		engine.onTick(clock - 10 * 60_000, true);
+		engine.onTick(clock + 1_000, true);
+		const stale = engine.getActive().filter((i) => i.title.includes('stale'));
+		expect(stale).toHaveLength(1);
+
+		// Telemetry flowing again for long enough resolves it.
+		clock += 1_000;
+		engine.onTick(clock, true);
+		engine.onConnection(connection({ state: 'live', lastUpdateAt: clock }));
+		clock += 10 * 60_000;
+		engine.onTick(clock, true);
+		engine.onConnection(connection({ state: 'live', lastUpdateAt: clock }));
+		expect(engine.getActive().filter((i) => i.title.includes('stale'))).toHaveLength(0);
+	});
+
+	it('does not create duplicate incidents from duplicate WS messages', () => {
+		const engine = new IncidentEngine();
+		const unhealthy = serviceStatus({ key: 'sonarr', health: 'unhealthy' });
+
+		// The same snapshot delivered 10 times (replay/duplicate delivery).
+		for (let i = 0; i < 10; i++) engine.onStatus(new Map(), new Map([[unhealthy.key, unhealthy]]));
+		const active = engine.getActive();
+		expect(active).toHaveLength(1);
+		expect(active[0]!.occurrences).toBe(1);
+	});
+
+	it('treats the last-delivered status as truth, even out of order', () => {
+		const engine = new IncidentEngine();
+		const now = Date.now();
+		const first = serviceStatus({ key: 'sonarr', health: 'unhealthy', observedAt: now });
+		const older = serviceStatus({ key: 'sonarr', health: 'healthy', observedAt: now - 30_000 });
+
+		engine.onStatus(new Map(), new Map([[first.key, first]]));
+		engine.onStatus(new Map(), new Map([[older.key, older]])); // arrives late
+		engine.onStatus(new Map(), new Map([[first.key, first]]));
+		engine.onStatus(new Map(), new Map([[first.key, first]]));
+		// A late older snapshot resets the streak: below the sustained threshold.
+		expect(engine.getActive()).toHaveLength(0);
+
+		// Two more deliveries reach the threshold and open the incident.
+		for (let i = 0; i < 2; i++) engine.onStatus(new Map(), new Map([[first.key, first]]));
+		expect(engine.getActive()).toHaveLength(1);
+	});
+
+	it('keeps a service unhealthy incident while it is stopped and resolves on recovery', () => {
+		const engine = new IncidentEngine();
+		const unhealthy = serviceStatus({ key: 'sonarr', health: 'unhealthy' });
+		const stopped = serviceStatus({ key: 'sonarr', health: 'unknown', runState: 'stopped' });
+		const healthy = serviceStatus({ key: 'sonarr', health: 'healthy' });
+
+		for (let i = 0; i < 3; i++) engine.onStatus(new Map(), new Map([[unhealthy.key, unhealthy]]));
+		expect(engine.getActive()).toHaveLength(1);
+
+		// Service disappears from the snapshot: hub reports it stopped. The
+		// unhealthy incident stays active (a stopped service is still broken
+		// until proven otherwise).
+		const previous = new Map([[unhealthy.key, unhealthy]]);
+		for (let i = 0; i < 10; i++) engine.onStatus(previous, new Map([[stopped.key, stopped]]));
+		expect(engine.getActive().some((i) => i.title === 'sonarr is unhealthy')).toBe(true);
+
+		// Comes back healthy: incident resolves after sustained recovery.
+		const recovered = new Map([[healthy.key, healthy]]);
+		for (let i = 0; i < 10; i++) engine.onStatus(previous, recovered);
+		expect(engine.getActive().filter((i) => i.service === 'sonarr')).toHaveLength(0);
+	});
+
 	it('opens log-error incidents after a burst and resolves on quiet', () => {
 		const engine = new IncidentEngine();
 		for (let i = 0; i < 6; i++) {

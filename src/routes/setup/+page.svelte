@@ -219,6 +219,15 @@
 									{#if busy}<LoaderCircle size={15} class="animate-spin" /> Testing…{:else}Test
 										connection{/if}
 								</button>
+								{#if testResult?.reachable}
+									<button
+										type="button"
+										class="flex h-10 flex-1 items-center justify-center gap-2 rounded-lg bg-accent text-sm font-semibold text-bg transition-opacity hover:opacity-90"
+										onclick={() => (step = 3)}
+									>
+										Continue <ArrowRight size={15} />
+									</button>
+								{/if}
 							</div>
 						</form>
 					{:else if step === 3}

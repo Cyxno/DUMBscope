@@ -35,6 +35,8 @@ const LOG_RING_SIZE = 5000;
 const STATUS_INTERVAL_FRESH_MS = 15_000;
 /** Minimum spacing between proactive token refreshes. */
 const TOKEN_REFRESH_THROTTLE_MS = 4 * 60_000;
+/** Minimum spacing between stale-recovery stream restarts. */
+const STREAMS_BOUNCE_THROTTLE_MS = 60_000;
 
 export interface HubEvent {
 	event: string;
@@ -81,6 +83,7 @@ export class Hub {
 	private nextSubscriberId = 1;
 	private housekeeper: ReturnType<typeof setInterval> | null = null;
 	private lastTokenRefreshAt = 0;
+	private lastStreamsBounceAt = 0;
 	private lastStatusEmit = 0;
 	private configured = false;
 	private stopped = false;
@@ -459,6 +462,19 @@ export class Hub {
 			now - this.connection.lastUpdateAt > STATUS_INTERVAL_FRESH_MS * 6
 		) {
 			this.setConnection({ state: 'stale' });
+		}
+		// A stale stream whose socket quietly died (gateway restart, dropped
+		// NAT table) never fires onclose, so the backoff loop never kicks in.
+		// Bounce the streams periodically while telemetry stays frozen; each
+		// bounce reconnects with freshly authenticated credentials.
+		if (
+			this.connection.state === 'stale' &&
+			this.configured &&
+			now - this.lastStreamsBounceAt > STREAMS_BOUNCE_THROTTLE_MS
+		) {
+			this.lastStreamsBounceAt = now;
+			console.log('[dumbscope] telemetry stale — restarting DUMB streams');
+			this.reload();
 		}
 	}
 

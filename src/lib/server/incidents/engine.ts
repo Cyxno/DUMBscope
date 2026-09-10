@@ -23,6 +23,7 @@ import type { TopologyGraph } from '$lib/types';
 import { Fingerprints, fingerprint } from './fingerprint';
 import { incidentRepository, newIncidentId } from './repository';
 import { INCIDENT_TUNING as TUNING } from './tuning';
+import { serviceKeyFromName } from '../dumb/normalize';
 
 interface OpenState {
 	/** Open (or pending-open) incident keyed by fingerprint. */
@@ -185,6 +186,14 @@ export class IncidentEngine {
 			}
 		} else if (status.runState === 'running') {
 			this.state.stoppedSince.delete(key);
+			// Reconcile incidents opened under the pre-discovery slug key: the
+			// same service can be evaluated under `dumb-frontend` (slug) and
+			// `dumb frontend` (discovered config_key) during its lifetime.
+			this.resolveIfActive(
+				Fingerprints.serviceStopped(serviceKeyFromName(status.processName)),
+				now,
+				'Resolved after corrected service-state reconciliation'
+			);
 			this.resolveIfActive(
 				Fingerprints.serviceStopped(key),
 				now,

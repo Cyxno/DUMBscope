@@ -6,7 +6,7 @@ const config = {
 	preprocess: vitePreprocess(),
 	kit: {
 		adapter: adapter(),
-		version: { name: process.env.npm_package_version ?? '0.2.0' },
+		version: { name: process.env.npm_package_version ?? '0.2.1' },
 		csp: {
 			mode: 'hash',
 			directives: {

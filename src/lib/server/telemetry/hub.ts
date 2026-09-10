@@ -83,6 +83,10 @@ export class Hub {
 	private subscribers = new Map<number, Subscriber>();
 	private nextSubscriberId = 1;
 	private housekeeper: ReturnType<typeof setInterval> | null = null;
+	/** True once the REST bootstrap applied the service registry. Status
+	 *  frames are only evaluated after this: pre-discovery frames would
+	 *  create services under slug keys that discovery never matches again. */
+	private discoveryReady = false;
 	private lastTokenRefreshAt = 0;
 	private lastStreamsBounceAt = 0;
 	private lastStatusEmit = 0;
@@ -203,6 +207,7 @@ export class Hub {
 			this.cachedProcessesResponse = processes;
 			this.capabilities = parseCapabilities(capabilities);
 			this.applyDiscovered(processes);
+			this.discoveryReady = true;
 			this.setConnection({ streams: { ...this.connection.streams, rest: 'live' } });
 		} catch (err) {
 			if (err instanceof DumbAuthError) {
@@ -262,6 +267,14 @@ export class Hub {
 		const now = Date.now();
 		const previous = new Map(this.services);
 		const incoming = msg.processes ?? [];
+
+		// Startup gate (brief §22): until the REST bootstrap has applied the
+		// service registry, status frames are untrusted — services created
+		// from them use slug keys that discovery never matches again, and a
+		// partial first frame would mark established services stopped. The
+		// housekeeper's REST recovery guarantees bootstrap runs as soon as
+		// the gateway is reachable.
+		if (!this.discoveryReady) return;
 
 		if (incoming.length > 0) {
 			const seen = new Set<string>();

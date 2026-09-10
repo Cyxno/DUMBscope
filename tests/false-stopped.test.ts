@@ -62,7 +62,6 @@ describe('false stopped incidents (startup gate + reconciliation)', () => {
 
 	it('A: a partial pre-discovery frame never opens stopped incidents', () => {
 		const engine = new IncidentEngine();
-		engine.discoveryReady = false;
 
 		// Startup transient: DUMB reports only the core processes, running.
 		const partial = toMap([frame('DUMB Frontend'), frame('DUMB API'), frame('Plex Media Server')]);
@@ -80,7 +79,6 @@ describe('false stopped incidents (startup gate + reconciliation)', () => {
 	it('B: a genuinely stopped service still opens its stopped incident', () => {
 		let clock = Date.now();
 		const engine = new IncidentEngine({}, () => clock);
-		engine.discoveryReady = true;
 
 		const stopped = toMap([frame('Sonarr', 'stopped')]);
 		// Sustained stop beyond the grace period.
@@ -97,7 +95,6 @@ describe('false stopped incidents (startup gate + reconciliation)', () => {
 	it('C: legacy slug-key stopped incidents resolve on reconciliation', () => {
 		let clock = Date.now();
 		const engine = new IncidentEngine({}, () => clock);
-		engine.discoveryReady = true;
 
 		// The false incident: opened under the pre-discovery slug key.
 		const slugKey = serviceKeyFromName('DUMB Frontend');

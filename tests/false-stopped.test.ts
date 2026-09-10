@@ -12,7 +12,6 @@
  */
 import { describe, expect, it, beforeEach } from 'vitest';
 import { IncidentEngine } from '../src/lib/server/incidents/engine';
-import { incidentRepository } from '../src/lib/server/incidents/repository';
 import { getDb } from '../src/lib/server/database/db';
 import { serviceKeyFromName } from '../src/lib/server/dumb/normalize';
 import type { ServiceStatus } from '$lib/types';

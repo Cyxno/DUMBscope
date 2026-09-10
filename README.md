@@ -147,6 +147,7 @@ Environment variables:
 | `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | runtime identity for `/config`                                         |
 | `DUMB_URL`                | —                    | optional seed for the wizard's DUMB URL                                |
 | `DUMBSCOPE_TRUST_PROXY`   | `false`              | trust `X-Forwarded-Proto` for Secure cookies (behind HTTPS proxy only) |
+| `DUMBSCOPE_HTTPS`         | `false`              | force the Secure flag on cookies when serving real HTTPS directly      |
 | `DUMBSCOPE_CONFIG_DIR`    | `/config`            | config location                                                        |
 | `DUMBSCOPE_SETUP_CODE`    | —                    | pre-set setup code instead of the random one                           |
 
@@ -154,7 +155,8 @@ Environment variables:
 
 Terminate HTTPS at your proxy and set `DUMBSCOPE_TRUST_PROXY=true` so session
 cookies get the `Secure` flag. Without it, forwarded headers are ignored —
-direct HTTP installs stay safe by default. Example Nginx location:
+direct HTTP installs stay safe by default (cookies lose the Secure flag, which
+keeps the wizard and login working over plain HTTP). Example Nginx location:
 
 ```nginx
 location / {

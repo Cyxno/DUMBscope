@@ -35,8 +35,8 @@ The design assumes:
 - Sessions are 32-byte random tokens; the database stores only their SHA-256.
   Cookies are `HttpOnly`, `SameSite=Lax`, path-scoped, and expire after 7 days
   (sliding). `Secure` is set **only** when `DUMBSCOPE_TRUST_PROXY=true` and the
-  proxy reports HTTPS — otherwise forwarded headers are ignored so plain-HTTP
-  LAN installs stay safe by default.
+  proxy reports HTTPS (or `DUMBSCOPE_HTTPS=true` is set) — otherwise forwarded
+  headers are ignored so plain-HTTP LAN installs stay usable and safe.
 - Logout destroys the server-side session, not just the cookie.
 
 ### First-run setup

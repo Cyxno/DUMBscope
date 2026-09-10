@@ -486,6 +486,11 @@ export class Hub {
 		return this.configured;
 	}
 
+	/** Load persisted active incidents so restarts can't orphan them. */
+	hydrateIncidents(): void {
+		this.engine.hydrate();
+	}
+
 	getConnection(): ConnectionSnapshot {
 		return this.connection;
 	}
@@ -666,6 +671,7 @@ export function getHub(): Hub {
 			`[dumbscope] DUMBscope ${info.version}${info.buildSha ? ` (build ${info.buildSha.slice(0, 10)})` : ''} — Node ${info.nodeVersion}, config dir ${configDir()}`
 		);
 		hubInstance = new Hub();
+		hubInstance.hydrateIncidents();
 		hubInstance.wireActivity();
 		hubInstance.start();
 	}

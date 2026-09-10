@@ -9,6 +9,7 @@ import { getSettings } from '$lib/server/config/settings';
 import { issueSetupCode, setupNeeded } from '$lib/server/setup';
 import { getDb } from '$lib/server/database/db';
 import { installShutdownHooks } from '$lib/server/lifecycle';
+import { ensureIntegrationsUp } from '$lib/server/integrations/register';
 
 installShutdownHooks();
 
@@ -47,6 +48,9 @@ function applySecurityHeaders(response: Response): void {
 export const handle: Handle = async ({ event, resolve }) => {
 	const { request, url, cookies, locals } = event;
 	const pathname = url.pathname;
+
+	// Integration pollers are idempotent/lazy: no-op before setup or when empty.
+	ensureIntegrationsUp();
 
 	// Same-origin check for mutating requests (CSRF defense in depth).
 	if (

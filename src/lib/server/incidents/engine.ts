@@ -58,6 +58,20 @@ export class IncidentEngine {
 		this.state = freshState();
 	}
 
+	/**
+	 * Load persisted active incidents into state after a restart. Without
+	 * this, an incident that was active when the process died can never
+	 * resolve again: resolution only touches incidents in memory, so the row
+	 * stays 'active' forever (production audit 2026-09-10). Hydrated
+	 * incidents resolve naturally once their condition clears.
+	 */
+	hydrate(): void {
+		for (const incident of incidentRepository.active()) {
+			const existing = this.state.byFingerprint.get(incident.fingerprint);
+			if (!existing) this.state.byFingerprint.set(incident.fingerprint, incident);
+		}
+	}
+
 	getActive(): Incident[] {
 		return [...this.state.byFingerprint.values()].filter((i) => i.status === 'active');
 	}

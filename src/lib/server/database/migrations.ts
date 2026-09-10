@@ -97,9 +97,49 @@ const MIGRATIONS: Migration[] = [
 			CREATE UNIQUE INDEX IF NOT EXISTS idx_incidents_active_fingerprint
 				ON incidents(fingerprint) WHERE status = 'active';
 		`
+	},
+	{
+		version: 3,
+		name: 'integrations and activity',
+		sql: `
+			-- Deep integration connections. API keys live encrypted in api_key_enc
+			-- (AES-256-GCM envelope, crypto.ts) and are never selected into API
+			-- responses — only presence flags.
+			CREATE TABLE IF NOT EXISTS integrations (
+				id TEXT PRIMARY KEY,
+				type TEXT NOT NULL,
+				url TEXT NOT NULL,
+				api_key_enc TEXT,
+				enabled INTEGER NOT NULL DEFAULT 1,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL,
+				last_test_at INTEGER,
+				last_test_ok INTEGER,
+				last_test_error TEXT
+			);
+			CREATE INDEX idx_integrations_type ON integrations(type);
+
+			-- Semantic activity feed (brief §15). observed=1 rows come straight
+			-- from a source system; inferred rows are correlated and always
+			-- labeled. Retention: housekeeper prunes older than activity.max_age.
+			CREATE TABLE IF NOT EXISTS activity (
+				id TEXT PRIMARY KEY,
+				at INTEGER NOT NULL,
+				source TEXT NOT NULL,
+				service_key TEXT,
+				category TEXT NOT NULL,
+				title TEXT NOT NULL,
+				detail TEXT,
+				severity TEXT,
+				observed INTEGER NOT NULL DEFAULT 1,
+				correlation_id TEXT
+			);
+			CREATE INDEX idx_activity_at ON activity(at);
+			CREATE INDEX idx_activity_service_at ON activity(service_key, at);
+			CREATE INDEX idx_activity_category ON activity(category, at);
+		`
 	}
 ];
-
 export function currentVersion(db: DatabaseSync): number {
 	const table = db
 		.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='schema_version'")

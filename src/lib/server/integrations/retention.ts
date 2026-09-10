@@ -30,9 +30,7 @@ export function runRetention(now = Date.now()): {
 	// removes history older than the window (and their events via FK cascade
 	// semantics — explicit delete keeps it obvious).
 	const oldIncidents = db
-		.prepare(
-			`SELECT id FROM incidents WHERE last_seen < ? AND status != 'active'`
-		)
+		.prepare(`SELECT id FROM incidents WHERE last_seen < ? AND status != 'active'`)
 		.all(now - RETENTION.incidentsDays * 86_400_000) as { id: string }[];
 	for (const row of oldIncidents) {
 		db.prepare('DELETE FROM incident_events WHERE incident_id = ?').run(row.id);
@@ -56,10 +54,7 @@ export function startRetentionJob(): void {
 				);
 			}
 		} catch (err) {
-			console.warn(
-				'[dumbscope] retention pass failed:',
-				err instanceof Error ? err.message : err
-			);
+			console.warn('[dumbscope] retention pass failed:', err instanceof Error ? err.message : err);
 		}
 	};
 	setTimeout(() => {

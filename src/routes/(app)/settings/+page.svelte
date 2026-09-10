@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Card from '$lib/components/Card.svelte';
+	import IntegrationsCard from '$lib/components/IntegrationsCard.svelte';
 	import Logo from '$lib/components/Logo.svelte';
 	import { live } from '$lib/stores/live.svelte';
 	import { appInfoClient } from '$lib/utils/app-info-client';
@@ -281,6 +282,8 @@
 			</button>
 		</div>
 	</Card>
+
+	<IntegrationsCard />
 
 	<Card title="Diagnostics">
 		<div class="space-y-3 text-xs">

@@ -7,6 +7,7 @@ import { createArrAdapter } from './arr/adapters';
 import type { IntegrationAdapter, IntegrationConfig } from './manager';
 import type { IntegrationType } from './types';
 import { plexPollers, prowlarrPollers, seerrPollers, tautulliPollers } from './pollers';
+import { startRetentionJob } from './retention';
 
 function keyAdapter(
 	type: IntegrationType,
@@ -93,6 +94,7 @@ export function ensureAdaptersRegistered(): void {
 	);
 
 	ensureIntegrationsStarted();
+	startRetentionJob();
 }
 
 export function ensureIntegrationsUp(): void {

@@ -252,6 +252,17 @@ export function getCachedData<T>(id: string, key: string): T | null {
 	return hit && hit.expiresAt > Date.now() ? (hit.value as T) : null;
 }
 
+/** Whole cache for an integration, keyed by poller cache-key. */
+export function getIntegrationCache(id: string): Record<string, unknown> {
+	const entry = entries.get(id);
+	if (!entry) return {};
+	const out: Record<string, unknown> = {};
+	for (const [key, hit] of entry.cache) {
+		if (hit.expiresAt > Date.now()) out[key] = hit.value;
+	}
+	return out;
+}
+
 /** Settings "Test connection": probe + persist the result. */
 export async function testIntegration(
 	id: string

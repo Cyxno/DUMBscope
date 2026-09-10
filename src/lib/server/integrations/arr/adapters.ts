@@ -122,7 +122,7 @@ const HEALTH_TTL_MS = 5 * 60_000;
 /** Previous queue snapshot per integration, for grab/import-completed diffs. */
 const previousQueues = new Map<string, ArrQueueSnapshot>();
 
-function arrPollers(kind: 'sonarr' | 'radarr', integrationId: string): PollerSpec[] {
+function arrPollers(integrationId: string): PollerSpec[] {
 	return [
 		{
 			name: 'queue',
@@ -199,6 +199,6 @@ export function createArrAdapter(kind: 'sonarr' | 'radarr') {
 			const status = await makeClient(config, apiKey).status();
 			return { version: status.version };
 		},
-		pollers: (config: IntegrationConfig) => arrPollers(kind, config.id)
+		pollers: (config: IntegrationConfig) => arrPollers(config.id)
 	};
 }

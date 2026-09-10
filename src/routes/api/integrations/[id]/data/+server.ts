@@ -1,5 +1,9 @@
 import { jsonError, jsonOk } from '$lib/server/security/validation';
-import { getCachedData, getIntegrationStatus } from '$lib/server/integrations/manager';
+import {
+	getCachedData,
+	getIntegrationStatus,
+	getIntegrationCache
+} from '$lib/server/integrations/manager';
 import { getIntegration } from '$lib/server/integrations/store';
 import type { RequestHandler } from './$types';
 

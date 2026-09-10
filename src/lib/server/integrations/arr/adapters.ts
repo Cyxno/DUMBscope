@@ -154,9 +154,8 @@ function arrPollers(integrationId: string): PollerSpec[] {
 			run: async (ctx: PollContext) => {
 				const client = makeClient(ctx.config, ctx.apiKey);
 				const missing = await client.countTotal('/api/v3/wanted/missing');
-				const cutoffPath =
-					kind === 'sonarr' ? '/api/v3/wanted/cutoff' : '/api/v3/wanted/cutoff_unmet';
-				const cutoffUnmet = await client.countTotal(cutoffPath);
+				// Both Sonarr and Radarr v4 expose the cutoff-unmet list here.
+				const cutoffUnmet = await client.countTotal('/api/v3/wanted/cutoff');
 				ctx.cache.set('wanted', { missing, cutoffUnmet }, WANTED_TTL_MS);
 			}
 		},

@@ -46,6 +46,30 @@ export interface PollerSpec {
 	run: (ctx: PollContext) => Promise<void>;
 }
 
+const stateListeners = new Set<(statuses: { id: string; failures: number }[]) => void>();
+
+/** Subscribe to integration state changes (hub feeds the incident engine). */
+export function onIntegrationStateChange(
+	listener: (statuses: { id: string; failures: number }[]) => void
+): () => void {
+	stateListeners.add(listener);
+	return () => stateListeners.delete(listener);
+}
+
+function notifyStateChange(): void {
+	const snapshot = [...entries.values()].map((e) => ({
+		id: e.config.id,
+		failures: e.status.consecutiveFailures
+	}));
+	for (const listener of stateListeners) {
+		try {
+			listener(snapshot);
+		} catch {
+			// A broken listener must never break polling.
+		}
+	}
+}
+
 export interface IntegrationAdapter {
 	type: IntegrationType;
 	/** Cheap reachability + version probe used by the Settings test button. */
@@ -148,12 +172,14 @@ async function runPoller(entry: Entry, poller: PollerEntry): Promise<void> {
 				entry.status.state = 'connected';
 				entry.status.lastError = null;
 				entry.status.consecutiveFailures = 0;
+				notifyStateChange();
 				entry.status.lastSuccessAt = Date.now();
 				if (version !== undefined) entry.status.version = version;
 				if (latencyMs !== undefined) entry.status.latencyMs = latencyMs;
 			},
 			failed: (err) => {
 				entry.status.consecutiveFailures += 1;
+				notifyStateChange();
 				entry.status.state = classifyError(err);
 				entry.status.lastError = err instanceof Error ? err.message : String(err);
 			}

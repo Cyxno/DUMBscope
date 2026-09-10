@@ -331,6 +331,35 @@ export class IncidentEngine {
 		}
 	}
 
+	/**
+	 * Deep-integration health (brief §17/§32): a failing integration opens a
+	 * *warning* incident and never touches the stack-health headline — the
+	 * underlying service health still comes from DUMB.
+	 */
+	onIntegrations(statuses: { id: string; failures: number }[]): void {
+		const now = this.nowFn();
+		for (const s of statuses) {
+			if (s.failures >= TUNING.integrationFailureThreshold) {
+				this.openIncident({
+					fingerprint: Fingerprints.integrationDown(s.id),
+					severity: 'warning',
+					title: `${s.id} deep monitoring failing`,
+					summary: 'Repeated integration failures. Generic DUMB monitoring is unaffected.',
+					service: null,
+					evidenceMessage: `${s.failures} consecutive failed polls`,
+					source: 'integration',
+					refreshSummary: true
+				});
+			} else {
+				this.resolveIfActive(
+					Fingerprints.integrationDown(s.id),
+					now,
+					'Integration is polling successfully again'
+				);
+			}
+		}
+	}
+
 	/** Called periodically by the hub to detect a stalled metrics stream. */
 	onTick(lastMetricsAt: number | null, statusLive: boolean): void {
 		const now = this.nowFn();

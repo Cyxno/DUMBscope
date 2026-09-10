@@ -29,6 +29,7 @@ import { splitLines, parseLogLine } from '../logs/parse';
 import { IncidentEngine } from '../incidents/engine';
 import { buildTopology } from '../topology/graph';
 import { onActivity, recordActivity, recentActivity, type ActivityEntry } from './activity';
+import { onIntegrationStateChange } from '../integrations/manager';
 
 const METRICS_RING_SIZE = 1800; // ~1h at the default 2s interval
 const LOG_RING_SIZE = 5000;
@@ -491,6 +492,11 @@ export class Hub {
 		this.engine.hydrate();
 	}
 
+	/** Integration state changes feed the incident engine (warning-level). */
+	onIntegrationStatuses(statuses: { id: string; failures: number }[]): void {
+		this.engine.onIntegrations(statuses);
+	}
+
 	getConnection(): ConnectionSnapshot {
 		return this.connection;
 	}
@@ -674,6 +680,7 @@ export function getHub(): Hub {
 		hubInstance.hydrateIncidents();
 		hubInstance.wireActivity();
 		hubInstance.start();
+		onIntegrationStateChange((statuses) => hubInstance?.onIntegrationStatuses(statuses));
 	}
 	return hubInstance;
 }

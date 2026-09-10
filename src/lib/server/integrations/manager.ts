@@ -157,7 +157,14 @@ function schedulePoll(entry: Entry, poller: PollerEntry, delayMs: number): void 
 }
 
 async function runPoller(entry: Entry, poller: PollerEntry): Promise<void> {
-	if (poller.running || entry.config.enabled === false) return;
+	if (poller.running) {
+		// Overlap guard: never stack runs of the same task, but keep the
+		// cadence alive — a dead scheduler here would silence the poller
+		// until the next config change.
+		schedulePoll(entry, poller, 1_000);
+		return;
+	}
+	if (entry.config.enabled === false) return;
 	poller.running = true;
 	poller.lastRunAt = Date.now();
 	const adapter = adapters.get(entry.config.type);

@@ -10,7 +10,8 @@ import type { RequestHandler } from './$types';
  * to the legacy ring; integration filters hit the persisted store.
  */
 export const GET: RequestHandler = async ({ url }) => {
-	const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit') ?? 60)));
+	const rawLimit = Number(url.searchParams.get('limit') ?? 60);
+	const limit = Math.min(200, Math.max(1, Number.isFinite(rawLimit) ? Math.floor(rawLimit) : 60));
 	const before = url.searchParams.get('before');
 	const beforeId = before !== null ? Number(before) : undefined;
 	const service = url.searchParams.get('service');

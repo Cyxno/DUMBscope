@@ -20,5 +20,6 @@ export const Fingerprints = {
 	diskUsage: (path: string) => `disk-usage:${fingerprint(path)}`,
 	dumbOffline: () => `dumb-offline:${fingerprint('gateway-unreachable')}`,
 	dumbCredentials: () => `dumb-credentials:${fingerprint('credentials-invalid')}`,
-	telemetryStale: () => `telemetry-stale:${fingerprint('metrics-not-updating')}`
+	telemetryStale: () => `telemetry-stale:${fingerprint('metrics-not-updating')}`,
+	integrationDown: (id: string) => `integration-down:${fingerprint(id)}`
 };

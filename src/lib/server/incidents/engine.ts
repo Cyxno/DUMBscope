@@ -58,6 +58,20 @@ export class IncidentEngine {
 		this.state = freshState();
 	}
 
+	/**
+	 * Load persisted active incidents into state after a restart. Without
+	 * this, an incident that was active when the process died can never
+	 * resolve again: resolution only touches incidents in memory, so the row
+	 * stays 'active' forever (production audit 2026-09-10). Hydrated
+	 * incidents resolve naturally once their condition clears.
+	 */
+	hydrate(): void {
+		for (const incident of incidentRepository.active()) {
+			const existing = this.state.byFingerprint.get(incident.fingerprint);
+			if (!existing) this.state.byFingerprint.set(incident.fingerprint, incident);
+		}
+	}
+
 	getActive(): Incident[] {
 		return [...this.state.byFingerprint.values()].filter((i) => i.status === 'active');
 	}
@@ -312,6 +326,35 @@ export class IncidentEngine {
 					Fingerprints.databaseHealth(db.processName),
 					now,
 					`${db.processName} database is healthy again`
+				);
+			}
+		}
+	}
+
+	/**
+	 * Deep-integration health (brief §17/§32): a failing integration opens a
+	 * *warning* incident and never touches the stack-health headline — the
+	 * underlying service health still comes from DUMB.
+	 */
+	onIntegrations(statuses: { id: string; failures: number }[]): void {
+		const now = this.nowFn();
+		for (const s of statuses) {
+			if (s.failures >= TUNING.integrationFailureThreshold) {
+				this.openIncident({
+					fingerprint: Fingerprints.integrationDown(s.id),
+					severity: 'warning',
+					title: `${s.id} deep monitoring failing`,
+					summary: 'Repeated integration failures. Generic DUMB monitoring is unaffected.',
+					service: null,
+					evidenceMessage: `${s.failures} consecutive failed polls`,
+					source: 'integration',
+					refreshSummary: true
+				});
+			} else {
+				this.resolveIfActive(
+					Fingerprints.integrationDown(s.id),
+					now,
+					'Integration is polling successfully again'
 				);
 			}
 		}
@@ -579,6 +622,7 @@ export class IncidentEngine {
 		incident.timeline.push({ at: now, severity: 'info', message });
 		this.trim(incident);
 		incidentRepository.update(incident);
+		incidentRepository.appendTimeline(incident.id, { at: now, message, severity: 'info' });
 		this.state.byFingerprint.delete(fp);
 		this.events.onIncidentChange?.(incident, 'resolved');
 	}

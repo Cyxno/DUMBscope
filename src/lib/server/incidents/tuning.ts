@@ -18,6 +18,7 @@ export const INCIDENT_TUNING = {
 	offlineGraceMs: 15_000,
 	/** Gateway must be live this long before an offline incident resolves (ms). */
 	offlineResolveMs: 30_000,
+	integrationFailureThreshold: 5,
 	/** Error log burst: N errors... */
 	errorBurstCount: 6,
 	/** ...within this window (ms) opens a log-error incident. */

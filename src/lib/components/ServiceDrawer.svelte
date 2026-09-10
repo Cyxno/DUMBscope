@@ -4,6 +4,7 @@
 	import ServiceIcon from './ServiceIcon.svelte';
 	import HealthBadge from './HealthBadge.svelte';
 	import Sparkline from './Sparkline.svelte';
+	import IntegrationPanel from './IntegrationPanel.svelte';
 	import { formatPercent, formatBytes, relativeTime, formatDateTime } from '$lib/utils/format';
 	import { integrationRegistrySafeSummary } from '$lib/utils/summary';
 	import { ExternalLink, RotateCw } from '@lucide/svelte';
@@ -173,6 +174,8 @@
 					</dl>
 				</div>
 			{/if}
+
+			<IntegrationPanel serviceKey={service.key} />
 
 			<p class="text-[11px] text-text-faint">
 				Last observed {relativeTime(service.observedAt)} · version {discovered?.version ??

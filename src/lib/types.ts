@@ -185,7 +185,7 @@ export type IncidentStatus = 'active' | 'resolved';
 
 export interface IncidentEvidence {
 	at: number;
-	source: 'status' | 'logs' | 'metrics' | 'connection';
+	source: 'status' | 'logs' | 'metrics' | 'connection' | 'integration';
 	message: string;
 }
 

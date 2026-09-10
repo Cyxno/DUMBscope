@@ -28,14 +28,14 @@ function mapQueue(raw: {
 	const items = records.slice(0, 200).map((r, i) => {
 		const size = Number(r.size) || 0;
 		const remaining = Number(r.sizeleft) || 0;
+		// Arr records vary: direct title, series title or movie title.
+		const seriesTitle = (r.series as { title?: string } | undefined)?.title;
+		const movieTitle = (r.movie as { title?: string } | undefined)?.title;
+		const isTitle = (t: unknown): t is string => typeof t === 'string' && t.length > 0;
+		const title = [r.title, seriesTitle, movieTitle].find(isTitle) ?? 'Unknown';
 		return {
 			id: Number(r.id) || i,
-			title:
-				(String(r.title) ||
-					String((r.series as { title?: string })?.title ?? '') ||
-					String((r.movie as { title?: string })?.title ?? '') ||
-					'Unknown') ??
-				'Unknown',
+			title,
 			status: String(r.status ?? ''),
 			trackedDownloadStatus: String(r.trackedDownloadStatus ?? ''),
 			trackedDownloadState: String(r.trackedDownloadState ?? ''),

@@ -622,6 +622,7 @@ export class IncidentEngine {
 		incident.timeline.push({ at: now, severity: 'info', message });
 		this.trim(incident);
 		incidentRepository.update(incident);
+		incidentRepository.appendTimeline(incident.id, { at: now, message, severity: 'info' });
 		this.state.byFingerprint.delete(fp);
 		this.events.onIncidentChange?.(incident, 'resolved');
 	}

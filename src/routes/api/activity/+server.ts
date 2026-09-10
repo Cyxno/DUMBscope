@@ -25,6 +25,16 @@ export const GET: RequestHandler = async ({ url }) => {
 			? listActivity({ serviceKey: service ?? undefined, category: category ?? undefined, limit })
 			: listActivity({ limit });
 
+	const LEGACY_CATEGORY: Record<string, string> = {
+		incident: 'health',
+		'health-transition': 'health',
+		restart: 'system',
+		connection: 'system',
+		'service-started': 'system',
+		'service-stopped': 'system'
+	};
+	const legacyCategory = (kind: string) => LEGACY_CATEGORY[kind] ?? 'system';
+
 	type FeedItem = {
 		id: string | number;
 		at: number;
@@ -42,7 +52,7 @@ export const GET: RequestHandler = async ({ url }) => {
 			at: e.at,
 			source: 'dumb',
 			serviceKey: e.serviceKey ?? null,
-			category: e.kind,
+			category: legacyCategory(e.kind) ?? 'system',
 			title: e.message,
 			detail: null,
 			severity: null,

@@ -60,28 +60,34 @@
 				</div>
 				<div class="mt-3 grid grid-cols-4 gap-3">
 					<div>
-						<p class="text-[10px] uppercase tracking-wide text-text-faint">Active</p>
-						<p class="text-xl font-semibold text-text-primary tabular-nums">{acq.active}</p>
-					</div>
-					<div>
-						<p class="text-[10px] uppercase tracking-wide text-text-faint">Queued</p>
+						<p class="text-[10px] uppercase tracking-wide text-text-faint">Queue</p>
 						<p class="text-xl font-semibold text-text-primary tabular-nums">{acq.queued}</p>
 					</div>
 					<div>
-						<p class="text-[10px] uppercase tracking-wide text-text-faint">Import issues</p>
-						<p
-							class="text-xl font-semibold tabular-nums {acq.importIssues > 0
-								? 'text-degraded'
-								: 'text-text-primary'}"
-						>
-							{acq.importIssues}
-						</p>
+						<p class="text-[10px] uppercase tracking-wide text-text-faint">Active</p>
+						<p class="text-xl font-semibold text-text-primary tabular-nums">{acq.active}</p>
 					</div>
 					<div>
 						<p class="text-[10px] uppercase tracking-wide text-text-faint">Wanted</p>
 						<p class="text-xl font-semibold text-text-primary tabular-nums">{acq.wanted}</p>
 					</div>
+					<div>
+						<p
+							class="text-[10px] uppercase tracking-wide text-text-faint"
+							title="Items below their quality cutoff — upgrade candidates, not failures"
+						>
+							Upgradable
+						</p>
+						<p class="text-xl font-semibold text-text-primary tabular-nums">
+							{acq.cutoffUnmet}
+						</p>
+					</div>
 				</div>
+				{#if acq.importIssues > 0}
+					<p class="mt-2 text-[11px] text-degraded">
+						{acq.importIssues} import issue{acq.importIssues === 1 ? '' : 's'} in queue
+					</p>
+				{/if}
 			</div>
 		{/if}
 

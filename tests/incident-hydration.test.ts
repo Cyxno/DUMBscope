@@ -31,7 +31,6 @@ function serviceStatus(overrides: Partial<ServiceStatus> & { key: string }): Ser
 function persistedIncident(overrides: Partial<Incident> & { fingerprint: string }): Incident {
 	return {
 		id: newIncidentId(),
-		fingerprint: overrides.fingerprint,
 		severity: 'warning',
 		status: 'active',
 		title: overrides.title ?? 'DUMB credentials rejected',
@@ -45,7 +44,8 @@ function persistedIncident(overrides: Partial<Incident> & { fingerprint: string 
 		occurrences: 1,
 		evidence: [],
 		timeline: [],
-		...overrides
+		...overrides,
+		fingerprint: overrides.fingerprint
 	};
 }
 
@@ -61,16 +61,25 @@ describe('incident hydration across restarts', () => {
 	it('Scenario A: active credentials incident resolves after hydrate + live connection', () => {
 		// Before the restart: DUMB rejected credentials, incident opened+persisted.
 		const engine1 = new IncidentEngine();
-		engine1.openIncident({
-			fingerprint: Fingerprints.dumbCredentials(),
-			severity: 'warning',
-			title: 'DUMB credentials rejected',
-			summary: 'Update the DUMB credentials in Settings to restore monitoring',
-			service: null,
-			evidenceMessage: 'auth rejected',
-			source: 'connection'
-		});
-		expect(engine1.getActive()).toHaveLength(1);
+		const rejected = {
+			state: 'credentials-invalid' as const,
+			streams: {
+				rest: 'offline' as const,
+				status: 'offline' as const,
+				metrics: 'offline' as const,
+				logs: 'offline' as const
+			},
+			lastUpdateAt: null,
+			lastError: 'DUMB rejected the stored credentials',
+			reconnectAttempts: 0,
+			dumbVersion: null,
+			authMode: 'local' as const as const
+		};
+		// Sustained credentials-invalid state opens the incident (grace elapsed).
+		for (let i = 0; i < 10; i++) engine1.onConnection(rejected);
+		expect(engine1.getActive().some((i) => i.fingerprint === Fingerprints.dumbCredentials())).toBe(
+			true
+		);
 
 		// "Restart": fresh engine, nothing in memory. Credentials now work and
 		// the connection is live for well past the resolve window.
@@ -90,7 +99,7 @@ describe('incident hydration across restarts', () => {
 			lastError: null,
 			reconnectAttempts: 0,
 			dumbVersion: '1.8.2',
-			authMode: 'local'
+			authMode: 'local' as const
 		};
 		engine2.onConnection(live);
 

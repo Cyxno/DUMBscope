@@ -57,6 +57,15 @@ export interface IntegrationStatus {
 	consecutiveFailures: number;
 	/** Epoch ms of the next scheduled poll, for the diagnostics view. */
 	nextPollAt: number | null;
+	/** Per-poller observability (brief §3). */
+	pollers: {
+		name: string;
+		intervalMs: number;
+		lastRunAt: number | null;
+		lastOkAt: number | null;
+		lastError: string | null;
+		nextRunAt: number | null;
+	}[];
 }
 
 /** Envelope returned to the browser: config + live status, no secrets. */

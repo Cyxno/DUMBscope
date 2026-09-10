@@ -83,6 +83,11 @@ interface PollerEntry {
 	timer: ReturnType<typeof setTimeout> | null;
 	running: boolean;
 	failures: number;
+	/** Diagnostics (brief §3): per-poller observability, no credentials. */
+	lastRunAt: number | null;
+	lastOkAt: number | null;
+	lastError: string | null;
+	nextRunAt: number | null;
 }
 
 interface Entry {
@@ -124,7 +129,8 @@ function entryFor(config: IntegrationConfig): Entry {
 				lastSuccessAt: null,
 				lastError: null,
 				consecutiveFailures: 0,
-				nextPollAt: null
+				nextPollAt: null,
+				pollers: []
 			},
 			cache: new Map(),
 			pollers: [],
@@ -140,14 +146,20 @@ function jitter(ms: number): number {
 }
 
 function schedulePoll(entry: Entry, poller: PollerEntry, delayMs: number): void {
+	const wait = Math.max(250, delayMs);
 	if (poller.timer) clearTimeout(poller.timer);
-	poller.timer = setTimeout(() => void runPoller(entry, poller), Math.max(1_000, delayMs));
-	entry.status.nextPollAt = Date.now() + Math.max(1_000, delayMs);
+	poller.timer = setTimeout(() => void runPoller(entry, poller), wait);
+	poller.nextRunAt = Date.now() + wait;
+	entry.status.nextPollAt = Math.min(
+		entry.status.nextPollAt ?? Number.MAX_SAFE_INTEGER,
+		Date.now() + wait
+	);
 }
 
 async function runPoller(entry: Entry, poller: PollerEntry): Promise<void> {
 	if (poller.running || entry.config.enabled === false) return;
 	poller.running = true;
+	poller.lastRunAt = Date.now();
 	const adapter = adapters.get(entry.config.type);
 	try {
 		if (!adapter) throw new Error(`no adapter for ${entry.config.type}`);
@@ -186,21 +198,46 @@ async function runPoller(entry: Entry, poller: PollerEntry): Promise<void> {
 		};
 		await poller.spec.run(ctx);
 		poller.failures = 0;
+		poller.lastOkAt = Date.now();
+		poller.lastError = null;
 		if (entry.status.state === 'connecting') entry.status.state = 'connected';
 	} catch (err) {
 		poller.failures += 1;
 		entry.status.consecutiveFailures += 1;
 		entry.status.state = classifyError(err);
 		entry.status.lastError = err instanceof Error ? err.message : String(err);
+		poller.lastError = entry.status.lastError;
 	} finally {
 		poller.running = false;
-		const backoff = Math.min(
-			poller.failures > 0
-				? poller.spec.intervalMs * 2 ** Math.min(poller.failures, MAX_BACKOFF_MULTIPLIER)
-				: poller.spec.intervalMs,
-			MAX_BACKOFF_MS
-		);
-		schedulePoll(entry, poller, jitter(backoff));
+		poller.lastRunAt = Date.now();
+		if (entry.status.lastError) poller.lastError = entry.status.lastError;
+		// Backoff policy (brief §2): a single failure retries quickly (60s)
+		// so a transient error never silences a poller for its whole interval;
+		// sustained failures grow exponentially up to the cap.
+		const delay =
+			poller.failures <= 0
+				? poller.spec.intervalMs
+				: poller.failures === 1
+					? Math.min(60_000, poller.spec.intervalMs)
+					: Math.min(
+							poller.spec.intervalMs * 2 ** Math.min(poller.failures - 1, MAX_BACKOFF_MULTIPLIER),
+							MAX_BACKOFF_MS
+						);
+		schedulePoll(entry, poller, jitter(delay));
+	}
+}
+
+/**
+ * Force every poller of an integration to run right away (brief §2). Used
+ * after config changes / successful tests so fresh, correct configuration is
+ * never stuck behind an old backoff. Running pollers are not overlapped.
+ */
+export function triggerNow(integrationId: string): void {
+	const entry = entries.get(integrationId);
+	if (!entry) return;
+	for (const poller of entry.pollers) {
+		if (poller.running) continue;
+		schedulePoll(entry, poller, 250);
 	}
 }
 
@@ -213,7 +250,16 @@ function startEntry(config: IntegrationConfig): void {
 	entry.pollers = [];
 	if (!config.enabled) return;
 	for (const spec of adapter.pollers(config)) {
-		const poller: PollerEntry = { spec, timer: null, running: false, failures: 0 };
+		const poller: PollerEntry = {
+			spec,
+			timer: null,
+			running: false,
+			failures: 0,
+			lastRunAt: null,
+			lastOkAt: null,
+			lastError: null,
+			nextRunAt: null
+		};
 		entry.pollers.push(poller);
 		// Stagger initial runs so a dozen integrations never poll in lockstep.
 		schedulePoll(entry, poller, jitter(2_000 + Math.random() * 10_000));
@@ -238,12 +284,27 @@ export function reloadIntegration(id: string): void {
 	if (config) startEntry(config);
 }
 
+function statusView(entry: Entry): IntegrationStatus {
+	return {
+		...entry.status,
+		pollers: entry.pollers.map((p) => ({
+			name: p.spec.name,
+			intervalMs: p.spec.intervalMs,
+			lastRunAt: p.lastRunAt,
+			lastOkAt: p.lastOkAt,
+			lastError: p.lastError,
+			nextRunAt: p.nextRunAt
+		}))
+	};
+}
+
 export function getIntegrationStatuses(): IntegrationStatus[] {
-	return [...entries.values()].map((e) => e.status);
+	return [...entries.values()].map(statusView);
 }
 
 export function getIntegrationStatus(id: string): IntegrationStatus | null {
-	return entries.get(id)?.status ?? null;
+	const entry = entries.get(id);
+	return entry ? statusView(entry) : null;
 }
 
 /** Read cached poll data for API routes (never triggers a service call). */

@@ -17,11 +17,20 @@
 		lastTestOk: boolean | null;
 		lastTestError: string | null;
 	}
+	interface PollerStatus {
+		name: string;
+		intervalMs: number;
+		lastOkAt: number | null;
+		lastError: string | null;
+		nextRunAt: number | null;
+	}
 	interface IntegrationStatus {
 		id: string;
 		state: string;
 		version: string | null;
+		lastSuccessAt: number | null;
 		lastError: string | null;
+		pollers: PollerStatus[];
 	}
 
 	const TYPES = [
@@ -138,6 +147,14 @@
 		await load();
 	}
 
+	function ago(ts: number | null): string {
+		if (!ts) return 'never';
+		const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+		if (s < 60) return `${s}s ago`;
+		if (s < 3600) return `${Math.round(s / 60)}m ago`;
+		return `${Math.round(s / 3600)}h ago`;
+	}
+
 	function stateColor(state: string | undefined): string {
 		if (state === 'connected') return 'var(--healthy)';
 		if (!state || state === 'not_configured' || state === 'disabled') return 'var(--text-faint)';
@@ -202,10 +219,26 @@
 					{#if status?.version}
 						· v{status.version}
 					{/if}
+					{#if status?.lastSuccessAt}
+						· last OK {ago(status.lastSuccessAt)}
+					{/if}
 					{#if status?.lastError}
 						· <span class="text-critical">{status.lastError}</span>
 					{/if}
 				</p>
+				{#if status?.pollers && status.pollers.length > 0}
+					<div class="mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-text-faint">
+						{#each status.pollers as p (p.name)}
+							<span>
+								{p.name}:{#if p.lastError}<span class="text-critical"> {p.lastError}</span>{:else}
+									<span class="text-healthy">fresh</span>{/if}
+								{#if p.lastOkAt}
+									({ago(p.lastOkAt)})
+								{/if}
+							</span>
+						{/each}
+					</div>
+				{/if}
 				<div class="mt-2 flex items-center gap-1.5">
 					{#if keyEditId === config.id}
 						<input

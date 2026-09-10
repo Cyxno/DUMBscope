@@ -17,7 +17,7 @@
 	<WebUI>http://[IP]:[PORT:8091]</WebUI>
 	<TemplateURL>https://raw.githubusercontent.com/Cyxno/DUMBscope/main/unraid/dumbscope.xml</TemplateURL>
 	<Icon>https://raw.githubusercontent.com/Cyxno/DUMBscope/main/unraid/dumbscope-icon.svg</Icon>
-	<Date>2026-09-09</Date>
+	<Date>2026-09-10</Date>
 	<Config Name="Web UI port" Target="8091" Default="8091" Mode="tcp" Description="Port DUMBscope's web interface listens on" Type="Port" Display="always" Required="true">8091</Config>
 	<Config Name="Config" Target="/config" Default="/mnt/user/appdata/dumbscope" Mode="rw" Description="Persistent DUMBscope config, database and secrets" Type="Path" Display="always" Required="true">/mnt/user/appdata/dumbscope</Config>
 	<Config Name="PUID" Target="PUID" Default="99" Description="User ID that owns /config (Unraid default: nobody)" Type="Variable" Display="advanced">99</Config>

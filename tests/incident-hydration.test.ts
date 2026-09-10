@@ -73,7 +73,7 @@ describe('incident hydration across restarts', () => {
 			lastError: 'DUMB rejected the stored credentials',
 			reconnectAttempts: 0,
 			dumbVersion: null,
-			authMode: 'local' as const as const
+			authMode: 'local' as const
 		};
 		// Sustained credentials-invalid state opens the incident (grace elapsed).
 		for (let i = 0; i < 10; i++) engine1.onConnection(rejected);

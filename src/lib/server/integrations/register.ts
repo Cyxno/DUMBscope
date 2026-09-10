@@ -9,6 +9,26 @@ import type { IntegrationType } from './types';
 import { plexPollers, prowlarrPollers, seerrPollers, tautulliPollers } from './pollers';
 import { startRetentionJob } from './retention';
 
+/** Every outbound probe gets a hard timeout; no request may hang forever. */
+async function withTimeout(
+	url: string,
+	headers: Record<string, string>,
+	ms = 8_000
+): Promise<Response> {
+	const controller = new AbortController();
+	const timer = setTimeout(() => controller.abort(), ms);
+	try {
+		return await fetch(url, { headers, signal: controller.signal });
+	} catch (err) {
+		if (err instanceof Error && err.name === 'AbortError') {
+			throw new Error('timeout: integration did not respond in time');
+		}
+		throw err;
+	} finally {
+		clearTimeout(timer);
+	}
+}
+
 function keyAdapter(
 	type: IntegrationType,
 	test: (ctx: { url: string; apiKey: string | null }) => Promise<{ version?: string }>,
@@ -35,8 +55,8 @@ export function ensureAdaptersRegistered(): void {
 		keyAdapter(
 			'prowlarr',
 			async ({ url, apiKey }) => {
-				const response = await fetch(`${url.replace(/\/+$/, '')}/api/v1/system/status`, {
-					headers: { 'X-Api-Key': apiKey ?? '' }
+				const response = await withTimeout(`${url.replace(/\/+$/, '')}/api/v1/system/status`, {
+					'X-Api-Key': apiKey ?? ''
 				});
 				if (!response.ok) throw new Error(`HTTP ${response.status}`);
 				const data = (await response.json()) as { version?: string };
@@ -50,8 +70,9 @@ export function ensureAdaptersRegistered(): void {
 		keyAdapter(
 			'plex',
 			async ({ url, apiKey }) => {
-				const response = await fetch(`${url.replace(/\/+$/, '')}/identity`, {
-					headers: { 'X-Plex-Token': apiKey ?? '', accept: 'application/json' }
+				const response = await withTimeout(`${url.replace(/\/+$/, '')}/identity`, {
+					'X-Plex-Token': apiKey ?? '',
+					accept: 'application/json'
 				});
 				if (!response.ok) throw new Error(`HTTP ${response.status}`);
 				const data = (await response.json()) as { MediaContainer?: { version?: string } };
@@ -65,8 +86,8 @@ export function ensureAdaptersRegistered(): void {
 		keyAdapter(
 			'seerr',
 			async ({ url, apiKey }) => {
-				const response = await fetch(`${url.replace(/\/+$/, '')}/api/v1/settings/main`, {
-					headers: { 'X-Api-Key': apiKey ?? '' }
+				const response = await withTimeout(`${url.replace(/\/+$/, '')}/api/v1/settings/main`, {
+					'X-Api-Key': apiKey ?? ''
 				});
 				if (!response.ok) throw new Error(`HTTP ${response.status}`);
 				const data = (await response.json()) as { appVersion?: string };
@@ -80,8 +101,9 @@ export function ensureAdaptersRegistered(): void {
 		keyAdapter(
 			'tautulli',
 			async ({ url, apiKey }) => {
-				const response = await fetch(
-					`${url.replace(/\/+$/, '')}/api/v2?apikey=${encodeURIComponent(apiKey ?? '')}&cmd=get_tautulli_info`
+				const response = await withTimeout(
+					`${url.replace(/\/+$/, '')}/api/v2?apikey=${encodeURIComponent(apiKey ?? '')}&cmd=get_tautulli_info`,
+					{}
 				);
 				if (!response.ok) throw new Error(`HTTP ${response.status}`);
 				const data = (await response.json()) as {

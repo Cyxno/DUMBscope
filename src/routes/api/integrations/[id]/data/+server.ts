@@ -10,6 +10,7 @@ export const GET: RequestHandler = async ({ params }) => {
 	return jsonOk({
 		status: getIntegrationStatus(existing.id),
 		data: {
+			app: getCachedData(existing.id, 'status'),
 			queue: getCachedData(existing.id, 'queue'),
 			health: getCachedData(existing.id, 'health'),
 			wanted: getCachedData(existing.id, 'wanted'),

@@ -122,7 +122,7 @@ const HEALTH_TTL_MS = 5 * 60_000;
 /** Previous queue snapshot per integration, for grab/import-completed diffs. */
 const previousQueues = new Map<string, ArrQueueSnapshot>();
 
-function arrPollers(integrationId: string): PollerSpec[] {
+function arrPollers(kind: 'sonarr' | 'radarr', integrationId: string): PollerSpec[] {
 	return [
 		{
 			name: 'queue',
@@ -154,7 +154,9 @@ function arrPollers(integrationId: string): PollerSpec[] {
 			run: async (ctx: PollContext) => {
 				const client = makeClient(ctx.config, ctx.apiKey);
 				const missing = await client.countTotal('/api/v3/wanted/missing');
-				const cutoffUnmet = await client.countTotal('/api/v3/wanted/cutoff_unmet');
+				const cutoffPath =
+					kind === 'sonarr' ? '/api/v3/wanted/cutoff' : '/api/v3/wanted/cutoff_unmet';
+				const cutoffUnmet = await client.countTotal(cutoffPath);
 				ctx.cache.set('wanted', { missing, cutoffUnmet }, WANTED_TTL_MS);
 			}
 		},
@@ -197,6 +199,6 @@ export function createArrAdapter(kind: 'sonarr' | 'radarr') {
 			const status = await makeClient(config, apiKey).status();
 			return { version: status.version };
 		},
-		pollers: (config: IntegrationConfig) => arrPollers(config.id)
+		pollers: (config: IntegrationConfig) => arrPollers(kind, config.id)
 	};
 }

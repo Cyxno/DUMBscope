@@ -2,6 +2,7 @@
 	import { live } from '$lib/stores/live.svelte';
 	import Card from '$lib/components/Card.svelte';
 	import TopologyView from '$lib/components/TopologyView.svelte';
+	import OverviewIntegrations from '$lib/components/OverviewIntegrations.svelte';
 	import ServiceDrawer from '$lib/components/ServiceDrawer.svelte';
 	import Sparkline from '$lib/components/Sparkline.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
@@ -166,6 +167,8 @@
 			<TopologyView graph={live.topology} compact onselect={(key) => (drawerKey = key)} />
 		{/if}
 	</Card>
+
+	<OverviewIntegrations />
 
 	<!-- Bento grid -->
 	<section

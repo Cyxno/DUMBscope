@@ -10,7 +10,7 @@ import {
 	type PipelineModel,
 	type PipelineService
 } from './model';
-import { pipelineDemoFromUrl, type PipelineDemo } from './demo';
+import type { PipelineDemo } from './demo';
 import type { TopologyNode } from '$lib/types';
 
 export { pipelineDemoFromUrl, type PipelineDemo } from './demo';

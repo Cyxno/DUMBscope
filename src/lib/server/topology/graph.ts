@@ -40,12 +40,18 @@ export function buildTopology(
 		adapterByKey.set(node.key, adapter);
 	}
 
-	// Resolve declared dependencies into concrete edges. Catalog ids match by
-	// adapter id; category dependencies match the first service in that category.
-	const firstInCategory = new Map<string, string>();
+	// Resolve only *explicit* dependencies (catalog id → concrete service).
+	// Category-level "dependsOnCategory" entries are deliberately NOT turned
+	// into per-service edges: picking the first service in a category produced
+	// arbitrary, wrong relations (e.g. Tautulli → Emby, Seerr → Lidarr).
+	// Stage-level relationships belong to the PipelineViewModel, which draws
+	// stage-to-stage trunks instead of invented service edges.
+	const keyByCatalogId = new Map<string, string>();
 	for (const node of nodes) {
-		const existing = firstInCategory.get(node.category);
-		if (!existing) firstInCategory.set(node.category, node.key);
+		const adapter = adapterByKey.get(node.key);
+		if (adapter && adapter.id !== 'generic' && !keyByCatalogId.has(adapter.id)) {
+			keyByCatalogId.set(adapter.id, node.key);
+		}
 	}
 
 	const edges: TopologyEdge[] = [];
@@ -55,10 +61,9 @@ export function buildTopology(
 		if (!adapter) continue;
 		const targets = new Set<string>();
 		for (const depId of adapter.dependsOn) {
-			if (byId.has(depId) && depId !== node.key) targets.add(depId);
-		}
-		for (const category of adapter.dependsOnCategory) {
-			const target = firstInCategory.get(category);
+			// Dependency ids may reference a service key or a catalog id
+			// ("postgres" vs "postgresql"); resolve both, deterministically.
+			const target = byId.has(depId) ? depId : keyByCatalogId.get(depId);
 			if (target && target !== node.key) targets.add(target);
 		}
 		for (const target of targets) {

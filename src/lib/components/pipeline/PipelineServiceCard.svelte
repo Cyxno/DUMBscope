@@ -49,6 +49,13 @@
 	const subtitle = $derived(
 		service.instanceLabel ? `${service.instanceLabel} · ${service.descriptor}` : service.descriptor
 	);
+	// Instance label included so multi-instance cards stay distinguishable
+	// for assistive tech (and unique in accessible-name queries).
+	const accessibleName = $derived(
+		service.instanceLabel
+			? `${service.name} ${service.instanceLabel}: ${pipelineStatusLabel(service.status)}`
+			: `${service.name}: ${pipelineStatusLabel(service.status)}`
+	);
 </script>
 
 <button
@@ -58,7 +65,7 @@
 	)} {selected ? 'border-accent ring-1 ring-accent' : ''} {dimmed ? 'opacity-45' : ''}"
 	class:hover:border-border-strong={!selected && service.status !== 'critical'}
 	onclick={() => onselect?.(service.key)}
-	aria-label="{service.name}: {pipelineStatusLabel(service.status)}"
+	aria-label={accessibleName}
 	aria-pressed={selected}
 >
 	<span class="flex items-start gap-2.5">

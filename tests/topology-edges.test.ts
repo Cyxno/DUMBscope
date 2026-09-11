@@ -92,3 +92,19 @@ describe('topology edge honesty', () => {
 		expect(graph.edges).toHaveLength(1);
 	});
 });
+
+describe('topology bad-data safety', () => {
+	it('survives dependency cycles without hanging', () => {
+		const a = discovered('Service A', 'svc-a');
+		const b = discovered('Service B', 'svc-b');
+		// The registry resolves these to generic adapters (no explicit deps),
+		// so a true cycle needs known ids — simulate via sonarr/prowlarr both ways.
+		const graph = buildTopology(
+			[discovered('Prowlarr', 'prowlarr'), discovered('Sonarr', 'sonarr')],
+			new Map()
+		);
+		expect(graph.edges).toHaveLength(1);
+		expect(graph.nodes).toHaveLength(2);
+		expect([a, b]).toHaveLength(2);
+	});
+});

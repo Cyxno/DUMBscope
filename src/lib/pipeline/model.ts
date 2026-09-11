@@ -218,7 +218,12 @@ export function worstStatus(statuses: PipelineStatus[]): PipelineStatus | null {
 
 export function buildPipelineModel(input: PipelineModelInput): PipelineModel {
 	const managedKeys = new Set(input.managedKeys ?? []);
-	const nodes = input.nodes;
+	// Defensive: malformed upstream data must never produce duplicate DOM keys.
+	const unique = new Map<string, TopologyNode>();
+	for (const node of input.nodes) {
+		if (!unique.has(node.key)) unique.set(node.key, node);
+	}
+	const nodes = [...unique.values()];
 
 	// Friendly identities first so multi-instance groups can be labelled.
 	const identities = new Map<string, { name: string; instanceLabel: string | null }>();
@@ -277,8 +282,10 @@ export function buildPipelineModel(input: PipelineModelInput): PipelineModel {
 
 	// Failure propagation: a root cause stops the flow at its stage.
 	let rootCause: PipelineModel['rootCause'] = null;
+	const byKey = new Map(services.map((s) => [s.key, s]));
+	const byName = new Map(services.map((s) => [s.name.toLowerCase(), s]));
 	for (const key of input.rootCauseKeys ?? []) {
-		const svc = services.find((s) => s.key === key || s.name.toLowerCase() === key.toLowerCase());
+		const svc = byKey.get(key) ?? byName.get(key.toLowerCase());
 		if (svc && (PIPELINE_STAGES as readonly string[]).includes(svc.stage)) {
 			svc.status = 'critical';
 			rootCause = { key: svc.key, name: svc.name, stage: svc.stage as PipelineFlowStage };
@@ -300,11 +307,16 @@ export function buildPipelineModel(input: PipelineModelInput): PipelineModel {
 		}
 	}
 
+	// Deterministic card ordering policy: friendly name, then stable key —
+	// identical input always renders in identical order (no insertion-order luck).
+	const byNameKey = (a: PipelineService, b: PipelineService) =>
+		a.name.localeCompare(b.name) || a.key.localeCompare(b.key);
+
 	function makeStage(id: PipelineStageId, group: PipelineService[]): PipelineStage {
 		// "Simple" stages show live services plus explicitly stopped ones;
 		// never-reported entries stay out (counted, visible in detailed mode).
-		const visible = group.filter((s) => s.running || s.stopped);
-		const notRunning = group.filter((s) => !s.running && !s.stopped);
+		const visible = group.filter((s) => s.running || s.stopped).sort(byNameKey);
+		const notRunning = group.filter((s) => !s.running && !s.stopped).sort(byNameKey);
 		return {
 			id,
 			label: STAGE_LABELS[id],

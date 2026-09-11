@@ -17,17 +17,18 @@
 	import { relativeTime } from '$lib/utils/format';
 	import { CONNECTION_LABELS } from '$lib/utils/status';
 
-	let { onselect }: { onselect?: (key: string) => void } = $props();
+	let {
+		selectedKey = null,
+		onselect
+	}: {
+		/** Selected service key — owned by the page so a drawer close clears it. */
+		selectedKey?: string | null;
+		onselect?: (key: string) => void;
+	} = $props();
 
 	let detailed = $state(false);
 	const demo = $derived(pipelineDemoFromUrl(page.url));
 	const model = $derived(pipelineModelFromLive(demo));
-	let selectedKey = $state<string | null>(null);
-
-	function select(key: string) {
-		selectedKey = key === selectedKey ? null : key;
-		onselect?.(key);
-	}
 
 	// Same count the hero uses (DUMB's managed registry) — one vocabulary.
 	const runningCount = $derived(live.overview.servicesOnline);
@@ -93,11 +94,11 @@
 			/>
 		</div>
 	{:else}
-		<div class="hidden lg:block">
-			<DesktopPipeline {model} {detailed} {selectedKey} onselect={select} />
+		<div class="hidden lg:block" data-testid="desktop-pipeline">
+			<DesktopPipeline {model} {detailed} {selectedKey} {onselect} />
 		</div>
-		<div class="lg:hidden">
-			<MobilePipeline {model} {detailed} {selectedKey} onselect={select} />
+		<div class="lg:hidden" data-testid="mobile-pipeline">
+			<MobilePipeline {model} {detailed} {selectedKey} {onselect} />
 		</div>
 		{#if !detailed && hiddenCount > 0}
 			<div class="mt-5 flex items-center gap-2">

@@ -11,3 +11,5 @@ node_modules
 coverage
 .DS_Store
 vite.config.ts.timestamp-*
+tests/e2e/.auth/
+test-results/

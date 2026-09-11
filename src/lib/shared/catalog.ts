@@ -155,6 +155,14 @@ export const CATALOG: CatalogEntry[] = [
 	},
 
 	{
+		id: 'rclone',
+		match: /rclone/i,
+		displayName: 'rclone',
+		category: 'mount',
+		descriptor: 'Cloud mount',
+		dependsOnCategory: ['bridge']
+	},
+	{
 		id: 'infinidysk',
 		match: /infini\s?dysk/i,
 		displayName: 'InfiniDysk',
@@ -170,14 +178,6 @@ export const CATALOG: CatalogEntry[] = [
 		category: 'bridge',
 		descriptor: 'Debrid bridge',
 		dependsOn: []
-	},
-	{
-		id: 'rclone',
-		match: /rclone/i,
-		displayName: 'rclone',
-		category: 'mount',
-		descriptor: 'Cloud mount',
-		dependsOnCategory: ['bridge']
 	},
 	{
 		id: 'postgres',

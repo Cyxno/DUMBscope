@@ -10,19 +10,10 @@ import {
 	type PipelineModel,
 	type PipelineService
 } from './model';
+import { pipelineDemoFromUrl, type PipelineDemo } from './demo';
 import type { TopologyNode } from '$lib/types';
 
-/**
- * Query params understood as read-only presentation overrides for QA:
- * `?demo=failure` renders the InfiniDysk-failure story, `?demo=stale` the
- * disconnected/stale story. They never touch data, only this tab's rendering.
- */
-export type PipelineDemo = 'failure' | 'stale' | null;
-
-export function pipelineDemoFromUrl(url: URL): PipelineDemo {
-	const value = url.searchParams.get('demo');
-	return value === 'failure' || value === 'stale' ? value : null;
-}
+export { pipelineDemoFromUrl, type PipelineDemo } from './demo';
 
 export function pipelineModelFromLive(demo: PipelineDemo = null): PipelineModel {
 	const nodes: TopologyNode[] = live.topology.nodes;

@@ -262,3 +262,86 @@ describe('pipeline failure propagation', () => {
 		expect(model.stages.find((s) => s.id === 'media')!.affected).toBe(true);
 	});
 });
+
+describe('pipeline robustness', () => {
+	const stack = () => [
+		node({ key: 'seerr', name: 'seerr instances Default', category: 'request' }),
+		node({ key: 'sonarr', name: 'sonarr instances Default', category: 'manager' }),
+		node({ key: 'prowlarr', name: 'prowlarr instances Default', category: 'indexer' }),
+		node({ key: 'decypharr', name: 'Decypharr', category: 'debrid' }),
+		node({ key: 'infinidysk', name: 'InfiniDysk', category: 'bridge' }),
+		node({ key: 'plex', name: 'Plex Media Server', category: 'media-server' })
+	];
+
+	it('deduplicates duplicate service keys from malformed upstream data', () => {
+		const nodes = [
+			...stack(),
+			node({ key: 'plex', name: 'Plex Media Server', category: 'media-server' })
+		];
+		const model = build(nodes);
+		const allKeys = model.stages.flatMap((s) => s.services.map((svc) => svc.key));
+		expect(new Set(allKeys).size).toBe(allKeys.length);
+	});
+
+	it('renders identical card order regardless of input order', () => {
+		const forward = build(stack());
+		const shuffled = build([...stack()].reverse());
+		expect(shuffled.stages.map((s) => s.id)).toEqual(forward.stages.map((s) => s.id));
+		for (let i = 0; i < forward.stages.length; i++) {
+			expect(shuffled.stages[i]!.services.map((s) => s.key)).toEqual(
+				forward.stages[i]!.services.map((s) => s.key)
+			);
+		}
+	});
+
+	it('orders cards by friendly name inside each stage', () => {
+		const model = build(stack());
+		const automation = model.stages.find((s) => s.id === 'automation')!;
+		expect(automation.services.map((s) => s.name)).toEqual(['Prowlarr', 'Sonarr']);
+	});
+
+	it('draws stage trunks between present stages only, in flow order', () => {
+		const model = build(stack());
+		expect(model.connections.map((c) => `${c.from}->${c.to}`)).toEqual([
+			'requests->automation',
+			'automation->acquisition',
+			'acquisition->storage',
+			'storage->media'
+		]);
+	});
+
+	it('handles a 30-service synthetic stack without duplicates or overflow risk', () => {
+		const categories: PipelineCategory[] = [
+			'request',
+			'manager',
+			'indexer',
+			'debrid',
+			'bridge',
+			'media-server',
+			'analytics',
+			'auxiliary'
+		];
+		const nodes: TopologyNode[] = Array.from({ length: 30 }, (_, i) =>
+			node({
+				key: `svc-${i}`,
+				name: `Service ${String(i + 1).padStart(2, '0')}`,
+				category: categories[i % categories.length]!,
+				runState: i % 6 === 0 ? 'unknown' : 'running',
+				health: i % 6 === 0 ? 'unknown' : 'healthy',
+				known: i % 5 !== 0
+			})
+		);
+		const model = build(nodes, { managedKeys: nodes.map((n) => n.key) });
+		const allKeys = [
+			...model.stages.flatMap((s) => [
+				...s.services.map((x) => x.key),
+				...s.notRunning.map((x) => x.key)
+			]),
+			...(model.supporting?.services.map((x) => x.key) ?? []),
+			...(model.supporting?.notRunning.map((x) => x.key) ?? []),
+			...model.infrastructure.map((x) => x.key)
+		];
+		expect(allKeys).toHaveLength(30);
+		expect(new Set(allKeys).size).toBe(30);
+	});
+});

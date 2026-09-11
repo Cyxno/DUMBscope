@@ -38,7 +38,7 @@
 {/if}
 
 {#if detailed && model.infrastructure.length > 0}
-	<div class="mt-5 border-t border-border-subtle pt-4">
+	<div class="mt-5 border-t border-border-subtle pt-4" data-testid="pipeline-infrastructure">
 		<h4 class="mb-2.5 text-[10px] font-bold tracking-[0.1em] uppercase text-text-faint">
 			Infrastructure
 		</h4>

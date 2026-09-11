@@ -34,6 +34,8 @@ import { onIntegrationStateChange } from '../integrations/manager';
 const METRICS_RING_SIZE = 1800; // ~1h at the default 2s interval
 const LOG_RING_SIZE = 5000;
 const STATUS_INTERVAL_FRESH_MS = 15_000;
+/** How often the service registry is refreshed from DUMB's REST API. */
+const DISCOVERY_REFRESH_MS = 10 * 60_000;
 /** Minimum spacing between proactive token refreshes. */
 const TOKEN_REFRESH_THROTTLE_MS = 4 * 60_000;
 /** Minimum spacing between stale-recovery stream restarts. */
@@ -88,6 +90,7 @@ export class Hub {
 	 *  create services under slug keys that discovery never matches again. */
 	private discoveryReady = false;
 	private lastTokenRefreshAt = 0;
+	private lastDiscoveryRefreshAt = 0;
 	private lastStreamsBounceAt = 0;
 	private lastStatusEmit = 0;
 	private configured = false;
@@ -239,6 +242,9 @@ export class Hub {
 		}
 		this.discovered = discovered;
 		this.discoveredByProcess = byProcess;
+		// Reconcile: stopped incidents for processes outside the managed
+		// registry are ephemeral helpers, not failures.
+		this.engine.reconcileRegistryStops(new Set(byProcess.keys()));
 		// Merge enabled/versions into current statuses.
 		for (const service of discovered) {
 			const existing = this.services.get(service.key);
@@ -281,6 +287,16 @@ export class Hub {
 			for (const raw of incoming) {
 				const status = normalizeServiceStatus(raw, this.discoveredByProcess);
 				if (!status) continue;
+				// Only DUMB's managed registry is monitored: the status frames
+				// also carry ephemeral internal helper processes (e.g. one-shot
+				// setup steps) that report "stopped" after completing — treating
+				// those as services produced permanent false incidents.
+				if (
+					this.discoveredByProcess.size > 0 &&
+					!this.discoveredByProcess.has(status.processName)
+				) {
+					continue;
+				}
 				seen.add(status.key);
 				const prev = previous.get(status.key);
 				if (prev && prev.health !== status.health && prev.health !== 'unknown') {
@@ -468,6 +484,12 @@ export class Hub {
 			void this.client.ensureAuthenticated().catch(() => {
 				// Gateway unreachable: the streams' reconnect/backoff handles it.
 			});
+		}
+		// Periodic discovery refresh: newly added DUMB services enter the
+		// registry here (status frames only carry processes discovery knows).
+		if (this.configured && now - this.lastDiscoveryRefreshAt > DISCOVERY_REFRESH_MS) {
+			this.lastDiscoveryRefreshAt = now;
+			void this.bootstrapRest();
 		}
 		// Freshness: connected but nothing new for a long time → stale.
 		if (

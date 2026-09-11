@@ -370,6 +370,26 @@ export class IncidentEngine {
 	}
 
 	/** Called periodically by the hub to detect a stalled metrics stream. */
+	/**
+	 * Discovery reconciliation: stopped incidents whose process is not part
+	 * of DUMB's managed registry are ephemeral helpers (e.g. one-shot setup
+	 * steps) — resolve them on every trusted registry refresh.
+	 */
+	reconcileRegistryStops(managedProcessNames: ReadonlySet<string>): void {
+		const now = this.nowFn();
+		for (const incident of this.getActive()) {
+			if (!incident.fingerprint.startsWith('svc-stopped:')) continue;
+			// The incident title embeds the process name: "<name> is stopped".
+			const name = incident.title.replace(/ is stopped$/, '');
+			if (managedProcessNames.has(name)) continue;
+			this.resolveIfActive(
+				incident.fingerprint,
+				now,
+				'Resolved: process is not part of the managed registry'
+			);
+		}
+	}
+
 	onTick(lastMetricsAt: number | null, statusLive: boolean): void {
 		const now = this.nowFn();
 		if (statusLive && lastMetricsAt !== null && now - lastMetricsAt > TUNING.metricsStaleMs) {

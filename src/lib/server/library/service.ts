@@ -63,6 +63,22 @@ export interface LibraryView {
 	fetchedAt: number | null;
 }
 
+/** Identical messages across services (same download client) group once. */
+function dedupeWarnings(warnings: { integrationId: string; type: string; message: string }[]) {
+	const byMessage = new Map();
+	for (const warning of warnings) {
+		const existing = byMessage.get(warning.message);
+		if (existing) existing.types.push(warning.type);
+		else
+			byMessage.set(warning.message, {
+				message: warning.message,
+				types: [warning.type],
+				integrationIds: [warning.integrationId]
+			});
+	}
+	return [...byMessage.values()];
+}
+
 const STALE_WINDOW_MS = 30 * 60_000;
 
 interface QueueSource {
@@ -210,6 +226,17 @@ export function getLibraryView(): LibraryView {
 	// Backlog ages are derived over released missing items only (§13).
 	if (tv) tv.backlogAges = countBacklogAges(missing.filter((m) => m.kind === 'episode'));
 	if (movies) movies.backlogAges = countBacklogAges(missing.filter((m) => m.kind === 'movie'));
+
+	// Overall subtitle coverage (derived): gaps against the monitored library
+	// units reported by Sonarr/Radarr — Bazarr alone has no episode totals.
+	if (subtitles) {
+		const units = (tv?.totalUnits ?? 0) + (movies?.totalUnits ?? 0);
+		subtitles.coveragePct =
+			units > 0
+				? Math.max(0, Math.round(((units - subtitles.totalGaps) / units) * 1000)) / 10
+				: null;
+	}
+
 	if (tv && availability.tv === 'stale') tv = { ...tv, fetchedAt: tv.fetchedAt ?? null };
 	if (movies && availability.movies === 'stale') movies = { ...movies };
 
@@ -221,7 +248,11 @@ export function getLibraryView(): LibraryView {
 		},
 		failedImports: queueIssuesList.filter((i) => i.severity === 'issue').length,
 		queueIssues: queueIssuesList,
-		healthWarnings,
+		healthWarnings: dedupeWarnings(healthWarnings).map((w) => ({
+			integrationId: w.integrationIds.join(','),
+			type: w.types.join(' + '),
+			message: w.message
+		})),
 		missing,
 		stale: {
 			tv: availability.tv === 'stale',

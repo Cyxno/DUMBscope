@@ -183,18 +183,18 @@ export function rankAttention(input: AttentionRuleInput): AttentionItem[] {
 			href: '/library?view=queue&filter=issues'
 		});
 	}
-	for (const issue of input.queueIssues) {
+	for (const [i, issue] of input.queueIssues.entries()) {
 		out.push({
-			id: `queue-${issue.integrationId}`,
+			id: `queue-${issue.integrationId}-${i}`,
 			severity: 'issue',
 			title: `${issue.title} (${issue.type})`,
 			detail: issue.reason,
 			href: '/library?view=queue&filter=issues'
 		});
 	}
-	for (const warning of input.healthWarnings.slice(0, 3)) {
+	for (const [i, warning] of input.healthWarnings.slice(0, 3).entries()) {
 		out.push({
-			id: `health-${warning.integrationId}`,
+			id: `health-${i}-${warning.integrationId}`,
 			severity: 'issue',
 			title: `Health warning (${warning.type})`,
 			detail: warning.message,

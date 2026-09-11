@@ -256,16 +256,13 @@ export async function fetchBazarrCoverage(
 	const movieGaps = badges.movies;
 	const episodeGaps = badges.episodes;
 	const totalGaps = movieGaps + episodeGaps;
-	const monitoredTotal =
-		monitoredMovies.length + series.data.filter((s) => s.monitored !== false).length * 1;
 	const subtitles: SubtitlesLibrary = {
 		episodeGaps,
 		movieGaps,
 		totalGaps,
-		coveragePct:
-			monitoredTotal > 0
-				? Math.max(0, Math.round(((monitoredTotal - totalGaps / 1) / monitoredTotal) * 1000)) / 10
-				: null,
+		// Overall coverage is derived at the service layer against Sonarr/Radarr
+		// library units (Bazarr alone has no reliable episode totals).
+		coveragePct: null,
 		languages,
 		worst,
 		fetchedAt: Date.now()

@@ -308,7 +308,9 @@
 									<p class="text-[13px] font-semibold {severityClass(item.severity)}">
 										{item.title}
 									</p>
-									<p class="mt-0.5 text-[11.5px] text-text-muted">{item.detail}</p>
+									<p class="mt-0.5 line-clamp-3 text-[11.5px] text-text-muted" title={item.detail}>
+										{item.detail}
+									</p>
 								</a>
 							</li>
 						{/each}

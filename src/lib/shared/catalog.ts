@@ -14,6 +14,8 @@ export interface CatalogEntry {
 	id: string;
 	displayName: string;
 	category: PipelineCategory;
+	/** Short user-facing description ("TV automation"). Central copy. */
+	descriptor?: string;
 	/** Dependencies by catalog id, resolved only when those services exist. */
 	dependsOn?: string[];
 	/** Dependency by category: edge to the first (or all) services in it. */
@@ -24,16 +26,18 @@ export interface CatalogEntry {
 export const CATALOG: CatalogEntry[] = [
 	{
 		id: 'dumb-frontend',
-		match: /^dumb frontend$/i,
+		match: /^dumb frontend/i,
 		displayName: 'DUMB Frontend',
 		category: 'core',
+		descriptor: 'Web interface',
 		dependsOn: []
 	},
 	{
 		id: 'dumb-api',
-		match: /^dumb api$/i,
+		match: /^dumb api/i,
 		displayName: 'DUMB API',
 		category: 'core',
+		descriptor: 'Gateway API',
 		dependsOn: []
 	},
 
@@ -42,6 +46,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /sonarr/i,
 		displayName: 'Sonarr',
 		category: 'manager',
+		descriptor: 'TV automation',
 		dependsOn: ['prowlarr'],
 		dependsOnCategory: ['indexer', 'debrid', 'usenet', 'acquisition', 'database']
 	},
@@ -50,6 +55,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /radarr/i,
 		displayName: 'Radarr',
 		category: 'manager',
+		descriptor: 'Movie automation',
 		dependsOn: ['prowlarr'],
 		dependsOnCategory: ['indexer', 'debrid', 'usenet', 'acquisition', 'database']
 	},
@@ -58,6 +64,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /lidarr/i,
 		displayName: 'Lidarr',
 		category: 'manager',
+		descriptor: 'Music automation',
 		dependsOn: ['prowlarr'],
 		dependsOnCategory: ['indexer', 'debrid', 'usenet', 'acquisition']
 	},
@@ -66,6 +73,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /readarr/i,
 		displayName: 'Readarr',
 		category: 'manager',
+		descriptor: 'Book automation',
 		dependsOn: ['prowlarr'],
 		dependsOnCategory: ['indexer', 'acquisition']
 	},
@@ -74,6 +82,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /whisparr/i,
 		displayName: 'Whisparr',
 		category: 'manager',
+		descriptor: 'Adult media automation',
 		dependsOn: ['prowlarr'],
 		dependsOnCategory: ['indexer', 'acquisition']
 	},
@@ -82,6 +91,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /bazarr/i,
 		displayName: 'Bazarr',
 		category: 'subtitles',
+		descriptor: 'Subtitles',
 		dependsOnCategory: ['manager', 'media-server']
 	},
 
@@ -90,15 +100,24 @@ export const CATALOG: CatalogEntry[] = [
 		match: /prowlarr/i,
 		displayName: 'Prowlarr',
 		category: 'indexer',
+		descriptor: 'Indexer management',
 		dependsOn: []
 	},
-	{ id: 'jackett', match: /jackett/i, displayName: 'Jackett', category: 'indexer', dependsOn: [] },
+	{
+		id: 'jackett',
+		match: /jackett/i,
+		displayName: 'Jackett',
+		category: 'indexer',
+		descriptor: 'Indexer proxy',
+		dependsOn: []
+	},
 
 	{
 		id: 'decypharr',
 		match: /decypharr/i,
 		displayName: 'Decypharr',
 		category: 'debrid',
+		descriptor: 'Debrid acquisition',
 		dependsOn: ['infinidysk'],
 		dependsOnCategory: ['bridge']
 	},
@@ -107,6 +126,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /nzbdav/i,
 		displayName: 'NZB Dav',
 		category: 'debrid',
+		descriptor: 'Usenet downloads',
 		dependsOnCategory: ['bridge', 'mount']
 	},
 	{
@@ -114,6 +134,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /altmount/i,
 		displayName: 'AltMount',
 		category: 'debrid',
+		descriptor: 'Debrid mounting',
 		dependsOnCategory: ['bridge']
 	},
 	{
@@ -121,31 +142,49 @@ export const CATALOG: CatalogEntry[] = [
 		match: /sabnzbd|sab nzbd/i,
 		displayName: 'SABnzbd',
 		category: 'usenet',
+		descriptor: 'Usenet downloads',
 		dependsOn: []
 	},
-	{ id: 'nzbget', match: /nzbget/i, displayName: 'NZBGet', category: 'usenet', dependsOn: [] },
-
 	{
-		id: 'infinidysk',
-		match: /infini\s?dysk/i,
-		displayName: 'InfiniDysk',
-		category: 'bridge',
-		dependsOn: ['postgresql'],
-		dependsOnCategory: ['database']
+		id: 'nzbget',
+		match: /nzbget/i,
+		displayName: 'NZBGet',
+		category: 'usenet',
+		descriptor: 'Usenet downloads',
+		dependsOn: []
 	},
-	{ id: 'zurg', match: /zurg/i, displayName: 'Zurg', category: 'bridge', dependsOn: [] },
+
 	{
 		id: 'rclone',
 		match: /rclone/i,
 		displayName: 'rclone',
 		category: 'mount',
+		descriptor: 'Cloud mount',
 		dependsOnCategory: ['bridge']
+	},
+	{
+		id: 'infinidysk',
+		match: /infini\s?dysk/i,
+		displayName: 'InfiniDysk',
+		category: 'bridge',
+		descriptor: 'Storage bridge',
+		dependsOn: ['postgres'],
+		dependsOnCategory: ['database']
+	},
+	{
+		id: 'zurg',
+		match: /zurg/i,
+		displayName: 'Zurg',
+		category: 'bridge',
+		descriptor: 'Debrid bridge',
+		dependsOn: []
 	},
 	{
 		id: 'postgres',
 		match: /postgres/i,
 		displayName: 'PostgreSQL',
 		category: 'database',
+		descriptor: 'Database',
 		dependsOn: []
 	},
 	{
@@ -153,6 +192,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /mysql|mariadb/i,
 		displayName: 'MySQL',
 		category: 'database',
+		descriptor: 'Database',
 		dependsOn: []
 	},
 
@@ -161,6 +201,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /\bplex\b(?!.*status)/i,
 		displayName: 'Plex',
 		category: 'media-server',
+		descriptor: 'Media playback',
 		dependsOnCategory: ['mount', 'bridge', 'storage']
 	},
 	{
@@ -168,6 +209,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /jellyfin/i,
 		displayName: 'Jellyfin',
 		category: 'media-server',
+		descriptor: 'Media playback',
 		dependsOnCategory: ['mount', 'bridge', 'storage']
 	},
 	{
@@ -175,6 +217,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /emby/i,
 		displayName: 'Emby',
 		category: 'media-server',
+		descriptor: 'Media playback',
 		dependsOnCategory: ['mount', 'bridge', 'storage']
 	},
 
@@ -183,6 +226,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /(jelly|over)?seerr/i,
 		displayName: 'Seerr',
 		category: 'request',
+		descriptor: 'Media requests',
 		dependsOnCategory: ['manager']
 	},
 	{
@@ -190,6 +234,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /pulsarr/i,
 		displayName: 'Pulsarr',
 		category: 'request',
+		descriptor: 'Requests relay',
 		dependsOnCategory: ['manager']
 	},
 	{
@@ -197,6 +242,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /tautulli/i,
 		displayName: 'Tautulli',
 		category: 'analytics',
+		descriptor: 'Playback analytics',
 		dependsOn: ['plex'],
 		dependsOnCategory: ['media-server']
 	},
@@ -205,6 +251,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /kometa/i,
 		displayName: 'Kometa',
 		category: 'analytics',
+		descriptor: 'Library management',
 		dependsOn: ['plex'],
 		dependsOnCategory: ['media-server']
 	},
@@ -213,6 +260,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /riven/i,
 		displayName: 'Riven',
 		category: 'import',
+		descriptor: 'Import pipeline',
 		dependsOnCategory: ['debrid', 'bridge']
 	},
 	{
@@ -220,6 +268,7 @@ export const CATALOG: CatalogEntry[] = [
 		match: /neutarr/i,
 		displayName: 'Neutarr',
 		category: 'discovery',
+		descriptor: 'Discovery automation',
 		dependsOnCategory: ['manager']
 	},
 	{
@@ -227,14 +276,23 @@ export const CATALOG: CatalogEntry[] = [
 		match: /profilarr/i,
 		displayName: 'Profilarr',
 		category: 'manager',
+		descriptor: 'Config sync',
 		dependsOnCategory: ['manager']
 	},
-	{ id: 'zilean', match: /zilean/i, displayName: 'Zilean', category: 'discovery', dependsOn: [] },
+	{
+		id: 'zilean',
+		match: /zilean/i,
+		displayName: 'Zilean',
+		category: 'discovery',
+		descriptor: 'Debrid search cache',
+		dependsOn: []
+	},
 	{
 		id: 'cli-debrid',
 		match: /cli ?debrid/i,
 		displayName: 'CLI Debrid',
 		category: 'debrid',
+		descriptor: 'Debrid acquisition',
 		dependsOnCategory: ['bridge', 'mount']
 	},
 	{
@@ -242,9 +300,24 @@ export const CATALOG: CatalogEntry[] = [
 		match: /symlink/i,
 		displayName: 'Symlink Manager',
 		category: 'storage',
+		descriptor: 'Library links',
 		dependsOnCategory: ['bridge']
 	}
 ];
+
+/**
+ * Catalog ids that have a deep-monitoring integration type in the app.
+ * Used only to word the drawer's empty state correctly: "not configured"
+ * (capability exists) versus "basic monitoring" (no adapter at all).
+ */
+export const INTEGRATION_CAPABLE_IDS = new Set([
+	'sonarr',
+	'radarr',
+	'prowlarr',
+	'seerr',
+	'plex',
+	'tautulli'
+]);
 
 /** Find catalog metadata for a DUMB service name/key. */
 export function matchCatalog(name: string, key: string): CatalogEntry | null {

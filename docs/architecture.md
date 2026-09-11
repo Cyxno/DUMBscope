@@ -118,3 +118,23 @@ src/
 versioned, transactional and run automatically on startup. Log content and
 media titles are never persisted; DUMB's own log redaction is applied before
 DUMBscope ever sees bytes.
+
+## Pipeline presentation layer (ux/pipeline-overhaul)
+
+Domain data and presentation are separated deliberately:
+
+```
+DUMB discovery/status
+  → hub → buildTopology()  (domain: nodes + explicit edges only)
+  → SSE 'topology' → live store
+  → buildPipelineModel()   (src/lib/pipeline/model.ts — the ONE viewmodel:
+                             stage mapping, friendly naming, semantic status,
+                             ghost/infrastructure handling, failure propagation)
+  → renderers              (DesktopPipeline / MobilePipeline / PipelineSummary /
+                            Services grouping — projections of the same model)
+```
+
+`buildTopology()` resolves **only explicit catalog dependencies** into service
+edges; category-level relationships are expressed as stage-to-stage trunks in
+the viewmodel instead of invented service edges. `?demo=failure` / `?demo=stale`
+are read-only rendering overrides for QA (see `pipelineDemoFromUrl`).

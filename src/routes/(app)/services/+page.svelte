@@ -6,16 +6,16 @@
 	import HealthBadge from '$lib/components/HealthBadge.svelte';
 	import { severityRank, runStateLabel } from '$lib/utils/status';
 	import { formatPercent, formatBytes, relativeTime } from '$lib/utils/format';
-	import { categoryLabel } from '$lib/utils/catalog';
 	import { page } from '$app/state';
 	import { LayoutGrid, List } from '@lucide/svelte';
 	import { fly } from 'svelte/transition';
+	import { pipelineModelFromLive, pipelineMetaForKey } from '$lib/pipeline/from-live';
+	import type { PipelineStageId } from '$lib/pipeline/model';
 
 	type Filter = 'all' | 'healthy' | 'degraded' | 'unhealthy' | 'stopped' | 'unknown';
 
 	let query = $state('');
 	let filter = $state<Filter>('all');
-	let category = $state<string>('all');
 	let view = $state<'cards' | 'list'>('cards');
 	let drawerKey = $state<string | null>(null);
 
@@ -34,22 +34,20 @@
 		{ id: 'unknown', label: 'Unknown' }
 	];
 
-	const categories = $derived.by(() => {
-		const present = new Set(live.discovered.map((d) => categoryLabel(liveCategoryOf(d))));
-		return [...present].sort();
-	});
-
-	function liveCategoryOf(service: { name: string; key: string }): string {
-		return live.topology.nodes.find((n) => n.key === service.key)?.category ?? 'auxiliary';
-	}
+	// Stage grouping comes from the same PipelineViewModel the Pipeline page
+	// uses, so a service carries the same name, descriptor and stage everywhere.
+	const model = $derived(pipelineModelFromLive());
+	const metaOf = $derived((key: string) => pipelineMetaForKey(model, key));
 
 	const matches = $derived.by(() => {
 		const q = query.trim().toLowerCase();
-		let list = live.services.filter((service) => {
+		const list = live.services.filter((service) => {
+			const meta = metaOf(service.key);
 			if (
 				q &&
 				!service.name.toLowerCase().includes(q) &&
-				!service.processName.toLowerCase().includes(q)
+				!service.processName.toLowerCase().includes(q) &&
+				!(meta?.name.toLowerCase().includes(q) ?? false)
 			) {
 				return false;
 			}
@@ -68,12 +66,44 @@
 					return true;
 			}
 		});
-		if (category !== 'all') {
-			list = list.filter((service) => categoryLabel(liveCategoryOf(service)) === category);
-		}
 		return [...list].sort(
 			(a, b) => severityRank(a.health) - severityRank(b.health) || a.name.localeCompare(b.name)
 		);
+	});
+
+	// Group matched services by pipeline stage (flow order + supporting last).
+	const STAGE_ORDER: PipelineStageId[] = [
+		'requests',
+		'automation',
+		'acquisition',
+		'storage',
+		'media',
+		'supporting'
+	];
+	const groups = $derived.by(() => {
+		const byStage = new Map<PipelineStageId, typeof matches>();
+		for (const service of matches) {
+			const stage = metaOf(service.key)?.stage ?? 'supporting';
+			const list = byStage.get(stage) ?? [];
+			list.push(service);
+			byStage.set(stage, list);
+		}
+		const flow = STAGE_ORDER.map((id) => ({
+			id,
+			label: model.stages.find((s) => s.id === id)?.label ?? model.supporting?.label ?? id,
+			services: byStage.get(id) ?? []
+		})).filter((group) => group.services.length > 0);
+		// Services remain a full inventory: managed platform components get
+		// their own group instead of disappearing from the page entirely.
+		const infraKeys = new Set(model.infrastructure.map((s) => s.key));
+		const infra = matches.filter((service) => infraKeys.has(service.key));
+		const supporting = flow.find((group) => group.id === 'supporting');
+		const withoutSupporting = flow.filter((group) => group.id !== 'supporting');
+		const result = withoutSupporting;
+		if (supporting) result.push(supporting);
+		if (infra.length > 0)
+			result.push({ id: 'infrastructure', label: 'Infrastructure', services: infra });
+		return result;
 	});
 
 	function openService(key: string) {
@@ -93,7 +123,7 @@
 		<div>
 			<h2 class="text-lg font-semibold tracking-tight">Services</h2>
 			<p class="mt-0.5 text-[13px] text-text-muted">
-				{live.services.length} discovered from DUMB · automatically includes new services
+				{live.services.length} managed by DUMB · grouped by pipeline stage
 			</p>
 		</div>
 		<div class="flex items-center gap-2">
@@ -147,16 +177,6 @@
 				</button>
 			{/each}
 		</div>
-		<select
-			bind:value={category}
-			class="h-9 rounded-lg border border-border-subtle bg-surface-1 px-2 text-xs text-text-secondary"
-			aria-label="Category filter"
-		>
-			<option value="all">All categories</option>
-			{#each categories as cat (cat)}
-				<option value={cat}>{cat}</option>
-			{/each}
-		</select>
 	</div>
 
 	{#if matches.length === 0}
@@ -168,12 +188,23 @@
 			neutral
 		/>
 	{:else if view === 'cards'}
-		<div
-			class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4"
-			in:fly={{ y: 6, duration: 180 }}
-		>
-			{#each matches as service (service.key)}
-				<ServiceCard {service} onopen={openService} />
+		<div class="space-y-7" in:fly={{ y: 6, duration: 180 }}>
+			{#each groups as group (group.id)}
+				<section aria-label="{group.label} services">
+					<h3 class="mb-2.5 text-[11px] font-bold tracking-[0.1em] uppercase text-text-faint">
+						{group.label}
+					</h3>
+					<div class="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4">
+						{#each group.services as service (service.key)}
+							<ServiceCard
+								{service}
+								displayName={metaOf(service.key)?.name ?? null}
+								descriptor={metaOf(service.key)?.descriptor ?? null}
+								onopen={openService}
+							/>
+						{/each}
+					</div>
+				</section>
 			{/each}
 		</div>
 	{:else}
@@ -200,7 +231,9 @@
 							onkeydown={(e) => e.key === 'Enter' && openService(service.key)}
 							tabindex="0"
 						>
-							<td class="px-4 py-2.5 font-medium text-text-primary">{service.name}</td>
+							<td class="px-4 py-2.5 font-medium text-text-primary">
+								{metaOf(service.key)?.name ?? service.name}
+							</td>
 							<td class="px-4 py-2.5"><HealthBadge health={service.health} size="sm" /></td>
 							<td class="px-4 py-2.5 text-text-muted">{runStateLabel(service.runState)}</td>
 							<td class="tnum px-4 py-2.5 text-right">{formatPercent(service.cpuPercent)}</td>

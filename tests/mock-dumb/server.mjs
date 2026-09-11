@@ -93,6 +93,7 @@ function scenarioTick() {
 
 function serviceStatus(service) {
 	const base = {
+		config_key: service.key,
 		process_name: service.name,
 		status: 'running',
 		healthy: true,

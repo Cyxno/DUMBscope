@@ -1,11 +1,9 @@
 <script lang="ts">
 	import { live } from '$lib/stores/live.svelte';
 	import Card from '$lib/components/Card.svelte';
-	import TopologyView from '$lib/components/TopologyView.svelte';
+	import PipelineSummary from '$lib/components/pipeline/PipelineSummary.svelte';
 	import OverviewIntegrations from '$lib/components/OverviewIntegrations.svelte';
-	import ServiceDrawer from '$lib/components/ServiceDrawer.svelte';
 	import Sparkline from '$lib/components/Sparkline.svelte';
-	import EmptyState from '$lib/components/EmptyState.svelte';
 	import AreaChart from '$lib/components/AreaChart.svelte';
 	import { fade, fly } from 'svelte/transition';
 	import { quintOut } from 'svelte/easing';
@@ -13,13 +11,11 @@
 	import { goto } from '$app/navigation';
 	import { relativeTime } from '$lib/utils/format';
 
-	let drawerKey = $state<string | null>(null);
-
 	const overview = $derived(live.overview);
 	const healthyHeadline = $derived.by(() => {
 		switch (overview.health) {
 			case 'healthy':
-				return 'Your media stack is healthy';
+				return 'All services are running normally';
 			case 'degraded':
 				return 'Your stack needs attention';
 			case 'incident':
@@ -143,8 +139,8 @@
 		</div>
 	{/if}
 
-	<!-- Topology -->
-	<Card title="Media pipeline" subtitle="Live dependency view — click a service for details">
+	<!-- Pipeline summary -->
+	<Card title="Media pipeline" subtitle="Stage health at a glance — open the full view for detail">
 		{#snippet actions()}
 			<a
 				href="/pipeline"
@@ -153,19 +149,7 @@
 				Full view <ArrowRight size={12} aria-hidden="true" />
 			</a>
 		{/snippet}
-		{#if live.topology.nodes.length === 0}
-			<div class="py-6">
-				<EmptyState
-					title={live.connection.state === 'live' ? 'No pipeline yet' : 'Connecting to DUMB…'}
-					description={live.connection.state === 'live'
-						? 'No services are discovered yet. Once DUMB reports services they will appear here.'
-						: 'The topology appears as soon as the DUMB connection is live.'}
-					neutral
-				/>
-			</div>
-		{:else}
-			<TopologyView graph={live.topology} compact onselect={(key) => (drawerKey = key)} />
-		{/if}
+		<PipelineSummary />
 	</Card>
 
 	<OverviewIntegrations />
@@ -314,5 +298,3 @@
 		</div>
 	</section>
 </div>
-
-<ServiceDrawer serviceKey={drawerKey} onclose={() => (drawerKey = null)} />

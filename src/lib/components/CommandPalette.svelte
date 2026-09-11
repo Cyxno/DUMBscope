@@ -38,7 +38,7 @@
 			label: 'Pipeline',
 			hint: 'Go to media pipeline',
 			icon: Workflow,
-			keywords: 'topology graph',
+			keywords: 'pipeline flow stages',
 			action: () => goto('/pipeline')
 		},
 		{

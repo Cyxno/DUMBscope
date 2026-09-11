@@ -101,3 +101,33 @@ UI copy is English; strings are centralized enough for a future i18n pass
 read DUMB service status. Last successful update: 14s ago."), never leak stack
 traces, and always state what happens next ("DUMBscope will retry
 automatically.").
+
+## Pipeline principles (ux/pipeline-overhaul)
+
+The Pipeline is a story of how media moves, not a dependency graph.
+
+1. **Pipeline first.** Services are grouped into user-facing stages —
+   Requests → Automation → Acquisition → Storage → Media — with Supporting
+   beside the flow and Infrastructure hidden by default. Internal categories
+   (`debrid`, `bridge`, `mount`, …) never surface in the UI.
+2. **Flow over graph.** Stage-to-stage trunks are drawn instead of per-service
+   edges. A category-level relationship must never become an edge between two
+   arbitrary services; only explicit catalog dependencies may.
+3. **Health is quiet.** A healthy service is a neutral card with a small green
+   dot and no label. `Running` (process up, no health probe) is neutral
+   blue-gray — never a warning, never "unknown".
+4. **Problems are prominent.** Root cause is red; downstream services are
+   amber ("May be affected"); the trunk breaks (`╳`) after the failing stage.
+   A correlated incident shows the root-cause banner above the pipeline.
+5. **Full names over compactness.** Primary service names never truncate or
+   ellipsize; internal identifiers are never user-facing. Canonical naming
+   comes from the catalog and is identical in Pipeline, Overview, Services
+   and the drawer.
+6. **One semantic status model.** `healthy / degraded / critical / offline /
+running / affected / stale` — derived centrally (`pipelineStatusFor`),
+   consumed by hero, pipeline, services and drawer alike.
+7. **Mobile is vertical.** Below `lg` the same PipelineViewModel renders as a
+   vertical operational timeline. The desktop layout is never scaled down.
+8. **Progressive disclosure.** `Simple` (default) hides never-running entries
+   and infrastructure; `Detailed` reveals them. `?demo=failure` / `?demo=stale`
+   render synthetic stories read-only for QA.

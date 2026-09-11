@@ -6,8 +6,15 @@
 	 */
 	import { onMount } from 'svelte';
 	import EmptyState from './EmptyState.svelte';
+	import { matchCatalog, INTEGRATION_CAPABLE_IDS } from '$lib/shared/catalog';
 
 	let { serviceKey }: { serviceKey: string } = $props();
+
+	/** True when a deep-monitoring adapter exists for this service type. */
+	const capabilityKnown = $derived.by(() => {
+		const entry = matchCatalog(serviceKey, serviceKey);
+		return entry ? INTEGRATION_CAPABLE_IDS.has(entry.id) : false;
+	});
 
 	interface QueueItem {
 		id: number;
@@ -149,8 +156,20 @@
 		{/if}
 	</div>
 {:else if found === false}
-	<EmptyState
-		title="No deep monitoring"
-		description="Add an integration in Settings to enrich this service."
-	/>
+	{#if capabilityKnown}
+		<div
+			class="rounded-xl border border-border-subtle bg-surface-2 px-4 py-3.5 text-xs text-text-muted"
+		>
+			<p class="font-semibold text-text-secondary">Detailed monitoring isn't configured</p>
+			<p class="mt-1">Basic process monitoring through DUMB is active.</p>
+			<a href="/settings" class="mt-1.5 inline-block font-medium text-accent-text hover:underline"
+				>Configure in Settings →</a
+			>
+		</div>
+	{:else}
+		<EmptyState
+			title="Basic monitoring"
+			description="DUMBscope is monitoring process status and resource usage for this service."
+		/>
+	{/if}
 {/if}

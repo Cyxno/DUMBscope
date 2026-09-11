@@ -30,6 +30,7 @@ import { IncidentEngine } from '../incidents/engine';
 import { buildTopology } from '../topology/graph';
 import { onActivity, recordActivity, recentActivity, type ActivityEntry } from './activity';
 import { onIntegrationStateChange } from '../integrations/manager';
+import { sweepRateLimits } from '../security/rate-limit';
 
 const METRICS_RING_SIZE = 1800; // ~1h at the default 2s interval
 const LOG_RING_SIZE = 5000;
@@ -470,6 +471,8 @@ export class Hub {
 		if (this.connection.streams.rest !== 'live' && this.configured) {
 			void this.bootstrapRest();
 		}
+		// Keep the rate limiter's per-key map bounded.
+		sweepRateLimits(15 * 60_000);
 		// Keep the access token fresh. WS reconnects embed the cached token;
 		// DUMB rejects upgrades carrying an expired one, so after a DUMB
 		// restart the streams would otherwise 401 forever. ensureAuthenticated

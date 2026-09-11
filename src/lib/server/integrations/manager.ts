@@ -106,6 +106,12 @@ export function registerAdapter(adapter: IntegrationAdapter): void {
 	adapters.set(adapter.type, adapter);
 }
 
+/** Error bodies from third-party services can be huge; store a bounded form. */
+function truncateError(err: unknown): string {
+	const message = err instanceof Error ? err.message : String(err);
+	return message.length > 300 ? message.slice(0, 300) + '… [truncated]' : message;
+}
+
 function classifyError(err: unknown): IntegrationState {
 	const message = err instanceof Error ? err.message : String(err);
 	if (/\b(401|403)\b|api key|unauthorized|credential/i.test(message)) return 'auth_error';
@@ -200,7 +206,7 @@ async function runPoller(entry: Entry, poller: PollerEntry): Promise<void> {
 				entry.status.consecutiveFailures += 1;
 				notifyStateChange();
 				entry.status.state = classifyError(err);
-				entry.status.lastError = err instanceof Error ? err.message : String(err);
+				entry.status.lastError = truncateError(err);
 			}
 		};
 		await poller.spec.run(ctx);
@@ -212,7 +218,7 @@ async function runPoller(entry: Entry, poller: PollerEntry): Promise<void> {
 		poller.failures += 1;
 		entry.status.consecutiveFailures += 1;
 		entry.status.state = classifyError(err);
-		entry.status.lastError = err instanceof Error ? err.message : String(err);
+		entry.status.lastError = truncateError(err);
 		poller.lastError = entry.status.lastError;
 	} finally {
 		poller.running = false;

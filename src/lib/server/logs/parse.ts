@@ -48,11 +48,16 @@ export interface ParseContext {
 	processNames?: ReadonlySet<string>;
 }
 
+/** Hard cap per line: a runaway service must not blow up memory or browsers. */
+export const MAX_LOG_LINE_LENGTH = 4_000;
+
 export function parseLogLine(
-	text: string,
+	rawText: string,
 	ctx: ParseContext = {},
 	receivedAt = Date.now()
 ): LogLine {
+	const truncated = rawText.length > MAX_LOG_LINE_LENGTH;
+	const text = truncated ? rawText.slice(0, MAX_LOG_LINE_LENGTH) + '… [truncated]' : rawText;
 	const match = LINE_RE.exec(text);
 	if (!match) {
 		return {

@@ -3,9 +3,9 @@
 	import Card from '$lib/components/Card.svelte';
 	import Drawer from '$lib/components/Drawer.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
-	import TopologyView from '$lib/components/TopologyView.svelte';
 	import { formatDuration, formatTime, formatDateTime } from '$lib/utils/format';
 	import { goto } from '$app/navigation';
+	import { pipelineModelFromLive, pipelineMetaForKey } from '$lib/pipeline/from-live';
 	import { page } from '$app/state';
 	import { ScrollText, History } from '@lucide/svelte';
 	import type { Incident } from '$lib/types';
@@ -84,26 +84,32 @@
 				? 'var(--degraded)'
 				: 'var(--unknown)';
 
-	/** Sub-graph around the root cause / affected services for the detail view. */
-	const detailGraph = $derived.by(() => {
-		if (!detail) return { nodes: [], edges: [] };
-		const relevant = new Set<string>();
-		for (const node of live.topology.nodes) {
-			const isRoot = detail.rootCauseService && node.name === detail.rootCauseService;
-			const isAffected = detail.affectedServices.some((key) => key === node.key);
-			if (isRoot || isAffected) relevant.add(node.key);
+	/** Root cause + affected services with canonical pipeline identity. */
+	const detailChips = $derived.by(() => {
+		const incident = detail;
+		if (!incident) return [];
+		const model = pipelineModelFromLive();
+		const chips: { key: string; name: string; descriptor: string; root: boolean }[] = [];
+		const seen = new Set<string>();
+		const push = (key: string, root: boolean) => {
+			if (seen.has(key)) return;
+			const meta = pipelineMetaForKey(model, key);
+			seen.add(key);
+			chips.push({
+				key,
+				name: meta?.name ?? live.serviceByKey(key)?.name ?? key,
+				descriptor: meta?.descriptor ?? 'Service',
+				root
+			});
+		};
+		for (const key of incident.affectedServices) push(key, false);
+		if (incident.rootCauseService) {
+			const root = live.topology.nodes.find(
+				(n) => n.key === incident.rootCauseService || n.name === incident.rootCauseService
+			);
+			if (root) push(root.key, true);
 		}
-		// Include one hop of context so the chain is visible.
-		for (const edge of live.topology.edges) {
-			if (relevant.has(edge.to) && detail.rootCauseService) relevant.add(edge.from);
-			if (relevant.has(edge.from)) {
-				// keep affected downstream visible
-			}
-		}
-		const nodes = live.topology.nodes.filter((n) => relevant.has(n.key));
-		const keys = new Set(nodes.map((n) => n.key));
-		const edges = live.topology.edges.filter((e) => keys.has(e.from) && keys.has(e.to));
-		return { nodes, edges };
+		return chips;
 	});
 </script>
 
@@ -277,16 +283,18 @@
 				<p class="mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-text-faint">
 					Affected
 				</p>
-				{#if detailGraph.nodes.length > 0}
-					<div class="overflow-x-auto rounded-xl border border-border-subtle bg-surface-1 p-3">
-						<TopologyView graph={detailGraph} compact />
-					</div>
-				{/if}
-				<ul class="mt-2 space-y-1 text-[13px]">
-					{#each detail.affectedServices as key (key)}
-						<li class="flex items-center gap-2">
-							<span class="text-text-muted">•</span>
-							{live.serviceByKey(key)?.name ?? key}
+				<ul class="space-y-1.5">
+					{#each detailChips as chip (chip.key)}
+						<li class="flex items-baseline gap-2">
+							<span
+								class="size-1.5 shrink-0 translate-y-[-1px] rounded-full {chip.root
+									? 'bg-critical'
+									: 'bg-degraded'}"
+							></span>
+							<span class="text-[13px] font-medium text-text-primary">{chip.name}</span>
+							<span class="text-[11px] text-text-faint"
+								>{chip.root ? 'likely root cause' : chip.descriptor}</span
+							>
 						</li>
 					{/each}
 				</ul>

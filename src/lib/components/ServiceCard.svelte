@@ -7,9 +7,22 @@
 	import { formatPercent, formatBytes } from '$lib/utils/format';
 	import { live } from '$lib/stores/live.svelte';
 
-	let { service, onopen }: { service: ServiceStatus; onopen: (key: string) => void } = $props();
+	let {
+		service,
+		onopen,
+		displayName = null,
+		descriptor = null
+	}: {
+		service: ServiceStatus;
+		onopen: (key: string) => void;
+		/** Canonical user-facing name from the pipeline viewmodel, if available. */
+		displayName?: string | null;
+		/** Short description from the pipeline viewmodel ("TV automation"). */
+		descriptor?: string | null;
+	} = $props();
 
 	const cpuSeries = $derived(live.serviceCpuSeries(service.key));
+	const title = $derived(displayName ?? service.name);
 </script>
 
 <button
@@ -17,14 +30,17 @@
 	class="group relative w-full overflow-hidden rounded-[14px] border border-border-subtle bg-surface-1 p-4 text-left shadow-[var(--shadow-1)] transition-all duration-200
 		hover:-translate-y-0.5 hover:border-border-strong hover:shadow-[var(--shadow-2)]"
 	onclick={() => onopen(service.key)}
-	aria-label="{service.name}: {service.health}"
+	aria-label="{title}: {service.health}"
 >
 	<div class="flex items-start gap-3">
 		<ServiceIcon {service} />
 		<div class="min-w-0 flex-1">
 			<div class="flex items-center gap-1.5">
-				<p class="truncate text-sm font-semibold text-text-primary">{service.name}</p>
+				<p class="text-sm font-semibold break-words text-text-primary">{title}</p>
 			</div>
+			{#if descriptor}
+				<p class="mt-0.5 text-[11px] text-text-muted">{descriptor}</p>
+			{/if}
 			<div class="mt-1 flex items-center gap-2">
 				<HealthBadge health={service.health} size="sm" />
 				{#if service.runState === 'stopped'}

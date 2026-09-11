@@ -7,6 +7,7 @@
 	import IntegrationPanel from './IntegrationPanel.svelte';
 	import { formatPercent, formatBytes, relativeTime, formatDateTime } from '$lib/utils/format';
 	import { integrationRegistrySafeSummary } from '$lib/utils/summary';
+	import { pipelineModelFromLive, pipelineMetaForKey } from '$lib/pipeline/from-live';
 	import { ExternalLink, RotateCw } from '@lucide/svelte';
 
 	let { serviceKey, onclose }: { serviceKey: string | null; onclose: () => void } = $props();
@@ -19,6 +20,10 @@
 		service && discovered ? integrationRegistrySafeSummary(discovered, service) : {}
 	);
 	const cpuSeries = $derived(serviceKey ? live.serviceCpuSeries(serviceKey) : []);
+	// Canonical pipeline identity: same name/descriptor as Pipeline & Services.
+	const pipelineMeta = $derived(
+		serviceKey ? pipelineMetaForKey(pipelineModelFromLive(), serviceKey) : null
+	);
 
 	const uptimeLabel = $derived.by(() => {
 		if (!service?.restart?.lastRestartTime && service?.runState !== 'running') return '—';
@@ -33,8 +38,10 @@
 
 <Drawer
 	open={serviceKey !== null}
-	title={service?.name ?? 'Service'}
-	subtitle={service ? `Process: ${service.processName}` : undefined}
+	title={pipelineMeta?.name ?? service?.name ?? 'Service'}
+	subtitle={service
+		? [pipelineMeta?.descriptor, `Process: ${service.processName}`].filter(Boolean).join(' · ')
+		: undefined}
 	{onclose}
 >
 	{#if service}

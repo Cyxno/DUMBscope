@@ -19,10 +19,13 @@
 
 	let {
 		selectedKey = null,
+		metrics = null,
 		onselect
 	}: {
 		/** Selected service key — owned by the page so a drawer close clears it. */
 		selectedKey?: string | null;
+		/** Optional per-type library metrics (§84), keyed by integration type. */
+		metrics?: Record<string, string> | null;
 		onselect?: (key: string) => void;
 	} = $props();
 
@@ -95,10 +98,10 @@
 		</div>
 	{:else}
 		<div class="hidden lg:block" data-testid="desktop-pipeline">
-			<DesktopPipeline {model} {detailed} {selectedKey} {onselect} />
+			<DesktopPipeline {model} {detailed} {selectedKey} {metrics} {onselect} />
 		</div>
 		<div class="lg:hidden" data-testid="mobile-pipeline">
-			<MobilePipeline {model} {detailed} {selectedKey} {onselect} />
+			<MobilePipeline {model} {detailed} {selectedKey} {metrics} {onselect} />
 		</div>
 		{#if !detailed && hiddenCount > 0}
 			<div class="mt-5 flex items-center gap-2">

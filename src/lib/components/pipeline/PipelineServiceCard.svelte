@@ -9,11 +9,14 @@
 		service,
 		selected = false,
 		dimmed = false,
+		metric = null,
 		onselect
 	}: {
 		service: PipelineService;
 		selected?: boolean;
 		dimmed?: boolean;
+		/** One relevant library metric ("26 missing") when deep data exists (§84). */
+		metric?: string | null;
 		onselect?: (key: string) => void;
 	} = $props();
 
@@ -77,6 +80,11 @@
 				>{service.name}</span
 			>
 			<span class="block text-[11px] leading-snug text-text-muted">{subtitle}</span>
+			{#if metric}
+				<span class="mt-0.5 block text-[11px] leading-snug font-medium text-accent-text"
+					>{metric}</span
+				>
+			{/if}
 		</span>
 		{#if service.status !== 'healthy'}
 			<span

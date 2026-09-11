@@ -5,6 +5,7 @@
 		House,
 		Workflow,
 		Boxes,
+		Library,
 		Siren,
 		ScrollText,
 		Activity,
@@ -62,7 +63,8 @@
 			items: [
 				{ href: '/', label: 'Overview', icon: House },
 				{ href: '/pipeline', label: 'Pipeline', icon: Workflow },
-				{ href: '/services', label: 'Services', icon: Boxes }
+				{ href: '/services', label: 'Services', icon: Boxes },
+				{ href: '/library', label: 'Library', icon: Library }
 			]
 		},
 		{

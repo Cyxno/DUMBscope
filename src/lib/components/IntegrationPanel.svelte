@@ -65,6 +65,36 @@
 	});
 
 	const queueItems = $derived(integration?.data.queue?.items ?? []);
+
+	// Library intelligence (§85): per-service library numbers from the shared
+	// library aggregate. Only shown when deep data actually exists.
+	interface LibrarySummary {
+		availability: Record<string, string>;
+		summary: {
+			tv: { completionPct: number | null; missing: number; upgrades: number } | null;
+			movies: { completionPct: number | null; missing: number; upgrades: number } | null;
+			subtitles: { coveragePct: number | null; gaps: number } | null;
+		};
+	}
+	let library = $state<LibrarySummary | null>(null);
+	const libraryKind = $derived(
+		serviceKey.startsWith('sonarr')
+			? 'tv'
+			: serviceKey.startsWith('radarr')
+				? 'movies'
+				: serviceKey.startsWith('bazarr')
+					? 'subtitles'
+					: null
+	);
+
+	async function loadLibrary(): Promise<void> {
+		const response = await fetch('/api/library');
+		if (response.ok) library = (await response.json()) as LibrarySummary;
+	}
+
+	$effect(() => {
+		if (libraryKind) void loadLibrary();
+	});
 </script>
 
 {#if found}
@@ -96,6 +126,49 @@
 					{/if}
 				</p>
 			</div>
+
+			{#if library && libraryKind}
+				{@const kind = libraryKind as 'tv' | 'movies' | 'subtitles'}
+				{@const s = library.summary[kind] as {
+					completionPct: number | null;
+					missing: number;
+					upgrades: number;
+					coveragePct: number | null;
+					gaps: number;
+				}}
+				{#if s && library.availability[kind] === 'available'}
+					{@const rows =
+						kind === 'subtitles'
+							? [
+									{ k: 'Coverage', v: s.coveragePct === null ? '—' : `${s.coveragePct}%` },
+									{ k: 'Gaps', v: s.gaps }
+								]
+							: [
+									{ k: 'Completion', v: s.completionPct === null ? '—' : `${s.completionPct}%` },
+									{ k: 'Missing', v: s.missing },
+									{ k: 'Upgrades', v: s.upgrades }
+								]}
+					<div class="mb-2 mt-2 rounded-lg border border-border-subtle bg-surface-1 px-2 py-1.5">
+						<p class="mb-1 text-[10px] uppercase tracking-wide text-text-faint">
+							Library · {kind === 'tv' ? 'TV' : kind === 'movies' ? 'Movies' : 'Subtitles'}
+						</p>
+						<dl class="grid grid-cols-3 gap-2">
+							{#each rows as row (row.k)}
+								<div>
+									<dt class="text-[10px] text-text-faint">{row.k}</dt>
+									<dd class="text-[13px] font-semibold tabular-nums text-text-primary">{row.v}</dd>
+								</div>
+							{/each}
+						</dl>
+						<a
+							href="/library?view={kind}"
+							class="text-[10.5px] font-medium text-accent-text hover:underline"
+						>
+							Open in Library →
+						</a>
+					</div>
+				{/if}
+			{/if}
 			{#if queueItems.length === 0}
 				<p class="mb-2 text-[11px] text-text-faint">Download queue is empty.</p>
 			{:else}

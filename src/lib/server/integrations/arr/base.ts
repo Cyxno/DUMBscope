@@ -126,4 +126,63 @@ export class ArrBaseClient {
 		});
 		return data.totalRecords ?? 0;
 	}
+
+	// --- Library intelligence surface (read-only; see docs/LIBRARY-INTELLIGENCE.md)
+
+	/** Sonarr: series list with per-series statistics (missing = counts math). */
+	async series(): Promise<
+		{
+			id: number;
+			title: string;
+			monitored: boolean;
+			ended?: boolean;
+			statistics?: {
+				seasonCount?: number;
+				episodeFileCount?: number;
+				episodeCount?: number;
+				totalEpisodeCount?: number;
+				sizeOnDisk?: number;
+				percentOfEpisodes?: number;
+			};
+		}[]
+	> {
+		return this.request('/api/v3/series');
+	}
+
+	/** Radarr: movie list with availability + file state. */
+	async movies(): Promise<
+		{
+			id: number;
+			title: string;
+			year?: number;
+			monitored: boolean;
+			hasFile: boolean;
+			isAvailable?: boolean;
+			digitalRelease?: string | null;
+			inCinemas?: string | null;
+			sizeOnDisk?: number;
+		}[]
+	> {
+		return this.request('/api/v3/movie');
+	}
+
+	/** Wanted/missing page (monitored, released, no file). includeSeries gives
+	 *  episode records their series title on Sonarr — Sonarr-only param,
+	 *  Radarr rejects it (400). */
+	async wantedMissing(
+		page = 1,
+		pageSize = 100,
+		opts: { includeSeries?: boolean } = {}
+	): Promise<{
+		totalRecords: number;
+		records: Record<string, unknown>[];
+	}> {
+		return this.request('/api/v3/wanted/missing', {
+			page: String(page),
+			pageSize: String(pageSize),
+			sortKey: 'airDateUtc',
+			sortDirection: 'ascending',
+			...(opts.includeSeries ? { includeSeries: 'true' } : {})
+		});
+	}
 }

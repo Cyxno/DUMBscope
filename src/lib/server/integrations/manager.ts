@@ -102,6 +102,27 @@ const entries = new Map<string, Entry>();
 const adapters = new Map<IntegrationType, IntegrationAdapter>();
 let started = false;
 
+/** Read-only cache access for API routes (library intelligence, overview). */
+export function readIntegrationCache<T>(id: string, key: string): T | null {
+	const entry = entries.get(id);
+	if (!entry) return null;
+	const hit = entry.cache.get(key);
+	return hit && hit.expiresAt > Date.now() ? (hit.value as T) : null;
+}
+
+/** Metadata for cache reading: which integrations exist and their type. */
+export function listIntegrationTypes(): {
+	id: string;
+	type: IntegrationType;
+	enabled: boolean;
+}[] {
+	return [...entries.values()].map((e) => ({
+		id: e.config.id,
+		type: e.config.type,
+		enabled: e.config.enabled !== false
+	}));
+}
+
 export function registerAdapter(adapter: IntegrationAdapter): void {
 	adapters.set(adapter.type, adapter);
 }

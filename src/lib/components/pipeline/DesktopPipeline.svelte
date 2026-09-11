@@ -7,13 +7,21 @@
 		model,
 		detailed = false,
 		selectedKey = null,
+		metrics = null,
 		onselect
 	}: {
 		model: PipelineModel;
 		detailed?: boolean;
 		selectedKey?: string | null;
+		metrics?: Record<string, string> | null;
 		onselect?: (key: string) => void;
 	} = $props();
+
+	function metricFor(key: string): string | null {
+		if (!metrics) return null;
+		const hit = Object.keys(metrics).find((type) => key.startsWith(type));
+		return hit === undefined ? null : (metrics[hit] ?? null);
+	}
 
 	function connectionAfter(stageId: string) {
 		return model.connections.find((c) => c.from === stageId)?.status ?? 'flowing';
@@ -23,7 +31,13 @@
 <div class="flex items-stretch overflow-x-auto pb-1">
 	{#each model.stages as stage, i (stage.id)}
 		<div class="min-w-[180px] max-w-[240px] flex-1">
-			<PipelineStage {stage} {detailed} {selectedKey} {onselect} />
+			<PipelineStage
+				{stage}
+				{detailed}
+				{selectedKey}
+				metricFor={metrics ? metricFor : null}
+				{onselect}
+			/>
 		</div>
 		{#if i < model.stages.length - 1}
 			<PipelineConnections status={connectionAfter(stage.id)} />
@@ -33,7 +47,14 @@
 
 {#if model.supporting}
 	<div class="mt-5 border-t border-border-subtle pt-4">
-		<PipelineStage stage={model.supporting} cardRow {detailed} {selectedKey} {onselect} />
+		<PipelineStage
+			stage={model.supporting}
+			cardRow
+			{detailed}
+			{selectedKey}
+			metricFor={metrics ? metricFor : null}
+			{onselect}
+		/>
 	</div>
 {/if}
 

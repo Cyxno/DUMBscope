@@ -7,7 +7,10 @@ import { createArrAdapter } from './arr/adapters';
 import type { IntegrationAdapter, IntegrationConfig } from './manager';
 import type { IntegrationType } from './types';
 import { plexPollers, prowlarrPollers, seerrPollers, tautulliPollers } from './pollers';
+import { bazarrPollers } from './media';
+import { BazarrClient } from './bazarr';
 import { startRetentionJob } from './retention';
+import { startLibrarySnapshots } from '$lib/server/library/service';
 
 /** Every outbound probe gets a hard timeout; no request may hang forever. */
 async function withTimeout(
@@ -50,6 +53,17 @@ export function ensureAdaptersRegistered(): void {
 
 	registerAdapter(createArrAdapter('sonarr'));
 	registerAdapter(createArrAdapter('radarr'));
+
+	registerAdapter({
+		type: 'bazarr',
+		test: async (config: IntegrationConfig, apiKey: string | null) => {
+			if (!apiKey) throw new Error('No API key configured for this integration');
+			return {
+				version: (await new BazarrClient(config.url, apiKey).status()).version ?? 'unknown'
+			};
+		},
+		pollers: () => bazarrPollers()
+	});
 
 	registerAdapter(
 		keyAdapter(
@@ -117,6 +131,7 @@ export function ensureAdaptersRegistered(): void {
 
 	ensureIntegrationsStarted();
 	startRetentionJob();
+	startLibrarySnapshots();
 }
 
 export function ensureIntegrationsUp(): void {

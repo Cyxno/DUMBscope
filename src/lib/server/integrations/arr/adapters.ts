@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { ActivityEvent, IntegrationConfig } from '../types';
 import type { PollContext, PollerSpec } from '../manager';
 import { ArrAuthError, ArrBaseClient, type ArrQueueSnapshot } from './base';
+import { arrLibraryPollers } from '../media';
 
 interface ClientWithKind extends ArrBaseClient {
 	kind: 'sonarr' | 'radarr';
@@ -198,6 +199,6 @@ export function createArrAdapter(kind: 'sonarr' | 'radarr') {
 			const status = await makeClient(config, apiKey).status();
 			return { version: status.version };
 		},
-		pollers: (config: IntegrationConfig) => arrPollers(config.id)
+		pollers: (config: IntegrationConfig) => [...arrPollers(config.id), ...arrLibraryPollers(kind)]
 	};
 }

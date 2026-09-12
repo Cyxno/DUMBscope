@@ -47,6 +47,7 @@ export interface BazarrSeries {
 	episodeCount?: number;
 	sonarrSeriesId?: number;
 	tvdbId?: number;
+	profileId?: number;
 }
 
 export interface BazarrPaged<T> {
@@ -135,8 +136,46 @@ export class BazarrClient {
 		return { data: data.data ?? [], total: data.total ?? data.data?.length ?? 0 };
 	}
 
-	async languages(): Promise<{ name?: string; code2?: string }[]> {
-		const data = await this.request<{ name?: string; code2?: string }[]>('/api/system/languages');
+	async languages(): Promise<{ name?: string; code2?: string; enabled?: boolean }[]> {
+		const data =
+			await this.request<{ name?: string; code2?: string; enabled?: boolean }[]>(
+				'/api/system/languages'
+			);
 		return Array.isArray(data) ? data : [];
+	}
+
+	// --- Library browser surface (read-only; see docs/LIBRARY-BROWSER.md)
+
+	/** Episodes of one series with per-episode subtitle state. Bazarr keys
+	 *  episodes by `sonarrEpisodeId` (verified against 1.6.0); the parameter
+	 *  spelling is `seriesid[]`. */
+	async episodesBySeries(seriesId: number): Promise<Record<string, unknown>[]> {
+		const data = await this.request<BazarrPaged<Record<string, unknown>>>('/api/episodes', {
+			'seriesid[]': String(seriesId),
+			length: '-1'
+		});
+		return data.data ?? [];
+	}
+
+	/** Language profiles (id, name, cutoff, wanted languages) — §51. */
+	async languageProfiles(): Promise<Record<string, unknown>[]> {
+		const data = await this.request<Record<string, unknown>[]>('/api/system/languages/profiles');
+		return Array.isArray(data) ? data : [];
+	}
+
+	/** Recent subtitle history for series episodes (bounded, §53/§116). */
+	async episodesHistory(length = 10): Promise<Record<string, unknown>[]> {
+		const data = await this.request<BazarrPaged<Record<string, unknown>>>('/api/episodes/history', {
+			length: String(length)
+		});
+		return data.data ?? [];
+	}
+
+	/** Recent subtitle history for movies (bounded, §53/§116). */
+	async moviesHistory(length = 10): Promise<Record<string, unknown>[]> {
+		const data = await this.request<BazarrPaged<Record<string, unknown>>>('/api/movies/history', {
+			length: String(length)
+		});
+		return data.data ?? [];
 	}
 }

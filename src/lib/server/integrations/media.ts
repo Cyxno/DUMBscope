@@ -14,6 +14,18 @@ import type {
 import { ageBucketFor, completionPct, subtitleCoverage } from '$lib/server/library/aggregate';
 import { BazarrClient, type BazarrMovie, type BazarrSeries } from './bazarr';
 import { ArrBaseClient } from './arr/base';
+import {
+	normalizeLanguageProfile,
+	normalizeRadarrMovie,
+	normalizeSonarrSeries,
+	normalizeSubtitleState
+} from '$lib/server/library/browse-normalize';
+import type {
+	BazarrBrowseCache,
+	BrowseLanguageProfile,
+	RadarrBrowseCache,
+	SonarrBrowseCache
+} from '$lib/server/library/browse-models';
 
 const LIBRARY_TTL_MS = 10 * 60_000;
 const COVERAGE_TTL_MS = 15 * 60_000;
@@ -190,6 +202,117 @@ export function arrLibraryPollers(kind: 'sonarr' | 'radarr'): PollerSpec[] {
 }
 
 // ---------------------------------------------------------------------------
+// Library browser pollers (§54/§56): item-level inventory in one bulk request
+// per service, normalized server-side. Read-only, bounded by the upstream
+// payloads themselves (Sonarr /series ≈ 230 KB, Radarr /movie ≈ 1.5 MB,
+// Bazarr /movies+/series ≈ 550 KB at audit time).
+// ---------------------------------------------------------------------------
+
+const BROWSE_TTL_MS = 10 * 60_000;
+const BAZARR_BROWSE_TTL_MS = 15 * 60_000;
+
+/** `browse` poller: one bulk inventory request for the TV/movie browsers. */
+export function arrBrowsePollers(kind: 'sonarr' | 'radarr'): PollerSpec[] {
+	return [
+		{
+			name: 'browse',
+			intervalMs: BROWSE_TTL_MS,
+			run: async (ctx: PollContext) => {
+				const started = Date.now();
+				const client = new ArrBaseClient(ctx.config.url, ctx.apiKey ?? '');
+				const profiles = await client.qualityProfiles();
+				if (kind === 'sonarr') {
+					const raw = await client.seriesRaw();
+					const series = raw.map((r) =>
+						normalizeSonarrSeries(r, ctx.config.id, profiles, Date.now())
+					);
+					const payload: SonarrBrowseCache = { series, fetchedAt: Date.now() };
+					ctx.cache.set('browse', payload, BROWSE_TTL_MS);
+				} else {
+					const raw = await client.moviesRaw();
+					const movies = raw.map((r) =>
+						normalizeRadarrMovie(r, ctx.config.id, profiles, Date.now())
+					);
+					const payload: RadarrBrowseCache = { movies, fetchedAt: Date.now() };
+					ctx.cache.set('browse', payload, BROWSE_TTL_MS);
+				}
+				ctx.ok(undefined, Date.now() - started);
+			}
+		}
+	];
+}
+
+/** `browse` poller for Bazarr: subtitle state keyed by Sonarr/Radarr ids. */
+export function bazarrBrowsePollers(): PollerSpec[] {
+	return [
+		{
+			name: 'browse',
+			intervalMs: BAZARR_BROWSE_TTL_MS,
+			run: async (ctx: PollContext) => {
+				const started = Date.now();
+				const client = new BazarrClient(ctx.config.url, ctx.apiKey ?? '');
+				const [seriesPage, moviesPage, languages, profileRaw] = await Promise.all([
+					client.series(-1),
+					client.movies(-1),
+					client.languages(),
+					client.languageProfiles()
+				]);
+
+				const seriesById: BazarrBrowseCache['seriesById'] = {};
+				for (const s of seriesPage.data) {
+					const key = typeof s.sonarrSeriesId === 'number' ? s.sonarrSeriesId : null;
+					if (key === null) continue;
+					seriesById[key] = {
+						title: s.title,
+						monitored: s.monitored !== false,
+						episodeGaps: s.episodeMissingCount ?? 0,
+						missingLanguages: 0
+					};
+				}
+
+				const moviesById: BazarrBrowseCache['moviesById'] = {};
+				for (const m of moviesPage.data) {
+					const key = typeof m.radarrId === 'number' ? m.radarrId : null;
+					if (key === null) continue;
+					const state = normalizeSubtitleState(m.subtitles, m.missing_subtitles);
+					moviesById[key] = {
+						title: m.title,
+						monitored: m.monitored !== false,
+						present: [...new Set(state.present.map((p) => p.code2))],
+						missing: [...new Set(state.missing.map((p) => p.code2))],
+						profileId: null
+					};
+				}
+
+				const enabledLanguages = languages
+					.filter((l) => l.enabled === true && l.code2)
+					.map((l) => ({ code2: l.code2 as string, name: l.name ?? (l.code2 as string) }));
+
+				const languageNames: Record<string, string> = {};
+				for (const l of languages) {
+					if (l.code2) languageNames[l.code2] = l.name ?? l.code2;
+				}
+
+				const profiles: BrowseLanguageProfile[] = profileRaw
+					.map(normalizeLanguageProfile)
+					.filter((p): p is BrowseLanguageProfile => p !== null);
+
+				const payload: BazarrBrowseCache = {
+					seriesById,
+					moviesById,
+					enabledLanguages,
+					languageNames,
+					profiles,
+					fetchedAt: Date.now()
+				};
+				ctx.cache.set('browse', payload, BAZARR_BROWSE_TTL_MS);
+				ctx.ok(undefined, Date.now() - started);
+			}
+		}
+	];
+}
+
+// ---------------------------------------------------------------------------
 // Bazarr
 // ---------------------------------------------------------------------------
 
@@ -301,6 +424,7 @@ export function bazarrPollers(): PollerSpec[] {
 				ctx.ok(undefined, Date.now() - started);
 			}
 		},
+		...bazarrBrowsePollers(),
 		{
 			name: 'version',
 			intervalMs: 60 * 60_000,

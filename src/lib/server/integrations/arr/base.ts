@@ -33,6 +33,10 @@ export interface ArrQueueItem {
 	progress: number;
 	timeLeft: string | null;
 	errorMessage: string | null;
+	/** Upstream correlation ids — browse views never match on titles (§115). */
+	seriesId: number | null;
+	episodeId: number | null;
+	movieId: number | null;
 }
 
 export interface ArrQueueSnapshot {
@@ -149,6 +153,12 @@ export class ArrBaseClient {
 		return this.request('/api/v3/series');
 	}
 
+	/** Full series records (images, seasons, profiles) for the browse poller. */
+	async seriesRaw(): Promise<Record<string, unknown>[]> {
+		const data = await this.request<Record<string, unknown>[]>('/api/v3/series');
+		return Array.isArray(data) ? data : [];
+	}
+
 	/** Radarr: movie list with availability + file state. */
 	async movies(): Promise<
 		{
@@ -164,6 +174,12 @@ export class ArrBaseClient {
 		}[]
 	> {
 		return this.request('/api/v3/movie');
+	}
+
+	/** Full movie records (embedded file, images) for the browse poller. */
+	async moviesRaw(): Promise<Record<string, unknown>[]> {
+		const data = await this.request<Record<string, unknown>[]>('/api/v3/movie');
+		return Array.isArray(data) ? data : [];
 	}
 
 	/** Wanted/missing page (monitored, released, no file). includeSeries gives
@@ -184,5 +200,45 @@ export class ArrBaseClient {
 			sortDirection: 'ascending',
 			...(opts.includeSeries ? { includeSeries: 'true' } : {})
 		});
+	}
+
+	// --- Library browser surface (read-only; see docs/LIBRARY-BROWSER.md)
+
+	/** Quality profile id→name map (read-only display, no edits, §120). */
+	async qualityProfiles(): Promise<Map<number, string>> {
+		const data = await this.request<{ id?: number; name?: string }[]>('/api/v3/qualityprofile');
+		const map = new Map<number, string>();
+		for (const profile of data ?? []) {
+			if (typeof profile.id === 'number')
+				map.set(profile.id, profile.name ?? `Profile ${profile.id}`);
+		}
+		return map;
+	}
+
+	/** Sonarr: all episodes of one series, files embedded. Lazy per-series
+	 *  detail endpoint — never called for the list view (§75/§80). */
+	async episodesBySeries(seriesId: number): Promise<Record<string, unknown>[]> {
+		const data = await this.request<Record<string, unknown>[]>('/api/v3/episode', {
+			seriesId: String(seriesId),
+			includeEpisodeFile: 'true'
+		});
+		return Array.isArray(data) ? data : [];
+	}
+
+	/** Bounded recent history. Sonarr ignores a seriesId filter server-side
+	 *  (verified against 4.0.19), so callers fetch one bounded page and filter
+	 *  themselves; Radarr honors movieId upstream. */
+	async history(
+		pageSize = 10,
+		extra: Record<string, string> = {}
+	): Promise<Record<string, unknown>[]> {
+		const data = await this.request<{ records?: Record<string, unknown>[] }>('/api/v3/history', {
+			page: '1',
+			pageSize: String(pageSize),
+			sortKey: 'date',
+			sortDirection: 'descending',
+			...extra
+		});
+		return data.records ?? [];
 	}
 }

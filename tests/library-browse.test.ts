@@ -863,28 +863,6 @@ describeStale('stale-aware integration cache (§81)', () => {
 // only overwritten on success), while a successful empty response replaces it.
 // ---------------------------------------------------------------------------
 describeStale('poller success/failure cache semantics (§82/§83)', () => {
-	function adapterWith(behavior: 'data' | 'empty' | 'fail'): Parameters<typeof registerAdapter>[0] {
-		const TYPE = 'tautulli' as IntegrationType;
-		return {
-			type: TYPE,
-			test: async () => ({}),
-			pollers: (): PollerSpec[] => [
-				{
-					name: 'browse',
-					intervalMs: 60_000,
-					run: async (ctx: PollContext) => {
-						if (behavior === 'fail') throw new Error('upstream down');
-						const payload =
-							behavior === 'empty'
-								? { series: [], fetchedAt: Date.now() }
-								: { series: [1], fetchedAt: Date.now() };
-						ctx.cache.set('browse', payload, 60_000);
-					}
-				}
-			]
-		};
-	}
-
 	it('failed poll leaves the last-known payload intact', async () => {
 		const TYPE = 'tautulli' as IntegrationType;
 		let behavior: 'data' | 'empty' | 'fail' = 'data';

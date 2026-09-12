@@ -95,13 +95,13 @@ test('subtitles tab: overview, language profile and gap lists (§45–§47)', as
 test('XSS fixtures render as inert text everywhere (§28)', async ({ page }) => {
 	await page.addInitScript(() => {
 		window.addEventListener('error', (event) => {
-			if ((event as ErrorEvent).message?.includes('alert')) (window as any).__xssFired = true;
+			if ((event as ErrorEvent).message?.includes('alert')) (window as { __xssFired?: boolean }).__xssFired = true;
 		});
 	});
 	await page.goto('/library?view=tv&q=' + encodeURIComponent('<img'));
 	// The escaped title is visible as text (no broken img / no alert).
 	await expect(page.getByText('<img src=x onerror=alert(1)>').first()).toBeVisible();
-	expect(await page.evaluate(() => (window as any).__xssFired ?? false)).toBeFalsy();
+	expect(await page.evaluate(() => (window as { __xssFired?: boolean }).__xssFired ?? false)).toBeFalsy();
 });
 
 test('queue tab: combined queue with the failed import flagged (§26–§28)', async ({ page }) => {

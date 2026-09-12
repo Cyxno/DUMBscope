@@ -814,6 +814,7 @@ import {
 	getIntegrationCache,
 	getIntegrationCacheStaleAware,
 	registerAdapter,
+	reloadIntegration,
 	triggerNow
 } from '../src/lib/server/integrations/manager';
 import { upsertIntegration } from '../src/lib/server/integrations/store';
@@ -854,5 +855,77 @@ describeStale('stale-aware integration cache (§81)', () => {
 		expect(getIntegrationCache('test-stale-aware').browse).toBeUndefined();
 		const stale = getIntegrationCacheStaleAware('test-stale-aware').browse as { items: number[] };
 		expect(stale.items).toEqual([1, 2, 3]);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// §82/§83: a failed poll must preserve the previous payload (the cache is
+// only overwritten on success), while a successful empty response replaces it.
+// ---------------------------------------------------------------------------
+describeStale('poller success/failure cache semantics (§82/§83)', () => {
+	function adapterWith(behavior: 'data' | 'empty' | 'fail'): Parameters<typeof registerAdapter>[0] {
+		const TYPE = 'tautulli' as IntegrationType;
+		return {
+			type: TYPE,
+			test: async () => ({}),
+			pollers: (): PollerSpec[] => [
+				{
+					name: 'browse',
+					intervalMs: 60_000,
+					run: async (ctx: PollContext) => {
+						if (behavior === 'fail') throw new Error('upstream down');
+						const payload =
+							behavior === 'empty'
+								? { series: [], fetchedAt: Date.now() }
+								: { series: [1], fetchedAt: Date.now() };
+						ctx.cache.set('browse', payload, 60_000);
+					}
+				}
+			]
+		};
+	}
+
+	it('failed poll leaves the last-known payload intact', async () => {
+		const TYPE = 'tautulli' as IntegrationType;
+		let behavior: 'data' | 'empty' | 'fail' = 'data';
+		const adapter = {
+			type: TYPE,
+			test: async () => ({}),
+			pollers: (): PollerSpec[] => [
+				{
+					name: 'browse',
+					intervalMs: 60_000,
+					run: async (ctx: PollContext) => {
+						if (behavior === 'fail') throw new Error('upstream down');
+						ctx.cache.set('browse', { series: [1], fetchedAt: Date.now() }, 60_000);
+					}
+				}
+			]
+		};
+		registerAdapter(adapter);
+		upsertIntegration({
+			id: 'test-failure-preserves',
+			type: TYPE,
+			url: 'http://127.0.0.1:1',
+			enabled: true
+		});
+		reloadIntegration('test-failure-preserves');
+		triggerNow('test-failure-preserves');
+		const readBrowse = () =>
+			(
+				getIntegrationCacheStaleAware('test-failure-preserves').browse as
+					{ series: number[] } | undefined
+			)?.series;
+		const waitFor = async (pred: () => boolean) => {
+			for (let i = 0; i < 100 && !pred(); i++) await new Promise((r) => setTimeout(r, 20));
+		};
+		await waitFor(() => readBrowse() !== undefined);
+		expect(readBrowse()).toEqual([1]);
+
+		behavior = 'fail';
+		triggerNow('test-failure-preserves');
+		// triggerNow schedules at 250ms; wait past the failed run.
+		await new Promise((r) => setTimeout(r, 600));
+		expect(readBrowse()).toEqual([1]);
 	});
 });

@@ -1,5 +1,8 @@
 import { jsonError, jsonOk } from '$lib/server/security/validation';
-import { getIntegrationCache, getIntegrationStatus } from '$lib/server/integrations/manager';
+import {
+	getIntegrationCacheStaleAware,
+	getIntegrationStatus
+} from '$lib/server/integrations/manager';
 import { getIntegration } from '$lib/server/integrations/store';
 import type { RequestHandler } from './$types';
 
@@ -9,6 +12,6 @@ export const GET: RequestHandler = async ({ params }) => {
 	if (!existing) return jsonError('Unknown integration', 404);
 	return jsonOk({
 		status: getIntegrationStatus(existing.id),
-		data: getIntegrationCache(existing.id)
+		data: getIntegrationCacheStaleAware(existing.id)
 	});
 };

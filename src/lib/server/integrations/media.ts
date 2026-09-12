@@ -27,8 +27,8 @@ import type {
 	SonarrBrowseCache
 } from '$lib/server/library/browse-models';
 
-const LIBRARY_TTL_MS = 10 * 60_000;
-const COVERAGE_TTL_MS = 15 * 60_000;
+const LIBRARY_TTL_MS = 30 * 60_000;
+const COVERAGE_TTL_MS = 45 * 60_000;
 const MISSING_FETCH_CAP = 500;
 
 function toEpoch(value: unknown): number | null {
@@ -208,8 +208,8 @@ export function arrLibraryPollers(kind: 'sonarr' | 'radarr'): PollerSpec[] {
 // Bazarr /movies+/series ≈ 550 KB at audit time).
 // ---------------------------------------------------------------------------
 
-const BROWSE_TTL_MS = 10 * 60_000;
-const BAZARR_BROWSE_TTL_MS = 15 * 60_000;
+const BROWSE_TTL_MS = 30 * 60_000;
+const BAZARR_BROWSE_TTL_MS = 45 * 60_000;
 
 /** `browse` poller: one bulk inventory request for the TV/movie browsers. */
 export function arrBrowsePollers(kind: 'sonarr' | 'radarr'): PollerSpec[] {

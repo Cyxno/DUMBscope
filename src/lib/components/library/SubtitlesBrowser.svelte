@@ -161,6 +161,12 @@
 			<div class="h-10 animate-pulse rounded-lg bg-surface-2"></div>
 		{/each}
 	</div>
+{:else if data && data.availability === 'unavailable'}
+	<EmptyState
+		title="Waiting for the first Bazarr poll"
+		description="Subtitle coverage fills in automatically once the poll completes — usually within a minute."
+		neutral
+	/>
 {:else if data}
 	<!-- Header (§45) -->
 	<div class="flex flex-wrap items-baseline gap-x-4 gap-y-1">

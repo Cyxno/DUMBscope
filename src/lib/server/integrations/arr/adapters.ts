@@ -120,10 +120,10 @@ function queueEvents(
 	return events;
 }
 
-const QUEUE_TTL_MS = 20_000;
-const WANTED_TTL_MS = 10 * 60_000;
-const UPCOMING_TTL_MS = 30 * 60_000;
-const HEALTH_TTL_MS = 5 * 60_000;
+const QUEUE_TTL_MS = 45_000;
+const WANTED_TTL_MS = 45 * 60_000;
+const UPCOMING_TTL_MS = 90 * 60_000;
+const HEALTH_TTL_MS = 15 * 60_000;
 
 /** Previous queue snapshot per integration, for grab/import-completed diffs. */
 const previousQueues = new Map<string, ArrQueueSnapshot>();

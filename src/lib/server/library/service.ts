@@ -4,7 +4,10 @@
  * hourly snapshots and serves trend data. Read-only over the pollers' data —
  * a browser request never touches Sonarr/Radarr/Bazarr directly (§49).
  */
-import { getIntegrationCache, listIntegrationTypes } from '$lib/server/integrations/manager';
+import {
+	getIntegrationCacheStaleAware,
+	listIntegrationTypes
+} from '$lib/server/integrations/manager';
 import type {
 	AttentionItem,
 	LibraryTotals,
@@ -110,7 +113,7 @@ function worstState(states: Availability['tv'][]): Availability['tv'] {
 export function getMissingItems(): MissingItem[] {
 	const out: MissingItem[] = [];
 	for (const info of integrationsOfType('sonarr', 'radarr')) {
-		const cache = getIntegrationCache(info.id) as { library?: ArrLibraryCache };
+		const cache = getIntegrationCacheStaleAware(info.id) as { library?: ArrLibraryCache };
 		out.push(...(cache.library?.missing ?? []));
 	}
 	return out;
@@ -120,7 +123,7 @@ export function getMissingItems(): MissingItem[] {
 export function getSubtitleWanted(): MissingItem[] {
 	const out: MissingItem[] = [];
 	for (const info of integrationsOfType('bazarr')) {
-		const cache = getIntegrationCache(info.id) as { library?: BazarrLibraryCache };
+		const cache = getIntegrationCacheStaleAware(info.id) as { library?: BazarrLibraryCache };
 		out.push(...(cache.library?.wanted ?? []));
 	}
 	return out;
@@ -143,7 +146,7 @@ export function getLibraryView(): LibraryView {
 	let lastFetched: number | null = null;
 
 	for (const info of [...sonarr, ...radarr]) {
-		const cache = getIntegrationCache(info.id) as {
+		const cache = getIntegrationCacheStaleAware(info.id) as {
 			library?: ArrLibraryCache;
 		} & IntegrationQueueCache & {
 				wanted?: { missing: number; cutoffUnmet: number };
@@ -179,7 +182,7 @@ export function getLibraryView(): LibraryView {
 	// --- queue + health (existing pollers) ----------------------------------
 	let queueTotal = 0;
 	for (const info of [...sonarr, ...radarr]) {
-		const cache = getIntegrationCache(info.id) as IntegrationQueueCache;
+		const cache = getIntegrationCacheStaleAware(info.id) as IntegrationQueueCache;
 		const q = cache.queue;
 		if (q) {
 			queueTotal += q.total;
@@ -204,7 +207,7 @@ export function getLibraryView(): LibraryView {
 	const subtitleStates: Availability['subtitles'][] = [];
 	let subtitles: SubtitlesLibrary | null = null;
 	for (const info of bazarr) {
-		const cache = getIntegrationCache(info.id) as { library?: BazarrLibraryCache };
+		const cache = getIntegrationCacheStaleAware(info.id) as { library?: BazarrLibraryCache };
 		const data = cache.library;
 		if (!data?.subtitles) {
 			subtitleStates.push('unavailable');

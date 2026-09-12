@@ -242,6 +242,12 @@
 			description="Try a different search."
 			neutral
 		/>
+	{:else if total === 0 && availability === 'unavailable'}
+		<EmptyState
+			title="Waiting for the first Radarr poll"
+			description="The library fills in automatically once the inventory poll completes — usually within a minute."
+			neutral
+		/>
 	{:else if total === 0}
 		<EmptyState title="No movies in this filter" description="Adjust the filters above." neutral />
 	{:else}

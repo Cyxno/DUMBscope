@@ -17,12 +17,21 @@
 
 	let loaded = $state(false);
 	let failed = $state(false);
+	let imgEl: HTMLImageElement | undefined = $state();
 
 	$effect(() => {
 		// Reset on item change (drawer reuse).
 		void itemKey;
 		loaded = false;
 		failed = false;
+	});
+
+	$effect(() => {
+		// Browser-cached images can complete before the load handler attaches.
+		if (imgEl?.complete) {
+			if (imgEl.naturalWidth > 0) loaded = true;
+			else failed = true;
+		}
 	});
 
 	const initials = $derived(
@@ -47,6 +56,7 @@
 >
 	{#if src && !failed}
 		<img
+			bind:this={imgEl}
 			{src}
 			alt="Poster for {title}"
 			loading="lazy"

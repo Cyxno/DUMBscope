@@ -169,7 +169,7 @@ export function currentVersion(db: DatabaseSync): number {
 	return (row?.v as number) ?? 0;
 }
 
-export function runMigrations(db: DatabaseSync): void {
+export function runMigrations(db: DatabaseSync, targetVersion = Number.MAX_SAFE_INTEGER): void {
 	db.exec(`
 		CREATE TABLE IF NOT EXISTS schema_version (
 			version INTEGER PRIMARY KEY,
@@ -180,6 +180,7 @@ export function runMigrations(db: DatabaseSync): void {
 	const from = currentVersion(db);
 	for (const migration of MIGRATIONS) {
 		if (migration.version <= from) continue;
+		if (migration.version > targetVersion) continue;
 		db.exec('BEGIN');
 		try {
 			db.exec(migration.sql);

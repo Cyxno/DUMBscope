@@ -774,22 +774,31 @@ describe('lazy client endpoints', () => {
 		server.close();
 	});
 
-	it('arr history requests a bounded descending page', async () => {
+	it('arr history requests a bounded descending page without item filters', async () => {
 		let seen: URL | null = null;
 		const server = http.createServer((req, res) => {
 			seen = new URL(req.url ?? '/', 'http://localhost');
 			res.end(
-				JSON.stringify({ records: [{ eventType: 'grabbed', date: '2026-09-10T00:00:00Z' }] })
+				JSON.stringify({
+					// Radarr 6.3.0 ignores movieId and may return unrelated movies —
+					// the caller must filter by the upstream id (§189).
+					records: [
+						{ eventType: 'grabbed', date: '2026-09-10T00:00:00Z', movieId: 7 },
+						{ eventType: 'downloadFolderImported', date: '2026-09-09T00:00:00Z', movieId: 99 }
+					]
+				})
 			);
 		});
 		await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
 		const address = server.address();
 		const port = typeof address === 'object' && address ? address.port : 0;
 		const client = new ArrBaseClient(`http://127.0.0.1:${port}`, 'k3');
-		const records = await client.history(20, { movieId: '196' });
-		expect(records).toHaveLength(1);
-		expect(seen!.searchParams.get('pageSize')).toBe('20');
-		expect(seen!.searchParams.get('movieId')).toBe('196');
+		const records = await client.history(100);
+		const forMovie7 = records.filter((r) => r.movieId === 7);
+		expect(forMovie7).toHaveLength(1);
+		expect(forMovie7[0]!.movieId).toBe(7);
+		expect(seen!.searchParams.get('pageSize')).toBe('100');
+		expect(seen!.searchParams.get('movieId')).toBeNull();
 		expect(seen!.searchParams.get('sortDirection')).toBe('descending');
 		server.close();
 	});

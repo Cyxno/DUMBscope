@@ -225,9 +225,10 @@ export class ArrBaseClient {
 		return Array.isArray(data) ? data : [];
 	}
 
-	/** Bounded recent history. Sonarr ignores a seriesId filter server-side
-	 *  (verified against 4.0.19), so callers fetch one bounded page and filter
-	 *  themselves; Radarr honors movieId upstream. */
+	/** Bounded recent history. Neither Sonarr nor Radarr honors an item filter
+	 *  here reliably (Sonarr ignores seriesId; Radarr 6.3.0 returns unrelated
+	 *  movieIds) — callers fetch one bounded page and filter by the upstream
+	 *  id themselves (§115/§116). */
 	async history(
 		pageSize = 10,
 		extra: Record<string, string> = {}

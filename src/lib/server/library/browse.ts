@@ -757,8 +757,11 @@ export async function movieDetail(key: string): Promise<MovieDetailResponse | nu
 	if (apiKey) {
 		try {
 			const client = new ArrBaseClient(integrationUrl(movie.integrationId), apiKey);
-			const raw = await client.history(20, { movieId: String(movie.id) });
+			// Radarr 6.3.0 does not honor movieId here (returns unrelated ids,
+			// §189) — fetch one bounded page and filter by the upstream id.
+			const raw = await client.history(100);
 			history = raw
+				.filter((r) => r.movieId === movie.id)
 				.map(normalizeHistoryEvent)
 				.filter((e): e is BrowseHistoryEvent => e !== null)
 				.slice(0, HISTORY_LIMIT);

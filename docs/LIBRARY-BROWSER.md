@@ -1,8 +1,8 @@
 # Unified Library Manager (Library Browser)
 
 DUMBscope's item-level media library browser, on top of the existing Library
-Intelligence layer. Library Intelligence answers *how much* is missing or
-incomplete; the Library Browser answers *which* series, seasons, episodes,
+Intelligence layer. Library Intelligence answers _how much_ is missing or
+incomplete; the Library Browser answers _which_ series, seasons, episodes,
 movies, qualities, files and subtitle gaps exactly.
 
 Strictly **read-only**: no search, grab, monitor, delete, quality-profile,
@@ -32,17 +32,18 @@ Sonarr/Radarr MediaCover ──▶ /api/library/poster/[key] proxy ──▶ <im
 
 ## Sources (audited against the live stack)
 
-| Service  | Version at audit | Browse endpoints used (all GET)                                                                                                                                                    |
-| -------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Sonarr   | 4.0.19           | `/api/v3/series` (+ `/qualityprofile`), `/api/v3/episode?seriesId=X&includeEpisodeFile=true`, `/api/v3/history`, `/api/v3/calendar`, `/api/v3/MediaCover/{id}/poster.jpg`          |
-| Radarr   | 6.3.0            | `/api/v3/movie` (+ `/qualityprofile`, file embedded incl. `qualityCutoffNotMet`), `/api/v3/history?movieId=`, `/api/v3/MediaCover/{id}/poster.jpg`                                 |
-| Bazarr   | 1.6.0            | `/api/series`, `/api/movies`, `/api/episodes?seriesid[]=X` (**bracket param spelling**), `/api/system/languages`, `/api/system/languages/profiles`, `/api/movies/history`, `/api/episodes/history` |
+| Service | Version at audit | Browse endpoints used (all GET)                                                                                                                                                                    |
+| ------- | ---------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Sonarr  | 4.0.19           | `/api/v3/series` (+ `/qualityprofile`), `/api/v3/episode?seriesId=X&includeEpisodeFile=true`, `/api/v3/history`, `/api/v3/calendar`, `/api/v3/MediaCover/{id}/poster.jpg`                          |
+| Radarr  | 6.3.0            | `/api/v3/movie` (+ `/qualityprofile`, file embedded incl. `qualityCutoffNotMet`), `/api/v3/history?movieId=`, `/api/v3/MediaCover/{id}/poster.jpg`                                                 |
+| Bazarr  | 1.6.0            | `/api/series`, `/api/movies`, `/api/episodes?seriesid[]=X` (**bracket param spelling**), `/api/system/languages`, `/api/system/languages/profiles`, `/api/movies/history`, `/api/episodes/history` |
 
 Audit notes encoded in the code:
 
-- Sonarr's `/api/v3/history` **ignores** a `seriesId` filter — the series
-  detail fetches one bounded page (150) and filters server-side. Radarr
-  honors `movieId` upstream.
+- Sonarr's `/api/v3/history` **ignores** a `seriesId` filter — and Radarr
+  6.3.0's `movieId` filter **returns unrelated movie ids** (verified live,
+  §189 class bug). Item history therefore always fetches one bounded page
+  (100 records) and filters by the upstream id server-side.
 - Sonarr's `/api/v3/wanted/cutoff` **ignores** a `seriesId` filter; per-series
   upgrade counts therefore come from the lazy episode fetch
   (`episodeFile.qualityCutoffNotMet`, upstream's own computation).
@@ -55,17 +56,17 @@ Audit notes encoded in the code:
 
 All authenticated (session cookie), all GET, all bounded.
 
-| Endpoint                            | Purpose                                                                 |
-| ----------------------------------- | ----------------------------------------------------------------------- |
-| `/api/library/tv`                   | Series inventory: `q`, `filter`, `sort`, `offset`, `limit` (≤100) + header totals + upcoming |
-| `/api/library/tv/[key]`             | Series detail: metadata + per-season counts                             |
-| `/api/library/tv/[key]/episodes`    | Lazy per-series episodes with quality/file/queue/subtitle overlays      |
-| `/api/library/movies`               | Movie inventory: same param contract + upgrades/missing filters         |
-| `/api/library/movies/[key]`         | Movie detail: file, queue, subtitles, bounded history                   |
-| `/api/library/subtitles`            | Subtitle browser: header, languages, profiles, movies/series rows       |
-| `/api/library/subtitles/tv/[key]`   | Per-episode subtitle states for one series                              |
-| `/api/library/poster/[key]`         | Poster proxy (see below)                                                |
-| `/api/library` (+ existing missing/queue endpoints) | Library Intelligence v1 — unchanged                     |
+| Endpoint                                            | Purpose                                                                                      |
+| --------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `/api/library/tv`                                   | Series inventory: `q`, `filter`, `sort`, `offset`, `limit` (≤100) + header totals + upcoming |
+| `/api/library/tv/[key]`                             | Series detail: metadata + per-season counts                                                  |
+| `/api/library/tv/[key]/episodes`                    | Lazy per-series episodes with quality/file/queue/subtitle overlays                           |
+| `/api/library/movies`                               | Movie inventory: same param contract + upgrades/missing filters                              |
+| `/api/library/movies/[key]`                         | Movie detail: file, queue, subtitles, bounded history                                        |
+| `/api/library/subtitles`                            | Subtitle browser: header, languages, profiles, movies/series rows                            |
+| `/api/library/subtitles/tv/[key]`                   | Per-episode subtitle states for one series                                                   |
+| `/api/library/poster/[key]`                         | Poster proxy (see below)                                                                     |
+| `/api/library` (+ existing missing/queue endpoints) | Library Intelligence v1 — unchanged                                                          |
 
 `[key]` is the stable composite id (`sonarr-series-3`, `radarr-movie-9`,
 §61). Unknown keys → `400`; stale deep links to deleted items → `404` with
@@ -77,15 +78,15 @@ chars. No arbitrary query logic is passed upstream.
 
 ## Item semantics
 
-| State                | Meaning                                                                 |
-| -------------------- | ----------------------------------------------------------------------- |
-| Available            | Upstream `hasFile` (episode/movie file exists)                          |
-| Missing              | Released + monitored + no file — from Sonarr/Radarr, never derived (§112) |
-| Future / Upcoming    | Not yet aired / `isAvailable === false` — **never** counted as missing (§19) |
-| Downloading/Queued/Importing | Active queue entry correlated by **upstream id** only (§115)    |
-| Upgrade available    | `qualityCutoffNotMet` from the upstream file object only (§114)         |
-| Not monitored        | `monitored === false` — calm neutral state (§23)                        |
-| Subtitle gap         | Bazarr's own `missing_subtitles` (wanted-but-absent, §47)               |
+| State                        | Meaning                                                                      |
+| ---------------------------- | ---------------------------------------------------------------------------- |
+| Available                    | Upstream `hasFile` (episode/movie file exists)                               |
+| Missing                      | Released + monitored + no file — from Sonarr/Radarr, never derived (§112)    |
+| Future / Upcoming            | Not yet aired / `isAvailable === false` — **never** counted as missing (§19) |
+| Downloading/Queued/Importing | Active queue entry correlated by **upstream id** only (§115)                 |
+| Upgrade available            | `qualityCutoffNotMet` from the upstream file object only (§114)              |
+| Not monitored                | `monitored === false` — calm neutral state (§23)                             |
+| Subtitle gap                 | Bazarr's own `missing_subtitles` (wanted-but-absent, §47)                    |
 
 Completion percentages reuse the Library Intelligence caches so the Overview
 and the browsers can never disagree (§3). Series-level "missing" is Sonarr's
@@ -113,13 +114,13 @@ aired episodes exactly like Sonarr's UI does.
 
 ## Caching & failure behavior (§78-§82)
 
-| Data                | Freshness                          |
-| ------------------- | ---------------------------------- |
-| TV/movie inventory  | polled 10 min, TTL 30 min, stale-flag > 15 min |
-| Bazarr coverage     | polled 15 min, TTL 15 min          |
-| Lazy episodes       | TTL 10 min (Sonarr) / 15 min (Bazarr), ≤60 series |
-| Posters             | browser 24 h + in-memory + ETag    |
-| History (detail)    | fetched on drawer open, bounded 10 events |
+| Data               | Freshness                                         |
+| ------------------ | ------------------------------------------------- |
+| TV/movie inventory | polled 10 min, TTL 30 min, stale-flag > 15 min    |
+| Bazarr coverage    | polled 15 min, TTL 15 min                         |
+| Lazy episodes      | TTL 10 min (Sonarr) / 15 min (Bazarr), ≤60 series |
+| Posters            | browser 24 h + in-memory + ETag                   |
+| History (detail)   | fetched on drawer open, bounded 10 events         |
 
 - Sonarr down → TV grid keeps showing the last inventory with a "data last
   updated X ago" note; Movies/Subtitles keep working (§81/§82).

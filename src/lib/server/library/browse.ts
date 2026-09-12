@@ -5,7 +5,11 @@
  * are the lazy per-series episode/subtitle loads behind a TTL cache (§80),
  * bounded to one bulk request per series (§75, §172).
  */
-import { getIntegrationCache, listIntegrationTypes } from '$lib/server/integrations/manager';
+import {
+	getIntegrationCache,
+	getIntegrationCacheStaleAware,
+	listIntegrationTypes
+} from '$lib/server/integrations/manager';
 import { getApiKey, getIntegration } from '$lib/server/integrations/store';
 import { ArrBaseClient } from '$lib/server/integrations/arr/base';
 import { BazarrClient } from '$lib/server/integrations/bazarr';
@@ -121,7 +125,7 @@ function getSonarrBrowse(): {
 	const instances: BrowseInstance<BrowseSeries>[] = [];
 	let fetchedAt: number | null = null;
 	for (const info of configured) {
-		const cache = getIntegrationCache(info.id) as { browse?: SonarrBrowseCacheShape };
+		const cache = getIntegrationCacheStaleAware(info.id) as { browse?: SonarrBrowseCacheShape };
 		const browse = cache.browse;
 		if (!browse) continue;
 		fetchedAt = Math.max(fetchedAt ?? 0, browse.fetchedAt);
@@ -139,7 +143,7 @@ function getRadarrBrowse(): {
 	const instances: BrowseInstance<BrowseMovie>[] = [];
 	let fetchedAt: number | null = null;
 	for (const info of configured) {
-		const cache = getIntegrationCache(info.id) as { browse?: RadarrBrowseCacheShape };
+		const cache = getIntegrationCacheStaleAware(info.id) as { browse?: RadarrBrowseCacheShape };
 		const browse = cache.browse;
 		if (!browse) continue;
 		fetchedAt = Math.max(fetchedAt ?? 0, browse.fetchedAt);
@@ -152,7 +156,7 @@ export function getBazarrBrowse(): { cache: BazarrBrowseCache | null; availabili
 	const configured = enabledOf('bazarr');
 	if (configured.length === 0) return { cache: null, availability: 'unconfigured' };
 	for (const info of configured) {
-		const cache = getIntegrationCache(info.id) as { browse?: BazarrBrowseCache };
+		const cache = getIntegrationCacheStaleAware(info.id) as { browse?: BazarrBrowseCache };
 		if (cache.browse) {
 			const fresh = Date.now() - cache.browse.fetchedAt <= STALE_WINDOW_MS;
 			return { cache: cache.browse, availability: fresh ? 'available' : 'stale' };
@@ -174,7 +178,7 @@ function wantedTotals(type: 'sonarr' | 'radarr'): { missing: number; cutoffUnmet
 	let missing = 0;
 	let cutoffUnmet = 0;
 	for (const info of enabledOf(type)) {
-		const cache = getIntegrationCache(info.id) as WantedCache;
+		const cache = getIntegrationCacheStaleAware(info.id) as WantedCache;
 		missing += cache.wanted?.missing ?? 0;
 		cutoffUnmet += cache.wanted?.cutoffUnmet ?? 0;
 	}
@@ -187,7 +191,7 @@ function intelligenceValue(
 	field: 'completionPct' | 'monitoredMissing'
 ): number | null {
 	for (const info of enabledOf(type)) {
-		const cache = getIntegrationCache(info.id) as LibraryIntelligenceCache;
+		const cache = getIntegrationCacheStaleAware(info.id) as LibraryIntelligenceCache;
 		const lib = type === 'sonarr' ? cache.library?.tv : cache.library?.movies;
 		const value = lib?.[field];
 		if (value != null) return value;
@@ -291,7 +295,7 @@ export function tvUpcoming(now = Date.now()): UpcomingEntry[] {
 		at: number;
 	}[] = [];
 	for (const info of enabledOf('sonarr')) {
-		const cache = getIntegrationCache(info.id) as UpcomingCache;
+		const cache = getIntegrationCacheStaleAware(info.id) as UpcomingCache;
 		for (const item of cache.upcoming ?? []) {
 			if (typeof item.airDateUtc !== 'number') continue;
 			entries.push({

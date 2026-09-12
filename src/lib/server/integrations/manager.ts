@@ -358,6 +358,20 @@ export function getIntegrationCache(id: string): Record<string, unknown> {
 	return out;
 }
 
+/**
+ * Whole cache including expired entries, for stale-while-revalidate readers
+ * (library browser §81): between one poll and the next the TTL can lapse
+ * while the data is still the best known state — the payload's own
+ * `fetchedAt` decides freshness, not the TTL.
+ */
+export function getIntegrationCacheStaleAware(id: string): Record<string, unknown> {
+	const entry = entries.get(id);
+	if (!entry) return {};
+	const out: Record<string, unknown> = {};
+	for (const [key, hit] of entry.cache) out[key] = hit.value;
+	return out;
+}
+
 /** Settings "Test connection": probe + persist the result. */
 export async function testIntegration(
 	id: string

@@ -794,3 +794,56 @@ describe('lazy client endpoints', () => {
 		server.close();
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Stale-while-revalidate cache read (§81): the browser grid must survive the
+// TTL/poll jitter window without emptying or 404-ing details.
+// ---------------------------------------------------------------------------
+import { describe as describeStale } from 'vitest';
+import {
+	ensureIntegrationsStarted,
+	getIntegrationCache,
+	getIntegrationCacheStaleAware,
+	registerAdapter,
+	triggerNow
+} from '../src/lib/server/integrations/manager';
+import { upsertIntegration } from '../src/lib/server/integrations/store';
+import type { PollContext, PollerSpec } from '../src/lib/server/integrations/manager';
+import type { IntegrationType } from '../src/lib/server/integrations/types';
+
+describeStale('stale-aware integration cache (§81)', () => {
+	it('serves expired entries to stale-aware readers only', async () => {
+		const TYPE = 'tautulli' as IntegrationType;
+		let captured: PollContext | null = null;
+		const adapter = {
+			type: TYPE,
+			test: async () => ({}),
+			pollers: (): PollerSpec[] => [
+				{
+					name: 'browse',
+					intervalMs: 60_000,
+					run: async (ctx: PollContext) => {
+						captured = ctx;
+						ctx.cache.set('browse', { items: [1, 2, 3], fetchedAt: Date.now() }, 30);
+					}
+				}
+			]
+		};
+		registerAdapter(adapter);
+		upsertIntegration({
+			id: 'test-stale-aware',
+			type: TYPE,
+			url: 'http://127.0.0.1:1',
+			enabled: true
+		});
+		ensureIntegrationsStarted();
+		triggerNow('test-stale-aware');
+		for (let i = 0; i < 50 && !captured; i++) await new Promise((r) => setTimeout(r, 20));
+		expect(captured).not.toBeNull();
+		// TTL is 30 ms — wait it out.
+		await new Promise((r) => setTimeout(r, 80));
+		expect(getIntegrationCache('test-stale-aware').browse).toBeUndefined();
+		const stale = getIntegrationCacheStaleAware('test-stale-aware').browse as { items: number[] };
+		expect(stale.items).toEqual([1, 2, 3]);
+	});
+});

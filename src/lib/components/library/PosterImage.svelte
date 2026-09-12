@@ -2,6 +2,10 @@
 	/**
 	 * Lazy poster with skeleton + initials fallback (§65/§96/§102/§132).
 	 * The browser never sees upstream URLs — only our same-origin proxy.
+	 *
+	 * Race-free by construction: skeleton and initials render underneath, the
+	 * <img> paints over them once bytes arrive — no load-state gating that can
+	 * miss browser-cached or out-of-order load events.
 	 */
 	let {
 		itemKey,
@@ -15,23 +19,12 @@
 		wide?: boolean;
 	} = $props();
 
-	let loaded = $state(false);
 	let failed = $state(false);
-	let imgEl: HTMLImageElement | undefined = $state();
 
 	$effect(() => {
 		// Reset on item change (drawer reuse).
 		void itemKey;
-		loaded = false;
 		failed = false;
-	});
-
-	$effect(() => {
-		// Browser-cached images can complete before the load handler attaches.
-		if (imgEl?.complete) {
-			if (imgEl.naturalWidth > 0) loaded = true;
-			else failed = true;
-		}
 	});
 
 	const initials = $derived(
@@ -54,30 +47,22 @@
 		? 'aspect-video'
 		: 'aspect-[2/3]'}"
 >
+	<!-- Fallback layer (§65): initials tile, visible until image bytes cover it. -->
+	<div
+		class="absolute inset-0 flex flex-col items-center justify-center gap-1 text-text-faint"
+		aria-hidden="true"
+	>
+		<span class="text-xl font-semibold tracking-wide">{initials}</span>
+		<span class="max-w-full truncate px-2 text-[10px]">{title}</span>
+	</div>
 	{#if src && !failed}
 		<img
-			bind:this={imgEl}
 			{src}
 			alt="Poster for {title}"
 			loading="lazy"
 			decoding="async"
-			class="h-full w-full object-cover transition-opacity duration-200 {loaded
-				? 'opacity-100'
-				: 'opacity-0'}"
-			onload={() => (loaded = true)}
+			class="absolute inset-0 h-full w-full object-cover"
 			onerror={() => (failed = true)}
 		/>
-	{/if}
-	{#if (!src || failed) && !(src && loaded)}
-		<div
-			class="flex h-full w-full flex-col items-center justify-center gap-1 text-text-faint"
-			aria-hidden="true"
-		>
-			<span class="text-xl font-semibold tracking-wide">{initials}</span>
-			<span class="max-w-full truncate px-2 text-[10px]">{title}</span>
-		</div>
-	{/if}
-	{#if src && !loaded && !failed}
-		<div class="absolute inset-0 animate-pulse bg-surface-3" aria-hidden="true"></div>
 	{/if}
 </div>

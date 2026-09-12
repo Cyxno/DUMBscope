@@ -6,6 +6,7 @@
 		House,
 		Workflow,
 		Boxes,
+		Library,
 		Siren,
 		ScrollText,
 		Activity,
@@ -47,6 +48,34 @@
 			icon: Boxes,
 			keywords: 'processes',
 			action: () => goto('/services')
+		},
+		{
+			label: 'Library',
+			hint: 'Go to media library',
+			icon: Library,
+			keywords: 'library media missing subtitles upgrades',
+			action: () => goto('/library')
+		},
+		{
+			label: 'Browse TV library',
+			hint: 'Library · TV',
+			icon: Library,
+			keywords: 'library tv browse series seasons episodes sonarr',
+			action: () => goto('/library?view=tv')
+		},
+		{
+			label: 'Browse movies',
+			hint: 'Library · Movies',
+			icon: Library,
+			keywords: 'library movies browse films radarr',
+			action: () => goto('/library?view=movies')
+		},
+		{
+			label: 'Browse subtitle gaps',
+			hint: 'Library · Subtitles',
+			icon: Library,
+			keywords: 'library subtitles bazarr gaps languages',
+			action: () => goto('/library?view=subtitles&sbmode=tv&sbfilter=has-gaps')
 		},
 		{
 			label: 'Incidents',

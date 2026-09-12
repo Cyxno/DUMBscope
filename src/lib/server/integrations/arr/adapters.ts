@@ -7,6 +7,7 @@ import { randomUUID } from 'node:crypto';
 import type { ActivityEvent, IntegrationConfig } from '../types';
 import type { PollContext, PollerSpec } from '../manager';
 import { ArrAuthError, ArrBaseClient, type ArrQueueSnapshot } from './base';
+import { arrLibraryPollers, arrBrowsePollers } from '../media';
 
 interface ClientWithKind extends ArrBaseClient {
 	kind: 'sonarr' | 'radarr';
@@ -33,6 +34,8 @@ function mapQueue(raw: {
 		const movieTitle = (r.movie as { title?: string } | undefined)?.title;
 		const isTitle = (t: unknown): t is string => typeof t === 'string' && t.length > 0;
 		const title = [r.title, seriesTitle, movieTitle].find(isTitle) ?? 'Unknown';
+		const num = (v: unknown): number | null =>
+			typeof v === 'number' && Number.isFinite(v) ? v : null;
 		return {
 			id: Number(r.id) || i,
 			title,
@@ -41,7 +44,10 @@ function mapQueue(raw: {
 			trackedDownloadState: String(r.trackedDownloadState ?? ''),
 			progress: size > 0 ? Math.max(0, Math.min(100, (1 - remaining / size) * 100)) : 100,
 			timeLeft: (r.timeleft as string | undefined) ?? null,
-			errorMessage: (r.errorMessage as string | undefined) || null
+			errorMessage: (r.errorMessage as string | undefined) || null,
+			seriesId: num(r.seriesId),
+			episodeId: num(r.episodeId),
+			movieId: num(r.movieId)
 		};
 	});
 	return {
@@ -166,14 +172,28 @@ function arrPollers(integrationId: string): PollerSpec[] {
 				const client = makeClient(ctx.config, ctx.apiKey);
 				const start = new Date().toISOString().slice(0, 10);
 				const end = new Date(Date.now() + 7 * 86_400_000).toISOString().slice(0, 10);
-				const upcoming = await client.request<{ title?: string; series?: { title?: string } }[]>(
-					'/api/v3/calendar',
-					{ start, end }
-				);
+				const upcoming = await client.request<
+					{
+						title?: string;
+						seasonNumber?: number;
+						episodeNumber?: number;
+						airDateUtc?: string;
+						hasFile?: boolean;
+						seriesId?: number;
+						series?: { title?: string };
+					}[]
+				>('/api/v3/calendar', { start, end });
 				ctx.cache.set(
 					'upcoming',
-					(upcoming ?? []).slice(0, 20).map((e) => ({
-						title: e.series?.title ?? e.title ?? 'Unknown'
+					(upcoming ?? []).slice(0, 30).map((e) => ({
+						// `title` is the series title — kept for the integration panel.
+						title: e.series?.title ?? e.title ?? 'Unknown',
+						episodeTitle: e.title ?? null,
+						seriesId: typeof e.seriesId === 'number' ? e.seriesId : null,
+						seasonNumber: typeof e.seasonNumber === 'number' ? e.seasonNumber : null,
+						episodeNumber: typeof e.episodeNumber === 'number' ? e.episodeNumber : null,
+						airDateUtc: e.airDateUtc ? Date.parse(e.airDateUtc) || null : null,
+						hasFile: e.hasFile === true
 					})),
 					UPCOMING_TTL_MS
 				);
@@ -198,6 +218,10 @@ export function createArrAdapter(kind: 'sonarr' | 'radarr') {
 			const status = await makeClient(config, apiKey).status();
 			return { version: status.version };
 		},
-		pollers: (config: IntegrationConfig) => arrPollers(config.id)
+		pollers: (config: IntegrationConfig) => [
+			...arrPollers(config.id),
+			...arrLibraryPollers(kind),
+			...arrBrowsePollers(kind)
+		]
 	};
 }

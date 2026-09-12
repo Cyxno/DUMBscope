@@ -51,8 +51,7 @@ function start(name, command, args, env) {
 	const child = spawn(command, args, {
 		cwd: root,
 		env: { ...process.env, ...env },
-		stdout: 'inherit',
-		stderr: 'inherit'
+		stdio: 'inherit'
 	});
 	children.push({ name, child });
 	return child;
@@ -60,6 +59,32 @@ function start(name, command, args, env) {
 
 function cookieHeader(res) {
 	return (res.headers.getSetCookie?.() ?? []).map((c) => c.split(';')[0]).join('; ');
+}
+
+/** Register the mock media integrations so library pollers start. */
+async function registerMediaIntegrations(cookie) {
+	const headers = { 'content-type': 'application/json', cookie };
+	const targets = [
+		{ type: 'sonarr', url: 'http://127.0.0.1:4211' },
+		{ type: 'radarr', url: 'http://127.0.0.1:4212' },
+		{ type: 'bazarr', url: 'http://127.0.0.1:4213' }
+	];
+	for (const target of targets) {
+		const created = await fetch(`${APP_URL}/api/integrations`, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify(target)
+		});
+		if (!created.ok)
+			throw new Error(`integrations POST failed: ${created.status} ${await created.text()}`);
+		const { config } = await created.json();
+		const keyed = await fetch(`${APP_URL}/api/integrations/${config.id}/key`, {
+			method: 'PUT',
+			headers,
+			body: JSON.stringify({ apiKey: 'media-test-key' })
+		});
+		if (!keyed.ok) throw new Error(`integrations key failed: ${keyed.status}`);
+	}
 }
 
 async function setupAndLogin() {
@@ -107,18 +132,44 @@ async function waitUntilReady(sessionCookie) {
 		const snap = await fetch(`${APP_URL}/api/snapshot`, {
 			headers: { cookie: sessionCookie }
 		});
+		let libraryOk = false;
+		const lib = await fetch(`${APP_URL}/api/library`, {
+			headers: { cookie: sessionCookie }
+		}).catch(() => null);
+		if (lib?.ok) {
+			const lv = await lib.json();
+			libraryOk =
+				lv.availability?.tv === 'available' &&
+				lv.availability?.movies === 'available' &&
+				lv.availability?.subtitles === 'available' &&
+				(lv.summary?.tv?.upgrades ?? 0) > 0;
+		}
 		if (snap.ok) {
 			const data = await snap.json();
 			if (
 				data.services.length >= 10 &&
 				data.topology.nodes.length >= 10 &&
-				data.connection.state === 'live'
+				data.connection.state === 'live' &&
+				libraryOk
 			) {
 				return;
 			}
 		}
 		await wait(1000);
 	}
+	// Diagnostics before giving up: integration states + library availability.
+	const diagStatus = await fetch(`${APP_URL}/api/integrations`, {
+		headers: { cookie: sessionCookie }
+	}).then((r) => r.json());
+	for (const i of diagStatus.integrations ?? []) {
+		console.error(
+			`[e2e][diag] ${i.config.type} state=${i.status?.state} err=${i.status?.lastError ?? '-'}`
+		);
+	}
+	const diagLib = await fetch(`${APP_URL}/api/library`, {
+		headers: { cookie: sessionCookie }
+	}).then((r) => r.json());
+	console.error(`[e2e][diag] availability=${JSON.stringify(diagLib.availability)}`);
 	throw new Error('environment did not become ready in time');
 }
 
@@ -171,6 +222,18 @@ try {
 	});
 	await waitFor(`${MOCK_URL}/api/health`);
 
+	// Mock media stack (Sonarr/Radarr/Bazarr roles) for library intelligence.
+	const mediaPorts = { sonarr: 4211, radarr: 4212, bazarr: 4213 };
+	for (const [role, port] of Object.entries(mediaPorts)) {
+		start(`mock-media-${role}`, process.execPath, ['tests/mock-media/server.mjs'], {
+			MOCK_ROLE: role,
+			MOCK_PORT: String(port),
+			MOCK_MEDIA_KEY: 'media-test-key'
+		});
+		const statusPath = '/health';
+		await waitFor(`http://127.0.0.1:${port}${statusPath}`);
+	}
+
 	start('app', process.execPath, ['build/index.js'], {
 		PORT: String(APP_PORT),
 		HOST: '127.0.0.1',
@@ -182,6 +245,7 @@ try {
 	await waitFor(`${APP_URL}/api/health`);
 
 	const login = await setupAndLogin();
+	await registerMediaIntegrations(cookieHeader(login));
 	await waitUntilReady(cookieHeader(login));
 	writeAuthState(login);
 	console.log('[e2e] environment ready — running Playwright');

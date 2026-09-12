@@ -102,6 +102,27 @@ const entries = new Map<string, Entry>();
 const adapters = new Map<IntegrationType, IntegrationAdapter>();
 let started = false;
 
+/** Read-only cache access for API routes (library intelligence, overview). */
+export function readIntegrationCache<T>(id: string, key: string): T | null {
+	const entry = entries.get(id);
+	if (!entry) return null;
+	const hit = entry.cache.get(key);
+	return hit && hit.expiresAt > Date.now() ? (hit.value as T) : null;
+}
+
+/** Metadata for cache reading: which integrations exist and their type. */
+export function listIntegrationTypes(): {
+	id: string;
+	type: IntegrationType;
+	enabled: boolean;
+}[] {
+	return [...entries.values()].map((e) => ({
+		id: e.config.id,
+		type: e.config.type,
+		enabled: e.config.enabled !== false
+	}));
+}
+
 export function registerAdapter(adapter: IntegrationAdapter): void {
 	adapters.set(adapter.type, adapter);
 }
@@ -334,6 +355,20 @@ export function getIntegrationCache(id: string): Record<string, unknown> {
 	for (const [key, hit] of entry.cache) {
 		if (hit.expiresAt > Date.now()) out[key] = hit.value;
 	}
+	return out;
+}
+
+/**
+ * Whole cache including expired entries, for stale-while-revalidate readers
+ * (library browser §81): between one poll and the next the TTL can lapse
+ * while the data is still the best known state — the payload's own
+ * `fetchedAt` decides freshness, not the TTL.
+ */
+export function getIntegrationCacheStaleAware(id: string): Record<string, unknown> {
+	const entry = entries.get(id);
+	if (!entry) return {};
+	const out: Record<string, unknown> = {};
+	for (const [key, hit] of entry.cache) out[key] = hit.value;
 	return out;
 }
 

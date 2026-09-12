@@ -3,6 +3,7 @@
 	import Card from '$lib/components/Card.svelte';
 	import PipelineSummary from '$lib/components/pipeline/PipelineSummary.svelte';
 	import OverviewIntegrations from '$lib/components/OverviewIntegrations.svelte';
+	import OverviewLibrary from '$lib/components/OverviewLibrary.svelte';
 	import Sparkline from '$lib/components/Sparkline.svelte';
 	import AreaChart from '$lib/components/AreaChart.svelte';
 	import { fade, fly } from 'svelte/transition';
@@ -153,6 +154,8 @@
 	</Card>
 
 	<OverviewIntegrations />
+
+	<OverviewLibrary />
 
 	<!-- Bento grid -->
 	<section

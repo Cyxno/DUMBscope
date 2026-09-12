@@ -138,6 +138,26 @@ const MIGRATIONS: Migration[] = [
 			CREATE INDEX idx_activity_service_at ON activity(service_key, at);
 			CREATE INDEX idx_activity_category ON activity(category, at);
 		`
+	},
+	{
+		version: 4,
+		name: 'media library snapshots',
+		sql: `
+			-- Compact hourly aggregates for library trends (brief §16–§18).
+			-- One row per kind (tv/movies/subtitles) per capture: 3 rows/hour,
+			-- ~63k rows / a few MB per year before retention. Aggregates only —
+			-- never a library dump.
+			CREATE TABLE IF NOT EXISTS media_snapshots (
+				at INTEGER NOT NULL,
+				kind TEXT NOT NULL,
+				missing INTEGER NOT NULL,
+				upgrades INTEGER NOT NULL,
+				total INTEGER,
+				available INTEGER,
+				gaps INTEGER
+			);
+			CREATE INDEX idx_media_snapshots_kind_at ON media_snapshots(kind, at);
+		`
 	}
 ];
 export function currentVersion(db: DatabaseSync): number {

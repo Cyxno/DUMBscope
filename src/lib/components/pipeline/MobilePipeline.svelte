@@ -6,13 +6,21 @@
 		model,
 		detailed = false,
 		selectedKey = null,
+		metrics = null,
 		onselect
 	}: {
 		model: PipelineModel;
 		detailed?: boolean;
 		selectedKey?: string | null;
+		metrics?: Record<string, string> | null;
 		onselect?: (key: string) => void;
 	} = $props();
+
+	function metricFor(key: string): string | null {
+		if (!metrics) return null;
+		const hit = Object.keys(metrics).find((type) => key.startsWith(type));
+		return hit === undefined ? null : (metrics[hit] ?? null);
+	}
 
 	function pointClass(status: PipelineStatus | null): string {
 		switch (status) {
@@ -54,7 +62,12 @@
 			<p class="mb-2.5 text-[11px] text-text-faint">{stage.description}</p>
 			<div class="flex flex-col gap-2">
 				{#each stage.services as service (service.key)}
-					<PipelineServiceCard {service} selected={selectedKey === service.key} {onselect} />
+					<PipelineServiceCard
+						{service}
+						selected={selectedKey === service.key}
+						metric={metrics ? metricFor(service.key) : null}
+						{onselect}
+					/>
 				{/each}
 				{#if detailed}
 					{#each stage.notRunning as service (service.key)}
@@ -78,7 +91,12 @@
 		</h4>
 		<div class="mt-2.5 flex flex-col gap-2">
 			{#each model.supporting.services as service (service.key)}
-				<PipelineServiceCard {service} selected={selectedKey === service.key} {onselect} />
+				<PipelineServiceCard
+					{service}
+					selected={selectedKey === service.key}
+					metric={metrics ? metricFor(service.key) : null}
+					{onselect}
+				/>
 			{/each}
 		</div>
 	</section>

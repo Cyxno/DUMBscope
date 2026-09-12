@@ -80,9 +80,9 @@ describe('v0.1.1 → v0.2 migration', () => {
 		db.close();
 	});
 
-	it('applies migration 3 and reports version 3', () => {
+	it('applies migration 3 and reports version 4 (media snapshots)', () => {
 		const db = new DatabaseSync(file, { readOnly: true });
-		expect(currentVersion(db)).toBe(3);
+		expect(currentVersion(db)).toBe(4);
 		const tables = db
 			.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 			.all()
@@ -90,6 +90,7 @@ describe('v0.1.1 → v0.2 migration', () => {
 		db.close();
 		expect(tables).toContain('integrations');
 		expect(tables).toContain('activity');
+		expect(tables).toContain('media_snapshots');
 	});
 
 	it('preserves users, sessions, settings, incidents', () => {

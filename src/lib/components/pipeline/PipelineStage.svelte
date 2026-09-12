@@ -7,6 +7,7 @@
 		detailed = false,
 		cardRow = false,
 		selectedKey = null,
+		metricFor = null,
 		onselect
 	}: {
 		stage: PipelineStage;
@@ -14,6 +15,7 @@
 		/** Render cards in a fixed-width wrap row (supporting strip) instead of a stack. */
 		cardRow?: boolean;
 		selectedKey?: string | null;
+		metricFor?: ((key: string) => string | null) | null;
 		onselect?: (key: string) => void;
 	} = $props();
 
@@ -49,7 +51,12 @@
 	<div class={cardRow ? 'flex flex-row flex-wrap gap-2' : 'flex flex-col gap-2'}>
 		{#each stage.services as service (service.key)}
 			<div class={cardRow ? 'w-[220px]' : 'min-w-0'}>
-				<PipelineServiceCard {service} selected={selectedKey === service.key} {onselect} />
+				<PipelineServiceCard
+					{service}
+					selected={selectedKey === service.key}
+					metric={metricFor?.(service.key) ?? null}
+					{onselect}
+				/>
 			</div>
 		{/each}
 		{#if detailed}

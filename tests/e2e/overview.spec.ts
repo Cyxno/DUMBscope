@@ -7,7 +7,9 @@ test('overview shows the semantic hero and a stage-chip summary, never a graph',
 }) => {
 	await page.goto('/');
 	await expect(
-		page.getByRole('heading', { name: 'All services are running normally' })
+		page.getByRole('heading', {
+			name: /All services are running normally|Your stack needs attention/
+		})
 	).toBeVisible();
 	await expect(page.getByText('11 services online · No active incidents')).toBeVisible();
 

@@ -105,6 +105,7 @@
 	let expandedSeasons = $state<Set<number>>(new Set());
 	let expandedEpisode = $state<number | null>(null);
 	let showTechnical = $state(false);
+	let notFound = $state(false);
 
 	$effect(() => {
 		if (summary && !series) series = summary;
@@ -113,6 +114,7 @@
 	$effect(() => {
 		void itemKey;
 		series = summary;
+		notFound = false;
 		seasons = [];
 		upgradeCount = null;
 		episodesLoading = true;
@@ -129,6 +131,10 @@
 				fetch(`/api/library/tv/${itemKey}`),
 				fetch(`/api/library/tv/${itemKey}/episodes`)
 			]);
+			if (detailResponse.status === 404) {
+				notFound = true;
+				return;
+			}
 			if (detailResponse.ok) {
 				const data = (await detailResponse.json()) as { series: SeriesFull };
 				series = data.series;
@@ -424,6 +430,10 @@
 			</dl>
 		{/if}
 	</div>
+{:else if notFound}
+	<p class="rounded-lg border border-border-subtle bg-surface-1 px-3 py-3 text-xs text-text-muted">
+		This item is no longer in the library.
+	</p>
 {:else}
 	<div class="space-y-3" aria-hidden="true">
 		<div class="h-5 w-1/2 animate-pulse rounded bg-surface-2"></div>

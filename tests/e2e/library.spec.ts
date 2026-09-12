@@ -110,3 +110,56 @@ test('queue tab: combined queue with the failed import flagged (§26–§28)', a
 	await expect(page.getByText('Queue issues')).toBeVisible();
 	await expect(page.getByText('Import failed — sonarr')).toBeVisible();
 });
+
+test('back navigation: drawer closes and views switch cleanly (§62/§135)', async ({ page }) => {
+	// Two real history entries: TV, then Movies.
+	await page.goto('/library?view=tv');
+	await page.goto('/library?view=movies');
+	await expect(page.locator('ul.grid button').first()).toBeVisible();
+
+	// Opening a movie pushes a drawer entry; back returns to the list.
+	await page.locator('ul.grid button').first().click();
+	const drawer = page.locator('[role=dialog]');
+	await expect(drawer).toBeVisible();
+	await expect(page).toHaveURL(/item=radarr-movie-/);
+	await page.goBack();
+	await expect(drawer).not.toBeVisible();
+	await expect(page).not.toHaveURL(/item=/);
+});
+
+test('deep link refresh keeps the detail reachable (§63/§160)', async ({ page }) => {
+	await page.goto('/library?view=tv&item=sonarr-series-4');
+	await page.reload();
+	const drawer = page.locator('[role=dialog]');
+	await expect(drawer).toBeVisible();
+	await expect(drawer.getByRole('heading', { name: 'Dark Meadow' })).toBeVisible();
+});
+
+test('invalid deep link shows a friendly state (§64/§130)', async ({ page }) => {
+	await page.goto('/library?view=tv&item=sonarr-series-424242');
+	const drawer = page.locator('[role=dialog]');
+	await expect(drawer).toBeVisible();
+	await expect(drawer.getByText(/no longer in the library/i).first()).toBeVisible();
+});
+
+test('season accordion is keyboard operable (§71)', async ({ page }) => {
+	await page.goto('/library?view=tv&item=sonarr-series-4');
+	const drawer = page.locator('[role=dialog]');
+	await expect(drawer).toBeVisible();
+	const seasonButton = drawer.locator('button[aria-expanded]', { hasText: 'Season 1' }).first();
+	seasonButton.focus();
+	await expect(seasonButton).toBeFocused();
+	await seasonButton.press('Enter');
+	await expect(seasonButton).toHaveAttribute('aria-expanded', 'true');
+	await seasonButton.press('Space');
+	await expect(seasonButton).toHaveAttribute('aria-expanded', 'false');
+});
+
+test('escape closes the drawer and focus returns to the page (§72)', async ({ page }) => {
+	await page.goto('/library?view=tv&item=sonarr-series-4');
+	const drawer = page.locator('[role=dialog]');
+	await expect(drawer).toBeVisible();
+	await drawer.press('Escape');
+	await expect(drawer).not.toBeVisible();
+	await expect(page.getByRole('heading', { name: 'Media library' })).toBeVisible();
+});

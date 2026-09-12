@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	/**
 	 * Movie library browser (§33-§36): poster grid over the cached Radarr
 	 * inventory. Missing = upstream `isAvailable && !hasFile`; upgrades show
@@ -67,6 +68,7 @@
 	let filter = $state(initial.filter ?? 'all');
 	let sort = $state(initial.sort ?? 'name');
 	let offset = $state(initial.offset ?? 0);
+	let echoedQ = $state<string | null>(null);
 
 	let header = $state<MoviesHeader | null>(null);
 	let items = $state<MovieCard[]>([]);
@@ -79,14 +81,18 @@
 	let listSeq = 0;
 
 	$effect(() => {
+		// Adopt outside state (browser back/forward). Only `initial` is tracked:
+		// local values are read untracked so typing is never reverted (§135).
 		const incomingQ = initial.q ?? '';
 		const incomingFilter = initial.filter ?? 'all';
 		const incomingSort = initial.sort ?? 'name';
 		const incomingOffset = initial.offset ?? 0;
-		if (incomingQ !== q) q = incomingQ;
-		if (incomingFilter !== filter) filter = incomingFilter;
-		if (incomingSort !== sort) sort = incomingSort;
-		if (incomingOffset !== offset) offset = incomingOffset;
+		untrack(() => {
+			if (incomingQ !== q && incomingQ !== echoedQ) q = incomingQ;
+			if (incomingFilter !== filter) filter = incomingFilter;
+			if (incomingSort !== sort) sort = incomingSort;
+			if (incomingOffset !== offset) offset = incomingOffset;
+		});
 	});
 
 	async function load(): Promise<void> {
@@ -140,6 +146,7 @@
 		clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
 			offset = 0;
+			echoedQ = q;
 			onparams?.({ q, offset: 0 });
 		}, 300);
 	}
@@ -195,7 +202,10 @@
 			placeholder="Search movies…"
 			class="h-9 w-full max-w-[260px] rounded-lg border border-border-subtle bg-surface-1 px-3 text-[13px] text-text-primary placeholder:text-text-faint focus:border-border-strong focus:outline-none"
 			value={q}
-			oninput={onSearchInput}
+			oninput={(e) => {
+				q = e.currentTarget.value;
+				onSearchInput();
+			}}
 			aria-label="Search movies"
 		/>
 		<div class="flex flex-wrap gap-1" role="group" aria-label="Movie filters">

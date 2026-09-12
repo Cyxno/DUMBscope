@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { untrack } from 'svelte';
 	/**
 	 * TV library browser (§5-§32): poster grid / compact list over the cached
 	 * Sonarr inventory. Search debounced server-side, high-value filter chips,
@@ -74,6 +75,7 @@
 	let filter = $state((initial.filter === 'missing' ? 'incomplete' : initial.filter) ?? 'all');
 	let sort = $state(initial.sort ?? 'name');
 	let offset = $state(initial.offset ?? 0);
+	let echoedQ = $state<string | null>(null);
 	let grid = $state(true);
 
 	let header = $state<TvHeader | null>(null);
@@ -88,15 +90,18 @@
 	let listSeq = 0;
 
 	$effect(() => {
-		// Adopt outside state (browser back/forward) when it differs (§135/§136).
+		// Adopt outside state (browser back/forward). Only `initial` is tracked:
+		// local values are read untracked so typing is never reverted (§135).
 		const incomingQ = initial.q ?? '';
 		const incomingFilter = initial.filter === 'missing' ? 'incomplete' : (initial.filter ?? 'all');
 		const incomingSort = initial.sort ?? 'name';
 		const incomingOffset = initial.offset ?? 0;
-		if (incomingQ !== q) q = incomingQ;
-		if (incomingFilter !== filter) filter = incomingFilter;
-		if (incomingSort !== sort) sort = incomingSort;
-		if (incomingOffset !== offset) offset = incomingOffset;
+		untrack(() => {
+			if (incomingQ !== q && incomingQ !== echoedQ) q = incomingQ;
+			if (incomingFilter !== filter) filter = incomingFilter;
+			if (incomingSort !== sort) sort = incomingSort;
+			if (incomingOffset !== offset) offset = incomingOffset;
+		});
 	});
 
 	async function load(): Promise<void> {
@@ -157,6 +162,7 @@
 		clearTimeout(searchTimer);
 		searchTimer = setTimeout(() => {
 			offset = 0;
+			echoedQ = q;
 			onparams?.({ q, offset: 0 });
 		}, 300);
 	}
@@ -290,7 +296,10 @@
 			placeholder="Search series…"
 			class="h-9 w-full max-w-[260px] rounded-lg border border-border-subtle bg-surface-1 px-3 text-[13px] text-text-primary placeholder:text-text-faint focus:border-border-strong focus:outline-none"
 			value={q}
-			oninput={onSearchInput}
+			oninput={(e) => {
+				q = e.currentTarget.value;
+				onSearchInput();
+			}}
 			aria-label="Search series"
 		/>
 		<div class="flex flex-wrap gap-1" role="group" aria-label="TV filters">

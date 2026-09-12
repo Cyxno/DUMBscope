@@ -13,6 +13,12 @@ import http from 'node:http';
 const PORT = Number(process.env.MOCK_PORT || 4211);
 const ROLE = process.env.MOCK_ROLE || 'sonarr';
 const API_KEY = process.env.MOCK_MEDIA_KEY || 'media-test-key';
+// QA modes (release rehearsal): COMPLETE zeroes every backlog/gap so the UI's
+// friendly 0-states (§75–§77) render; BIG adds a 1000-episode series for the
+// worst-case detail payload (§33/§35). Test-only knobs.
+const COMPLETE = process.env.MOCK_COMPLETE === '1';
+const BIG = process.env.MOCK_BIG === '1';
+const scale = (n) => (COMPLETE ? 0 : n);
 
 const json = (res, body, code = 200) => {
 	res.writeHead(code, { 'content-type': 'application/json' });
@@ -20,6 +26,7 @@ const json = (res, body, code = 200) => {
 };
 
 const series = [
+	...(BIG ? [{ id: 14, title: 'Mega Volume', epCount: 1000, fileCount: 995, missing: 5 }] : []),
 	{ id: 1, title: 'Anne of Avonlea', epCount: 40, fileCount: 40, missing: 0 },
 	{ id: 2, title: 'Blue Harbor', epCount: 30, fileCount: 30, missing: 0 },
 	{ id: 3, title: 'Coastline', epCount: 25, fileCount: 25, missing: 0 },
@@ -190,54 +197,57 @@ const sonarrHandler = (req, res, url) => {
 	if (url.pathname === '/api/v3/series')
 		return json(
 			res,
-			series.map((s) => ({
-				id: s.id,
-				title: s.title,
-				sortTitle: s.title.toLowerCase(),
-				monitored: true,
-				status: 'continuing',
-				network: 'MOCK TV',
-				runtime: 42,
-				genres: ['Drama'],
-				seriesType: 'standard',
-				qualityProfileId: 7,
-				added: new Date(Date.now() - 30 * 86_400_000).toISOString(),
-				path: `/media/series/mock-${s.id}`,
-				images: [
-					{
-						coverType: 'poster',
-						url: `/MediaCover/${s.id}/poster.jpg?lastWrite=1000`,
-						remoteUrl: `https://mock.local/poster-${s.id}.jpg`
-					}
-				],
-				seasons: [
-					{
-						seasonNumber: 1,
-						monitored: true,
-						statistics: {
-							episodeFileCount: s.fileCount,
-							episodeCount: s.epCount,
-							totalEpisodeCount: s.epCount,
-							sizeOnDisk: s.fileCount * 1_400_000_000
+			series.map((s0) => {
+				const s = COMPLETE ? { ...s0, fileCount: s0.epCount } : s0;
+				return {
+					id: s.id,
+					title: s.title,
+					sortTitle: s.title.toLowerCase(),
+					monitored: true,
+					status: 'continuing',
+					network: 'MOCK TV',
+					runtime: 42,
+					genres: ['Drama'],
+					seriesType: 'standard',
+					qualityProfileId: 7,
+					added: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+					path: `/media/series/mock-${s.id}`,
+					images: [
+						{
+							coverType: 'poster',
+							url: `/MediaCover/${s.id}/poster.jpg?lastWrite=1000`,
+							remoteUrl: `https://mock.local/poster-${s.id}.jpg`
 						}
+					],
+					seasons: [
+						{
+							seasonNumber: 1,
+							monitored: true,
+							statistics: {
+								episodeFileCount: s.fileCount,
+								episodeCount: s.epCount,
+								totalEpisodeCount: s.epCount,
+								sizeOnDisk: s.fileCount * 1_400_000_000
+							}
+						}
+					],
+					statistics: {
+						seasonCount: 1,
+						episodeFileCount: s.fileCount,
+						episodeCount: s.epCount,
+						totalEpisodeCount: s.epCount,
+						sizeOnDisk: s.fileCount * 1_400_000_000,
+						percentOfEpisodes: Math.round((s.fileCount / s.epCount) * 1000) / 10
 					}
-				],
-				statistics: {
-					seasonCount: 1,
-					episodeFileCount: s.fileCount,
-					episodeCount: s.epCount,
-					totalEpisodeCount: s.epCount,
-					sizeOnDisk: s.fileCount * 1_400_000_000,
-					percentOfEpisodes: Math.round((s.fileCount / s.epCount) * 1000) / 10
-				}
-			}))
+				};
+			})
 		);
 	if (url.pathname === '/api/v3/wanted/missing') {
 		const includeSeries = url.searchParams.get('includeSeries') === 'true';
 		const page = Number(url.searchParams.get('page') ?? 1);
 		const pageSize = Number(url.searchParams.get('pageSize') ?? 100);
 		const start = (page - 1) * pageSize;
-		const slice = missingEpisodes.slice(start, start + pageSize).map((e) => ({
+		const slice = (COMPLETE ? [] : missingEpisodes).slice(start, start + pageSize).map((e) => ({
 			id: e.id,
 			seriesId: e.seriesId,
 			series: includeSeries ? { id: e.seriesId, title: e.seriesTitle } : undefined,
@@ -249,10 +259,15 @@ const sonarrHandler = (req, res, url) => {
 			hasFile: false,
 			lastSearchTime: null
 		}));
-		return json(res, { page, pageSize, totalRecords: missingEpisodes.length, records: slice });
+		return json(res, {
+			page,
+			pageSize,
+			totalRecords: scale(missingEpisodes.length),
+			records: slice
+		});
 	}
 	if (url.pathname === '/api/v3/wanted/cutoff')
-		return json(res, { page: 1, totalRecords: 21, records: [] });
+		return json(res, { page: 1, totalRecords: scale(21), records: [] });
 	if (url.pathname === '/api/v3/queue')
 		return json(res, {
 			page: 1,
@@ -320,10 +335,13 @@ const radarrHandler = (req, res, url) => {
 	if (!authorize(req, res)) return;
 	if (url.pathname === '/api/v3/system/status')
 		return json(res, { version: '5.14.0', appName: 'Radarr' });
-	if (url.pathname === '/api/v3/movie')
+	if (url.pathname === '/api/v3/movie') {
+		const eff = COMPLETE
+			? movies.map((m) => ({ ...m, hasFile: m.isAvailable ? true : m.hasFile }))
+			: movies;
 		return json(
 			res,
-			movies.map((m) => ({
+			eff.map((m) => ({
 				id: m.id,
 				title: m.title,
 				sortTitle: m.title.toLowerCase(),
@@ -367,8 +385,12 @@ const radarrHandler = (req, res, url) => {
 					: {})
 			}))
 		);
+	}
 	if (url.pathname === '/api/v3/wanted/missing') {
-		const releasedMissing = movies.filter(
+		const source = COMPLETE
+			? movies.map((m) => ({ ...m, hasFile: m.isAvailable ? true : m.hasFile }))
+			: movies;
+		const releasedMissing = source.filter(
 			(m) => m.monitored !== false && !m.hasFile && m.isAvailable
 		);
 		const records = releasedMissing.map((m) => ({
@@ -384,7 +406,7 @@ const radarrHandler = (req, res, url) => {
 		return json(res, { page: 1, totalRecords: records.length, records });
 	}
 	if (url.pathname === '/api/v3/wanted/cutoff')
-		return json(res, { page: 1, totalRecords: 9, records: [] });
+		return json(res, { page: 1, totalRecords: scale(9), records: [] });
 	if (url.pathname === '/api/v3/queue') return json(res, { page: 1, totalRecords: 0, records: [] });
 	if (url.pathname === '/api/v3/health') return json(res, []);
 	if (url.pathname === '/api/v3/qualityprofile')
@@ -430,8 +452,8 @@ const bazarrHandler = (req, res, url) => {
 		});
 	if (url.pathname === '/api/badges')
 		return json(res, {
-			episodes: 19,
-			movies: 4,
+			episodes: scale(19),
+			movies: scale(4),
 			providers: 2,
 			status: 0,
 			sonarr_signalr: 'LIVE',
@@ -525,7 +547,7 @@ const bazarrHandler = (req, res, url) => {
 		const start = Number(url.searchParams.get('start') ?? 0);
 		const length = Number(url.searchParams.get('length') ?? -1);
 		const data = movies.map((m) => {
-			const isGap = [4, 5, 6, 7].includes(m.id);
+			const isGap = !COMPLETE && [4, 5, 6, 7].includes(m.id);
 			return {
 				title: m.title,
 				year: m.year,
@@ -553,7 +575,7 @@ const bazarrHandler = (req, res, url) => {
 		const data = series.map((s) => ({
 			title: s.title,
 			monitored: true,
-			episodeMissingCount: s.missing > 0 ? Math.max(1, Math.round(s.missing / 2)) : 0,
+			episodeMissingCount: scale(s.missing > 0 ? Math.max(1, Math.round(s.missing / 2)) : 0),
 			episodeFileCount: s.fileCount,
 			episodeCount: s.epCount,
 			sonarrSeriesId: s.id,
@@ -565,7 +587,7 @@ const bazarrHandler = (req, res, url) => {
 		});
 	}
 	if (url.pathname === '/api/movies/wanted') {
-		const gaps = movies.filter((m) => [4, 5, 6, 7].includes(m.id));
+		const gaps = COMPLETE ? [] : movies.filter((m) => [4, 5, 6, 7].includes(m.id));
 		return json(res, {
 			data: gaps.map((m) => ({
 				title: m.title,

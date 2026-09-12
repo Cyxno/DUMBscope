@@ -6,6 +6,7 @@
 	 * the URL so deep links and browser back work (§69/§70/§134/§136).
 	 */
 	import { page } from '$app/state';
+	import { pushState, replaceState } from '$app/navigation';
 	import AreaChart from '$lib/components/AreaChart.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import Drawer from '$lib/components/Drawer.svelte';
@@ -157,13 +158,15 @@
 		for (const [key, value] of sp.entries()) next[key] = value;
 		const qs = sp.toString();
 		const url = `/library${qs ? `?${qs}` : ''}`;
-		if (push) history.pushState(null, '', url);
-		else history.replaceState(null, '', url);
+		// SvelteKit shallow routing: these update page.url and make
+		// browser back/forward fire popstate into our adoption effect (§62).
+		if (push) void pushState(url, {});
+		else void replaceState(url, {});
 		urlState = next;
 	}
 
 	function switchView(next: View): void {
-		history.replaceState(null, '', `/library?view=${next}`);
+		void replaceState(`/library?view=${next}`, {});
 		seriesKey = null;
 		movieKey = null;
 		urlState = { view: next };

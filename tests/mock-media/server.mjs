@@ -88,6 +88,92 @@ movies.push({
 	digital: '2027-08-15'
 });
 
+// Release-QA additions: XSS-shaped titles must render as plain text (§28).
+series.push({
+	id: 13,
+	title: '<img src=x onerror=alert(1)>',
+	epCount: 10,
+	fileCount: 10,
+	missing: 0
+});
+movies.push({
+	id: 43,
+	title: '<script>alert(1)</script>',
+	year: 2024,
+	hasFile: true,
+	isAvailable: true
+});
+
+// Minimal valid 1x1 PNG served by the MediaCover endpoints (§60).
+const POSTER_PNG = Buffer.from(
+	'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+	'base64'
+);
+
+function servePoster(res, id) {
+	if (id === 999) {
+		res.writeHead(404, { 'content-type': 'text/plain' });
+		res.end('not found');
+		return;
+	}
+	if (id === 998) {
+		// Wrong MIME on purpose: the proxy must reject it (§60/§24).
+		res.writeHead(200, { 'content-type': 'text/plain' });
+		res.end('definitely not an image');
+		return;
+	}
+	res.writeHead(200, { 'content-type': 'image/png' });
+	res.end(POSTER_PNG);
+}
+
+/** Per-series episode records with embedded files, mirroring the real counts. */
+function sonarrEpisodes(seriesId) {
+	const s = series.find((x) => x.id === seriesId);
+	if (!s) return [];
+	const future = 2;
+	const out = [];
+	for (let n = 1; n <= s.epCount + future; n++) {
+		const hasFile = n <= s.fileCount;
+		const isFuture = n > s.epCount;
+		out.push({
+			id: seriesId * 1000 + n,
+			seriesId,
+			seasonNumber: 1,
+			episodeNumber: n,
+			title: `Episode ${n}`,
+			monitored: true,
+			hasFile,
+			airDateUtc: new Date(
+				Date.now() + (isFuture ? (n - s.epCount) * 7 * 86_400_000 : -n * 3 * 86_400_000)
+			).toISOString(),
+			...(hasFile
+				? {
+						episodeFile: {
+							id: seriesId * 1000 + n,
+							size: 2_300_000_000,
+							quality: {
+								quality: {
+									id: 8,
+									name: n % 4 === 0 ? 'WEBDL-2160p' : 'WEBDL-1080p',
+									source: 'web',
+									resolution: n % 4 === 0 ? 2160 : 1080
+								},
+								revision: { version: 1, real: 0, isRepack: false }
+							},
+							releaseGroup: seriesId === 13 ? '<b>MOCK</b>' : 'MOCK',
+							dateAdded: new Date(Date.now() - n * 86_400_000).toISOString(),
+							languages: [{ id: 1, name: 'English' }],
+							customFormats: [],
+							sceneName: `mock.s01e${String(n).padStart(2, '0')}.1080p`,
+							qualityCutoffNotMet: n % 3 === 0
+						}
+					}
+				: {})
+		});
+	}
+	return out;
+}
+
 function authorize(req, res) {
 	if (req.headers['x-api-key'] !== API_KEY) {
 		res.writeHead(401, { 'content-type': 'application/json' });
@@ -107,9 +193,37 @@ const sonarrHandler = (req, res, url) => {
 			series.map((s) => ({
 				id: s.id,
 				title: s.title,
+				sortTitle: s.title.toLowerCase(),
 				monitored: true,
+				status: 'continuing',
+				network: 'MOCK TV',
+				runtime: 42,
+				genres: ['Drama'],
+				seriesType: 'standard',
+				qualityProfileId: 7,
+				added: new Date(Date.now() - 30 * 86_400_000).toISOString(),
+				path: `/media/series/mock-${s.id}`,
+				images: [
+					{
+						coverType: 'poster',
+						url: `/MediaCover/${s.id}/poster.jpg?lastWrite=1000`,
+						remoteUrl: `https://mock.local/poster-${s.id}.jpg`
+					}
+				],
+				seasons: [
+					{
+						seasonNumber: 1,
+						monitored: true,
+						statistics: {
+							episodeFileCount: s.fileCount,
+							episodeCount: s.epCount,
+							totalEpisodeCount: s.epCount,
+							sizeOnDisk: s.fileCount * 1_400_000_000
+						}
+					}
+				],
 				statistics: {
-					seasonCount: 3,
+					seasonCount: 1,
 					episodeFileCount: s.fileCount,
 					episodeCount: s.epCount,
 					totalEpisodeCount: s.epCount,
@@ -167,6 +281,38 @@ const sonarrHandler = (req, res, url) => {
 			}
 		]);
 	if (url.pathname === '/api/v3/calendar') return json(res, []);
+	if (url.pathname === '/api/v3/qualityprofile')
+		return json(res, [
+			{ id: 1, name: 'Any' },
+			{ id: 7, name: 'Mock HD 1080p' }
+		]);
+	if (url.pathname === '/api/v3/episode') {
+		const seriesId = Number(url.searchParams.get('seriesId') ?? 0);
+		return json(res, sonarrEpisodes(seriesId));
+	}
+	if (url.pathname === '/api/v3/history') {
+		const pageSize = Number(url.searchParams.get('pageSize') ?? 10);
+		// One event per series; the Sonarr history endpoint ignores seriesId
+		// filters (audited), so the caller must filter server-side.
+		const records = series.map((s) => ({
+			eventType: 'grabbed',
+			date: new Date(Date.now() - 3_600_000).toISOString(),
+			seriesId: s.id,
+			episodeId: s.id * 1000 + 1,
+			sourceTitle: 'Mock.Series.S01E01.1080p.MOCK',
+			quality: { quality: { name: 'WEBDL-1080p', resolution: 1080 } }
+		}));
+		return json(res, {
+			page: 1,
+			pageSize,
+			totalRecords: records.length,
+			records: records.slice(0, pageSize)
+		});
+	}
+	if (url.pathname.startsWith('/api/v3/MediaCover/')) {
+		servePoster(res, Number(url.pathname.split('/')[4]));
+		return;
+	}
 	res.writeHead(404).end();
 };
 
@@ -180,15 +326,45 @@ const radarrHandler = (req, res, url) => {
 			movies.map((m) => ({
 				id: m.id,
 				title: m.title,
+				sortTitle: m.title.toLowerCase(),
 				year: m.year,
 				monitored: true,
+				status: 'released',
 				hasFile: !!m.hasFile,
 				isAvailable: !!m.isAvailable,
 				digitalRelease: m.isAvailable
 					? new Date(Date.now() - (m.ageDays ?? 400) * 86_400_000).toISOString()
 					: (m.digital ?? null),
 				inCinemas: null,
-				sizeOnDisk: m.hasFile ? 6_000_000_000 : 0
+				sizeOnDisk: m.hasFile ? 6_000_000_000 : 0,
+				runtime: 110,
+				studio: 'Mock Studios',
+				certification: 'PG-13',
+				qualityProfileId: 7,
+				images: [
+					{
+						coverType: 'poster',
+						url: `/MediaCover/${m.id}/poster.jpg?lastWrite=1000`,
+						remoteUrl: `https://mock.local/poster-${m.id}.jpg`
+					}
+				],
+				...(m.hasFile
+					? {
+							movieFile: {
+								id: m.id,
+								size: 3_400_000_000,
+								quality: {
+									quality: { id: 8, name: 'WEBDL-1080p', source: 'web', resolution: 1080 },
+									revision: { version: 1, real: 0, isRepack: false }
+								},
+								releaseGroup: m.id === 43 ? '<i>MOCK</i>' : 'MOCK',
+								dateAdded: new Date(Date.now() - 5 * 86_400_000).toISOString(),
+								languages: [{ id: 1, name: 'English' }],
+								customFormats: [],
+								qualityCutoffNotMet: m.id % 5 === 0
+							}
+						}
+					: {})
 			}))
 		);
 	if (url.pathname === '/api/v3/wanted/missing') {
@@ -211,6 +387,38 @@ const radarrHandler = (req, res, url) => {
 		return json(res, { page: 1, totalRecords: 9, records: [] });
 	if (url.pathname === '/api/v3/queue') return json(res, { page: 1, totalRecords: 0, records: [] });
 	if (url.pathname === '/api/v3/health') return json(res, []);
+	if (url.pathname === '/api/v3/qualityprofile')
+		return json(res, [
+			{ id: 1, name: 'Any' },
+			{ id: 7, name: 'Mock HD 1080p' }
+		]);
+	if (url.pathname === '/api/v3/history') {
+		// Mixed movieIds in one page, deliberately ignoring any movieId query —
+		// mirrors Radarr 6.3.0 (§58): the caller must filter server-side and
+		// events for movie B must never surface under movie A.
+		const mk = (movieId, eventType, offsetHours) => ({
+			eventType,
+			date: new Date(Date.now() - offsetHours * 3_600_000).toISOString(),
+			movieId,
+			sourceTitle: `Mock.Movie.${movieId}.1080p.MOCK`,
+			quality: { quality: { name: 'WEBDL-1080p', resolution: 1080 } }
+		});
+		return json(res, {
+			page: 1,
+			pageSize: 10,
+			totalRecords: 4,
+			records: [
+				mk(2, 'grabbed', 1),
+				mk(1, 'downloadFolderImported', 2),
+				mk(2, 'grabbed', 3),
+				mk(1, 'grabbed', 4)
+			]
+		});
+	}
+	if (url.pathname.startsWith('/api/v3/MediaCover/')) {
+		servePoster(res, Number(url.pathname.split('/')[4]));
+		return;
+	}
 	res.writeHead(404).end();
 };
 
@@ -231,9 +439,88 @@ const bazarrHandler = (req, res, url) => {
 		});
 	if (url.pathname === '/api/system/languages')
 		return json(res, [
-			{ name: 'Dutch', code2: 'nl', code3: 'nld' },
-			{ name: 'English', code2: 'en', code3: 'eng' }
+			{ name: 'Dutch', code2: 'nl', code3: 'nld', enabled: true },
+			{ name: 'English', code2: 'en', code3: 'eng', enabled: true },
+			{ name: 'French', code2: 'fr', code3: 'fra', enabled: false }
 		]);
+	if (url.pathname === '/api/system/languages/profiles')
+		return json(res, [
+			{
+				profileId: 1,
+				name: 'English + Dutch',
+				cutoff: 2,
+				items: [
+					{ id: 1, language: 'en', audio_exclude: 'False', hi: 'False', forced: 'False' },
+					{ id: 2, language: 'nl', audio_exclude: 'False', hi: 'False', forced: 'False' }
+				],
+				mustContain: []
+			}
+		]);
+	if (url.pathname === '/api/episodes') {
+		const ids = url.searchParams.getAll('seriesid[]').map(Number);
+		const now = Date.now();
+		const data = [];
+		for (const sid of ids) {
+			for (const ep of sonarrEpisodes(sid)) {
+				const isFuture = Date.parse(ep.airDateUtc) > now;
+				data.push({
+					sonarrSeriesId: sid,
+					sonarrEpisodeId: ep.id,
+					season: ep.seasonNumber,
+					episode: ep.episodeNumber,
+					title: ep.title,
+					monitored: true,
+					subtitles: ep.hasFile
+						? [
+								{
+									code2: 'nl',
+									name: 'Dutch',
+									forced: false,
+									hi: false,
+									provider: 'opensubtitlescom'
+								},
+								{
+									code2: 'en',
+									name: 'English',
+									forced: false,
+									hi: true,
+									provider: sid === 13 ? '"><script>' : 'opensubtitlescom'
+								}
+							]
+						: [],
+					missing_subtitles:
+						ep.hasFile || isFuture ? [] : [{ code2: 'nl', name: 'Dutch', forced: false, hi: false }]
+				});
+			}
+		}
+		return json(res, { data, total: data.length });
+	}
+	if (url.pathname === '/api/episodes/history')
+		return json(res, {
+			total: 1,
+			data: [
+				{
+					action: 1,
+					description: 'Dutch subtitles downloaded from opensubtitlescom with a score of 93.61%.',
+					sonarrSeriesId: 4,
+					sonarrEpisodeId: 4001,
+					timestamp: '2 hours ago'
+				}
+			]
+		});
+	if (url.pathname === '/api/movies/history')
+		return json(res, {
+			total: 1,
+			data: [
+				{
+					action: 3,
+					description: 'English subtitles upgraded from embeddedsubtitles with a score of 100.0%.',
+					radarrId: 4,
+					title: 'Distant Shores',
+					timestamp: '3 days ago'
+				}
+			]
+		});
 	if (url.pathname === '/api/movies') {
 		const start = Number(url.searchParams.get('start') ?? 0);
 		const length = Number(url.searchParams.get('length') ?? -1);

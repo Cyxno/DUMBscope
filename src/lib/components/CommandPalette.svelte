@@ -57,25 +57,25 @@
 			action: () => goto('/library')
 		},
 		{
-			label: 'Show missing TV',
-			hint: 'Library · TV backlog',
+			label: 'Browse TV library',
+			hint: 'Library · TV',
 			icon: Library,
-			keywords: 'library missing tv episodes backlog',
+			keywords: 'library tv browse series seasons episodes sonarr',
 			action: () => goto('/library?view=tv')
 		},
 		{
-			label: 'Show missing movies',
-			hint: 'Library · movie backlog',
+			label: 'Browse movies',
+			hint: 'Library · Movies',
 			icon: Library,
-			keywords: 'library missing movies backlog',
+			keywords: 'library movies browse films radarr',
 			action: () => goto('/library?view=movies')
 		},
 		{
-			label: 'Show subtitle gaps',
-			hint: 'Library · subtitle coverage',
+			label: 'Browse subtitle gaps',
+			hint: 'Library · Subtitles',
 			icon: Library,
-			keywords: 'library subtitles bazarr gaps',
-			action: () => goto('/library?view=subtitles')
+			keywords: 'library subtitles bazarr gaps languages',
+			action: () => goto('/library?view=subtitles&sbmode=tv&sbfilter=has-gaps')
 		},
 		{
 			label: 'Incidents',

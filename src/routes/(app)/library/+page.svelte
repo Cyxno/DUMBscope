@@ -1,12 +1,19 @@
 <script lang="ts">
 	/**
-	 * Media Library Intelligence workspace (brief §32–§43/§89): completion
-	 * first, attention second, details after. Tabs via URL state for deep
-	 * links. Read-only intelligence — backlog is neutral, never an incident.
+	 * Media Library workspace: Overview (Library Intelligence, unchanged §3),
+	 * plus the read-only Unified Library Manager browsers for TV, Movies and
+	 * Subtitles. All list state (view/filter/sort/search/page/item) lives in
+	 * the URL so deep links and browser back work (§69/§70/§134/§136).
 	 */
 	import { page } from '$app/state';
 	import AreaChart from '$lib/components/AreaChart.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
+	import Drawer from '$lib/components/Drawer.svelte';
+	import TvBrowser from '$lib/components/library/TvBrowser.svelte';
+	import SeriesDetail from '$lib/components/library/SeriesDetail.svelte';
+	import MoviesBrowser from '$lib/components/library/MoviesBrowser.svelte';
+	import MovieDetail from '$lib/components/library/MovieDetail.svelte';
+	import SubtitlesBrowser from '$lib/components/library/SubtitlesBrowser.svelte';
 
 	interface BacklogAges {
 		new: number;
@@ -82,27 +89,84 @@
 	const VIEWS = ['overview', 'tv', 'movies', 'subtitles', 'queue'] as const;
 	type View = (typeof VIEWS)[number];
 
+	/** URL params the browsers own (§136). Cleared on view switches. */
+
 	let view = $state<View>('overview');
 	let data = $state<LibraryPayload | null>(null);
 	let error = $state<string | null>(null);
 	let loading = $state(true);
 	let windowDays: 7 | 30 | 90 = $state(30);
 
-	// detail lists, loaded per tab
+	// Missing-episode backlog panel (preserved Library Intelligence list, §30).
 	let tvMissing = $state<MissingItem[] | null>(null);
 	let tvMissingTotal = $state(0);
-	let movieMissing = $state<MissingItem[] | null>(null);
-	let movieMissingTotal = $state(0);
-	let subtitleGaps = $state<MissingItem[] | null>(null);
-	let subtitleGapsTotal = $state(0);
 	let missingSort = $state<'most' | 'oldest' | 'recent' | 'name'>('most');
-	let subtitleLang = $state('all');
+
+	// Detail drawers (canonical URL: item param, §69/§70).
+	interface SeriesSummaryLite {
+		key: string;
+		title: string;
+		posterVersion?: string | null;
+	}
+	let seriesKey = $state<string | null>(null);
+	let seriesSummary = $state<SeriesSummaryLite | null>(null);
+	let movieKey = $state<string | null>(null);
+	let movieSummary = $state<SeriesSummaryLite | null>(null);
 
 	let timer: ReturnType<typeof setInterval> | undefined;
 
+	function parseUrlState(): Record<string, string> {
+		const out: Record<string, string> = {};
+		for (const [key, value] of page.url.searchParams.entries()) out[key] = value;
+		return out;
+	}
+
+	/** Browsers react to this (back/forward) and echo changes via onparams. */
+	let urlState = $state<Record<string, string>>({});
+
+	$effect(() => {
+		// Track URL (incl. popstate/back — §135) and adopt into state.
+		const sp = page.url.searchParams;
+		const requestedView = sp.get('view');
+		if (requestedView && (VIEWS as readonly string[]).includes(requestedView)) {
+			view = requestedView as View;
+		}
+		urlState = parseUrlState();
+		const item = sp.get('item');
+		if (!item) {
+			seriesKey = null;
+			movieKey = null;
+		} else if (item.startsWith('sonarr-series-')) {
+			seriesKey = item;
+			movieKey = null;
+		} else if (item.startsWith('radarr-movie-')) {
+			movieKey = item;
+			seriesKey = null;
+		}
+	});
+
+	function setParams(update: Record<string, string | null>, push = false): void {
+		// Raw history mutations don't notify SvelteKit's page store, so the
+		// local mirror is kept in sync for the next param update.
+		const sp = new URLSearchParams(urlState);
+		for (const [key, value] of Object.entries(update)) {
+			if (value === null || value === '') sp.delete(key);
+			else sp.set(key, value);
+		}
+		const next: Record<string, string> = {};
+		for (const [key, value] of sp.entries()) next[key] = value;
+		const qs = sp.toString();
+		const url = `/library${qs ? `?${qs}` : ''}`;
+		if (push) history.pushState(null, '', url);
+		else history.replaceState(null, '', url);
+		urlState = next;
+	}
+
 	function switchView(next: View): void {
-		view = next;
 		history.replaceState(null, '', `/library?view=${next}`);
+		seriesKey = null;
+		movieKey = null;
+		urlState = { view: next };
 		void loadView();
 	}
 
@@ -112,50 +176,70 @@
 		else error = 'Library data is temporarily unavailable.';
 	}
 
-	async function loadList(url: string, target: 'tv' | 'movies' | 'subtitles'): Promise<void> {
-		const response = await fetch(url);
+	async function loadMissingBacklog(): Promise<void> {
+		const response = await fetch(`/api/library/tv/missing?limit=50&sort=${missingSort}`);
 		if (!response.ok) return;
 		const payload = (await response.json()) as { items: MissingItem[]; total: number };
-		if (target === 'tv') {
-			tvMissing = payload.items;
-			tvMissingTotal = payload.total;
-		} else if (target === 'movies') {
-			movieMissing = payload.items;
-			movieMissingTotal = payload.total;
-		} else {
-			subtitleGaps = payload.items;
-			subtitleGapsTotal = payload.total;
-		}
+		tvMissing = payload.items;
+		tvMissingTotal = payload.total;
 	}
 
 	async function loadView(): Promise<void> {
 		loading = true;
 		error = null;
 		await loadSummary();
-		if (view === 'tv') await loadList(`/api/library/tv/missing?limit=50&sort=${missingSort}`, 'tv');
-		if (view === 'movies')
-			await loadList(`/api/library/movies/missing?limit=50&sort=${missingSort}`, 'movies');
-		if (view === 'subtitles')
-			await loadList(
-				`/api/library/subtitles/missing?limit=50&lang=${encodeURIComponent(subtitleLang)}`,
-				'subtitles'
-			);
+		if (view === 'tv') void loadMissingBacklog();
 		loading = false;
 	}
 
 	$effect(() => {
-		const requested = page.url.searchParams.get('view');
-		if (requested && (VIEWS as readonly string[]).includes(requested)) {
-			view = requested as View;
-		}
 		void loadView();
 		timer = setInterval(() => void loadSummary(), 60_000);
 		return () => clearInterval(timer);
 	});
 
-	function changeSort(next: 'most' | 'oldest' | 'recent' | 'name'): void {
+	function changeMissingSort(next: 'most' | 'oldest' | 'recent' | 'name'): void {
 		missingSort = next;
-		void loadView();
+		void loadMissingBacklog();
+	}
+
+	const tvInitial = $derived({
+		q: urlState.q,
+		filter: urlState.filter,
+		sort: urlState.sort,
+		offset: urlState.offset ? Number(urlState.offset) : undefined
+	});
+	const moviesInitial = $derived({
+		q: urlState.q,
+		filter: urlState.filter,
+		sort: urlState.sort,
+		offset: urlState.offset ? Number(urlState.offset) : undefined
+	});
+	const subtitlesInitial = $derived({
+		mode: urlState.sbmode,
+		filter: urlState.sbfilter,
+		lang: urlState.sblang
+	});
+
+	function openSeries(item: SeriesSummaryLite): void {
+		seriesSummary = item;
+		seriesKey = item.key;
+		setParams({ item: item.key }, true);
+	}
+	function openMovie(item: SeriesSummaryLite): void {
+		movieSummary = item;
+		movieKey = item.key;
+		setParams({ item: item.key }, true);
+	}
+	function openMovieKey(key: string): void {
+		movieSummary = null;
+		movieKey = key;
+		setParams({ item: key }, true);
+	}
+	function closeDrawer(): void {
+		seriesKey = null;
+		movieKey = null;
+		setParams({ item: null });
 	}
 
 	const dateLabel = (value: number | null) =>
@@ -181,7 +265,7 @@
 		<div>
 			<h2 class="text-lg font-semibold tracking-tight">Media library</h2>
 			<p class="mt-0.5 text-[13px] text-text-muted">
-				What's missing, what's queued and what needs attention — read-only.
+				What's in your library, what's missing and what needs attention — read-only.
 				{#if data?.fetchedAt}{agoLabel(data.fetchedAt)}{/if}
 			</p>
 		</div>
@@ -238,7 +322,12 @@
 		{/if}
 
 		{#if view === 'overview'}
-			{#snippet completionCard(label: string, pct: number | null, lines: string[])}
+			{#snippet completionCard(
+				label: string,
+				pct: number | null,
+				lines: string[],
+				browseHref: string
+			)}
 				<div class="rounded-[14px] border border-border-subtle bg-surface-1 p-4">
 					<p class="text-[10px] font-bold uppercase tracking-[0.1em] text-text-faint">{label}</p>
 					<p class="mt-1 text-3xl font-semibold tabular-nums text-text-primary">
@@ -249,6 +338,12 @@
 							<li>{line}</li>
 						{/each}
 					</ul>
+					<a
+						href={browseHref}
+						class="mt-2 inline-block text-[11.5px] font-medium text-accent-text hover:underline"
+					>
+						Browse library →
+					</a>
 				</div>
 			{/snippet}
 
@@ -262,7 +357,8 @@
 							: 'Sonarr not configured',
 						data.summary.tv ? `${data.summary.tv.upgrades} upgrades available` : '',
 						data.summary.tv ? `${data.summary.tv.series} series monitored` : ''
-					].filter(Boolean)
+					].filter(Boolean),
+					'/library?view=tv'
 				)}
 				{@render completionCard(
 					'Movies',
@@ -273,7 +369,8 @@
 							: 'Radarr not configured',
 						data.summary.movies ? `${data.summary.movies.upgrades} upgrades available` : '',
 						data.summary.movies ? `${data.summary.movies.movies} movies in library` : ''
-					].filter(Boolean)
+					].filter(Boolean),
+					'/library?view=movies'
 				)}
 				{@render completionCard(
 					'Subtitles',
@@ -288,7 +385,8 @@
 						data.summary.subtitles?.topLanguages?.length
 							? `mostly ${data.summary.subtitles.topLanguages[0]!.name}`
 							: ''
-					].filter(Boolean)
+					].filter(Boolean),
+					'/library?view=subtitles'
 				)}
 			</div>
 
@@ -396,154 +494,104 @@
 		{/if}
 
 		{#if view === 'tv'}
-			<section aria-label="TV missing episodes">
-				<div class="mb-2 flex flex-wrap items-center gap-2">
-					<h3 class="text-[11px] font-bold uppercase tracking-[0.1em] text-text-faint">
-						Missing episodes — {tvMissingTotal}
-					</h3>
-					<div class="ml-auto flex gap-1">
-						{#each ['most', 'oldest', 'recent', 'name'] as sort (sort)}
-							<button
-								type="button"
-								class="rounded-md px-2 py-0.5 text-[11px] {missingSort === sort
-									? 'bg-surface-3 font-semibold text-text-primary'
-									: 'text-text-muted hover:text-text-secondary'}"
-								onclick={() => changeSort(sort as 'most')}
-							>
-								{sort === 'most'
-									? 'Most missing'
-									: sort === 'oldest'
-										? 'Oldest'
-										: sort === 'recent'
-											? 'Recently aired'
-											: 'Name'}
-							</button>
-						{/each}
-					</div>
-				</div>
-				{#if data.summary.tv && data.summary.tv.missing === 0}
-					<EmptyState
-						title="No missing episodes"
-						description="Your monitored TV library is complete."
-						neutral
-					/>
-				{:else if tvMissing && tvMissing.length > 0}
-					<ul
-						class="divide-y divide-border-subtle overflow-hidden rounded-[14px] border border-border-subtle bg-surface-1"
-					>
-						{#each tvMissing as item (item.id)}
-							<li class="flex items-center gap-3 px-4 py-2.5">
-								<span class="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary"
-									>{item.title}</span
-								>
-								<span class="shrink-0 text-[11px] text-text-muted">{item.detail}</span>
-								<span class="tnum w-20 shrink-0 text-right text-[11px] text-text-faint"
-									>{dateLabel(item.releasedAt)}</span
-								>
-								<span class="w-14 shrink-0 text-right text-[11px] text-text-faint"
-									>{item.ageBucket ?? ''}</span
-								>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-				{#if data.summary.tv}
-					<p class="mt-3 text-[11px] text-text-faint">
-						Backlog ages — ≤24h: {data.summary.tv.backlogAges?.new ?? 0} · 1–7d: {data.summary.tv
-							.backlogAges?.['1-7d'] ?? 0} · 7–30d: {data.summary.tv.backlogAges?.['7-30d'] ?? 0} · 30d+:
-						{data.summary.tv.backlogAges?.['30d+'] ?? 0}
-					</p>
-				{/if}
-			</section>
-		{/if}
+			<TvBrowser
+				initial={tvInitial}
+				onparams={(p) =>
+					setParams({
+						q: p.q ?? null,
+						filter: p.filter ?? null,
+						sort: p.sort ?? null,
+						offset: p.offset === undefined ? null : String(p.offset)
+					})}
+				selectedKey={seriesKey}
+				onopen={openSeries}
+			/>
 
-		{#if view === 'movies'}
-			<section aria-label="Missing movies">
-				<h3 class="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-text-faint">
-					Missing movies — {movieMissingTotal}
-				</h3>
-				{#if data.summary.movies && data.summary.movies.missing === 0}
-					<EmptyState
-						title="No missing movies"
-						description="Your monitored movie library is complete."
-						neutral
-					/>
-				{:else if movieMissing && movieMissing.length > 0}
-					<ul
-						class="divide-y divide-border-subtle overflow-hidden rounded-[14px] border border-border-subtle bg-surface-1"
-					>
-						{#each movieMissing as item (item.id)}
-							<li class="flex items-center gap-3 px-4 py-2.5">
-								<span class="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary"
-									>{item.title}</span
+			<!-- Missing episode backlog — preserved Library Intelligence list (§30) -->
+			{#if data.summary.tv && data.summary.tv.missing > 0}
+				<section aria-label="Missing episode backlog">
+					<div class="mb-2 flex flex-wrap items-center gap-2">
+						<h3 class="text-[11px] font-bold uppercase tracking-[0.1em] text-text-faint">
+							Missing episode backlog — {tvMissingTotal}
+						</h3>
+						<div class="ml-auto flex gap-1">
+							{#each ['most', 'oldest', 'recent', 'name'] as sort (sort)}
+								<button
+									type="button"
+									class="rounded-md px-2 py-0.5 text-[11px] {missingSort === sort
+										? 'bg-surface-3 font-semibold text-text-primary'
+										: 'text-text-muted hover:text-text-secondary'}"
+									onclick={() => changeMissingSort(sort as 'most')}
 								>
-								<span class="shrink-0 text-[11px] text-text-muted">{item.detail}</span>
-								<span class="tnum w-20 shrink-0 text-right text-[11px] text-text-faint"
-									>{dateLabel(item.releasedAt)}</span
-								>
-								<span class="w-14 shrink-0 text-right text-[11px] text-text-faint"
-									>{item.ageBucket ?? ''}</span
-								>
-							</li>
-						{/each}
-					</ul>
-				{/if}
-			</section>
-		{/if}
-
-		{#if view === 'subtitles'}
-			<section aria-label="Subtitle coverage">
-				{#if data.availability.subtitles === 'unconfigured'}
-					<EmptyState
-						title="Detailed subtitle monitoring isn't configured"
-						description="Basic Bazarr process monitoring remains active. Configure Bazarr in Settings to see subtitle coverage."
-					/>
-				{:else if data.summary.subtitles}
-					<div class="mb-4 overflow-hidden rounded-[14px] border border-border-subtle bg-surface-1">
-						<table class="w-full text-left text-[13px]">
-							<thead>
-								<tr
-									class="border-b border-border-subtle text-[11px] uppercase tracking-wider text-text-faint"
-								>
-									<th class="px-4 py-2.5 font-semibold">Language</th>
-									<th class="px-4 py-2.5 text-right font-semibold">Required</th>
-									<th class="px-4 py-2.5 text-right font-semibold">Missing</th>
-									<th class="px-4 py-2.5 text-right font-semibold">Coverage</th>
-								</tr>
-							</thead>
-							<tbody>
-								{#each data.summary.subtitles.topLanguages as lang (lang.code2)}
-									<tr class="border-b border-border-subtle last:border-0">
-										<td class="px-4 py-2 font-medium text-text-primary">{lang.name}</td>
-										<td class="tnum px-4 py-2 text-right">{lang.required}</td>
-										<td class="tnum px-4 py-2 text-right">{lang.missing}</td>
-										<td class="tnum px-4 py-2 text-right font-medium"
-											>{lang.coveragePct === null ? '—' : `${lang.coveragePct}%`}</td
-										>
-									</tr>
-								{/each}
-							</tbody>
-						</table>
+									{sort === 'most'
+										? 'Most missing'
+										: sort === 'oldest'
+											? 'Oldest'
+											: sort === 'recent'
+												? 'Recently aired'
+												: 'Name'}
+								</button>
+							{/each}
+						</div>
 					</div>
-					<h3 class="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-text-faint">
-						Titles with missing subtitles — {subtitleGapsTotal}
-					</h3>
-					{#if subtitleGaps && subtitleGaps.length > 0}
+					{#if tvMissing && tvMissing.length > 0}
 						<ul
 							class="divide-y divide-border-subtle overflow-hidden rounded-[14px] border border-border-subtle bg-surface-1"
 						>
-							{#each subtitleGaps as item (item.id)}
+							{#each tvMissing as item (item.id)}
 								<li class="flex items-center gap-3 px-4 py-2.5">
 									<span class="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary"
 										>{item.title}</span
 									>
 									<span class="shrink-0 text-[11px] text-text-muted">{item.detail}</span>
+									<span class="tnum w-20 shrink-0 text-right text-[11px] text-text-faint"
+										>{dateLabel(item.releasedAt)}</span
+									>
+									<span class="w-14 shrink-0 text-right text-[11px] text-text-faint"
+										>{item.ageBucket ?? ''}</span
+									>
 								</li>
 							{/each}
 						</ul>
 					{/if}
-				{/if}
-			</section>
+					{#if data.summary.tv?.backlogAges}
+						<p class="mt-3 text-[11px] text-text-faint">
+							Backlog ages — ≤24h: {data.summary.tv.backlogAges?.new ?? 0} · 1–7d: {data.summary.tv
+								.backlogAges?.['1-7d'] ?? 0} · 7–30d: {data.summary.tv.backlogAges?.['7-30d'] ?? 0} ·
+							30d+:
+							{data.summary.tv.backlogAges?.['30d+'] ?? 0}
+						</p>
+					{/if}
+				</section>
+			{/if}
+		{/if}
+
+		{#if view === 'movies'}
+			<MoviesBrowser
+				initial={moviesInitial}
+				onparams={(p) =>
+					setParams({
+						q: p.q ?? null,
+						filter: p.filter ?? null,
+						sort: p.sort ?? null,
+						offset: p.offset === undefined ? null : String(p.offset)
+					})}
+				selectedKey={movieKey}
+				onopen={openMovie}
+			/>
+		{/if}
+
+		{#if view === 'subtitles'}
+			<SubtitlesBrowser
+				initial={subtitlesInitial}
+				onparams={(p) =>
+					setParams({
+						sbmode: p.mode ?? null,
+						sbfilter: p.filter ?? null,
+						sblang: p.lang ?? null
+					})}
+				onopenMovie={openMovieKey}
+			/>
 		{/if}
 
 		{#if view === 'queue'}
@@ -582,3 +630,26 @@
 		{/if}
 	{/if}
 </div>
+
+<!-- Series detail drawer (§70: desktop drawer + canonical URL; full screen on mobile) -->
+<Drawer
+	open={seriesKey !== null}
+	title={seriesSummary?.title ?? 'Series'}
+	subtitle="TV library · Sonarr"
+	onclose={closeDrawer}
+>
+	{#if seriesKey}
+		<SeriesDetail itemKey={seriesKey} summary={seriesSummary} />
+	{/if}
+</Drawer>
+
+<Drawer
+	open={movieKey !== null}
+	title={movieSummary?.title ?? 'Movie'}
+	subtitle="Movie library · Radarr"
+	onclose={closeDrawer}
+>
+	{#if movieKey}
+		<MovieDetail itemKey={movieKey} />
+	{/if}
+</Drawer>

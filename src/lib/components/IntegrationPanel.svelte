@@ -164,7 +164,11 @@
 							href="/library?view={kind}"
 							class="text-[10.5px] font-medium text-accent-text hover:underline"
 						>
-							Open in Library →
+							{kind === 'tv'
+								? 'Open TV Library →'
+								: kind === 'movies'
+									? 'Open Movie Library →'
+									: 'Open Subtitle Library →'}
 						</a>
 					</div>
 				{/if}

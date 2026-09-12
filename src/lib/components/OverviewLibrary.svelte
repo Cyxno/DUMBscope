@@ -64,6 +64,14 @@
 						? `${summary.summary.tv.missing} missing · ${summary.summary.tv.upgrades} upgrades`
 						: 'not configured'}
 				</p>
+				{#if summary.summary.tv}
+					<a
+						href="/library?view=tv&filter=missing"
+						class="text-[10.5px] font-medium text-accent-text hover:underline"
+					>
+						Which episodes? →
+					</a>
+				{/if}
 			</div>
 			<div>
 				<p class="text-[10px] uppercase tracking-wide text-text-faint">Movies</p>
@@ -77,6 +85,14 @@
 						? `${summary.summary.movies.missing} missing · ${summary.summary.movies.upgrades} upgrades`
 						: 'not configured'}
 				</p>
+				{#if summary.summary.movies}
+					<a
+						href="/library?view=movies&filter=missing"
+						class="text-[10.5px] font-medium text-accent-text hover:underline"
+					>
+						Which movies? →
+					</a>
+				{/if}
 			</div>
 			<div>
 				<p class="text-[10px] uppercase tracking-wide text-text-faint">Subtitles</p>
@@ -88,6 +104,14 @@
 				<p class="text-[10.5px] text-text-muted">
 					{summary.summary.subtitles ? `${summary.summary.subtitles.gaps} gaps` : 'not configured'}
 				</p>
+				{#if summary.summary.subtitles}
+					<a
+						href="/library?view=subtitles"
+						class="text-[10.5px] font-medium text-accent-text hover:underline"
+					>
+						Which gaps? →
+					</a>
+				{/if}
 			</div>
 		</div>
 	</div>

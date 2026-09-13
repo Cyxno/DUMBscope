@@ -75,6 +75,9 @@
 		fileCount: number;
 		airedCount: number;
 		totalCount: number;
+		/** Epoch ms of the oldest released missing episode (§13); optional for
+		 *  older payloads. */
+		oldestMissingAt?: number | null;
 		episodes: EpisodeRow[];
 	}
 
@@ -352,6 +355,16 @@
 								? `${season.airedCount - season.fileCount} missing`
 								: 'Complete'}
 						</span>
+						{#if season.airedCount - season.fileCount > 0 && season.oldestMissingAt}
+							<span
+								class="tnum w-14 shrink-0 text-right text-[11px] text-text-faint"
+								title="Oldest missing episode aired {new Date(
+									season.oldestMissingAt
+								).toLocaleDateString()}"
+							>
+								oldest {daysAgo(season.oldestMissingAt)}
+							</span>
+						{/if}
 					</button>
 					{#if expandedSeasons.has(season.seasonNumber)}
 						<ul class="divide-y divide-border-subtle border-t border-border-subtle">

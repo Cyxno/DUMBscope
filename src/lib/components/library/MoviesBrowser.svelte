@@ -32,6 +32,8 @@
 		completionPct: number | null;
 		missing: number | null;
 		upgrades: number;
+		/** Resolution distribution over files (brief §18); empty when unknown. */
+		qualityDistribution?: { label: string; count: number }[];
 	}
 
 	let {
@@ -190,6 +192,23 @@
 			<p class="text-[11px] text-text-faint">Radarr data last updated {relativeTime(fetchedAt)}</p>
 		{/if}
 	</div>
+	{#if header && header.qualityDistribution && header.qualityDistribution.length > 0}
+		<!-- Quality distribution (§18): neutral context from file data, not a score. -->
+		<p
+			aria-label="Quality distribution"
+			class="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11.5px] text-text-muted"
+		>
+			<span class="text-[11px] font-bold uppercase tracking-[0.1em] text-text-faint">Quality</span>
+			{#each header.qualityDistribution as row (row.label)}
+				<span class="tnum">
+					{row.label}
+					<span class="text-text-secondary"
+						>{Math.round((row.count / header.moviesTotal) * 100)}%</span
+					>
+				</span>
+			{/each}
+		</p>
+	{/if}
 	{#if loadError}
 		<p class="rounded-lg border border-border-subtle bg-surface-1 px-3 py-2 text-xs text-degraded">
 			{loadError}
@@ -256,6 +275,18 @@
 		<EmptyState
 			title="Waiting for the first Radarr poll"
 			description="The library fills in automatically once the inventory poll completes — usually within a minute."
+			neutral
+		/>
+	{:else if total === 0 && filter === 'upgrades'}
+		<EmptyState
+			title="No upgrades available"
+			description="Every movie meets its quality profile cutoff."
+			neutral
+		/>
+	{:else if total === 0 && filter === 'missing'}
+		<EmptyState
+			title="No missing movies"
+			description="Every released monitored movie has a file."
 			neutral
 		/>
 	{:else if total === 0}

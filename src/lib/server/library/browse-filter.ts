@@ -9,12 +9,32 @@ export const DEFAULT_LIMIT = 50;
 export const MAX_SEARCH_LENGTH = 80;
 
 export type SeriesFilter =
-	'all' | 'incomplete' | 'continuing' | 'ended' | 'monitored' | 'unmonitored';
+	'all' | 'incomplete' | 'upgrades' | 'continuing' | 'ended' | 'monitored' | 'unmonitored';
 export type MovieFilter =
 	'all' | 'available' | 'missing' | 'upgrades' | 'upcoming' | 'monitored' | 'unmonitored';
 
-export type SeriesSort = 'name' | 'completion' | 'missing' | 'added' | 'year';
+export type SeriesSort = 'name' | 'completion' | 'missing' | 'missing-oldest' | 'added' | 'year';
 export type MovieSort = 'name' | 'year' | 'added' | 'missing-oldest' | 'missing-newest' | 'quality';
+
+/**
+ * Structural row both the browse cache (BrowseSeries) and the list view
+ * (SeriesSummary) satisfy. Upgrade/age fields are optional: the browse cache
+ * predates them and the list always carries them (brief §20/§47/§50).
+ */
+export interface SeriesListRow {
+	id: number;
+	title: string;
+	sortTitle: string;
+	network: string | null;
+	status: BrowseSeries['status'];
+	monitored: boolean;
+	missingCount: number;
+	completionPct: number | null;
+	addedAt: number | null;
+	year: number | null;
+	upgradeCount?: number;
+	oldestMissingAt?: number | null;
+}
 
 export interface BrowseListParams {
 	limit: number;
@@ -57,12 +77,20 @@ export function matchesSearch(q: string, ...titles: (string | null)[]): boolean 
 const SERIES_FILTERS: readonly SeriesFilter[] = [
 	'all',
 	'incomplete',
+	'upgrades',
 	'continuing',
 	'ended',
 	'monitored',
 	'unmonitored'
 ];
-const SERIES_SORTS: readonly SeriesSort[] = ['name', 'completion', 'missing', 'added', 'year'];
+const SERIES_SORTS: readonly SeriesSort[] = [
+	'name',
+	'completion',
+	'missing',
+	'missing-oldest',
+	'added',
+	'year'
+];
 
 export function seriesListParams(
 	url: URL
@@ -71,16 +99,19 @@ export function seriesListParams(
 	return { ...params, filter: params.filter as SeriesFilter, sort: params.sort as SeriesSort };
 }
 
-export function filterSortSeries(
-	items: BrowseSeries[],
+export function filterSortSeries<T extends SeriesListRow>(
+	items: T[],
 	filter: SeriesFilter,
 	sort: SeriesSort,
 	q: string
-): BrowseSeries[] {
+): T[] {
 	let list = items;
 	switch (filter) {
 		case 'incomplete':
 			list = list.filter((s) => s.missingCount > 0);
+			break;
+		case 'upgrades':
+			list = list.filter((s) => (s.upgradeCount ?? 0) > 0);
 			break;
 		case 'continuing':
 			list = list.filter((s) => s.status === 'continuing');
@@ -110,6 +141,13 @@ export function filterSortSeries(
 		case 'missing':
 			sorted.sort(
 				(a, b) => b.missingCount - a.missingCount || a.sortTitle.localeCompare(b.sortTitle)
+			);
+			break;
+		case 'missing-oldest':
+			sorted.sort(
+				(a, b) =>
+					(a.oldestMissingAt ?? Number.MAX_SAFE_INTEGER) -
+						(b.oldestMissingAt ?? Number.MAX_SAFE_INTEGER) || a.sortTitle.localeCompare(b.sortTitle)
 			);
 			break;
 		case 'added':

@@ -43,6 +43,44 @@ export function countBacklogAges(
 }
 
 /**
+ * Resolution distribution over items WITH a file (brief §17/§18): derived
+ * purely from file data, so it is only emitted when at least one file is
+ * known. Neutral ordering is by resolution, descending — quality is context,
+ * never a judgement (§19).
+ */
+export interface QualityDistributionRow {
+	label: string;
+	count: number;
+}
+
+export function qualityDistribution(resolutions: (number | null)[]): QualityDistributionRow[] {
+	const counts = new Map<number, number>();
+	let withFile = 0;
+	for (const resolution of resolutions) {
+		if (resolution === null || resolution === undefined) continue;
+		withFile += 1;
+		counts.set(resolution, (counts.get(resolution) ?? 0) + 1);
+	}
+	if (withFile === 0) return [];
+	return [...counts.entries()]
+		.sort((a, b) => b[0] - a[0])
+		.map(([resolution, count]) => ({ label: `${resolution}p`, count }));
+}
+
+/** Client-shareable age-chip ids (brief §7/§8) — mirrors backlogAges keys. */
+export const AGE_BUCKETS = ['new', '1-7d', '7-30d', '30d+'] as const;
+export type AgeBucket = (typeof AGE_BUCKETS)[number];
+
+/** Filter helper for the missing-backlog list (§7: age as first-class data). */
+export function filterByAgeBucket<T extends { ageBucket: string | null }>(
+	items: T[],
+	bucket: string | null
+): T[] {
+	if (!bucket) return items;
+	return items.filter((item) => item.ageBucket === bucket);
+}
+
+/**
  * Completion = (released monitored items − monitored missing) / released
  * monitored items × 100. Future (unaired/unreleased) items and unmonitored
  * items are excluded on both sides (brief §14). Conservative edge case: the

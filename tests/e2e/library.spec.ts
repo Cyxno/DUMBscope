@@ -166,3 +166,57 @@ test('escape closes the drawer and focus returns to the page (§72)', async ({ p
 	await expect(drawer).not.toBeVisible();
 	await expect(page.getByRole('heading', { name: 'Media library' })).toBeVisible();
 });
+
+test('overview count deep links into the filtered TV view (§66/§172)', async ({ page }) => {
+	await page.goto('/library');
+	// The TV card's missing count is a link into the filtered TV browser.
+	const missingLink = page.getByRole('link', { name: /episodes missing/ }).first();
+	await expect(missingLink).toBeVisible();
+	await missingLink.click();
+	await expect(page).toHaveURL(/view=tv&filter=incomplete&sort=missing-oldest/);
+	await expect(page.getByText(/released episodes missing/)).toBeVisible();
+});
+
+test('backlog age chips filter the missing list and share the URL (§7/§8/§43)', async ({
+	page
+}) => {
+	await page.goto('/library?view=tv');
+	const section = page.locator('section[aria-label="Missing episode backlog"]');
+	await expect(section.getByText('Missing episode backlog — 14')).toBeVisible();
+
+	// 30d+ chip: mock data has 7 of the 14 missing episodes older than 30 days.
+	await section.getByRole('button', { name: '30d+', exact: true }).click();
+	await expect(page).toHaveURL(/backlogAge=30d(\+|%2B)/);
+	const list = section.locator('ul');
+	await expect(list.locator('li')).toHaveCount(7);
+	await expect(section.getByText(/Showing 7 of 14 loaded entries/)).toBeVisible();
+
+	// ≤24h chip narrows to the two newest mock entries.
+	await section.getByRole('button', { name: '≤24h', exact: true }).click();
+	await expect(list.locator('li')).toHaveCount(2);
+
+	// Back navigation restores the previous age selection (§135).
+	await page.goBack();
+	await expect(page).toHaveURL(/backlogAge=30d(\+|%2B)/);
+});
+
+test('TV upgrades filter lists only series with cutoff-unmet episodes (§20/§47)', async ({
+	page
+}) => {
+	await page.goto('/library?view=tv&filter=upgrades');
+	// Mock cutoff data: Blue Harbor ×3, Hollow Ridge ×2, Ember Lane ×1.
+	await expect(page.getByText('Blue Harbor').first()).toBeVisible();
+	await expect(page.getByText('Hollow Ridge').first()).toBeVisible();
+	await expect(page.getByText('Ember Lane').first()).toBeVisible();
+	await expect(page.getByText('Anne of Avonlea')).toBeHidden();
+	// Deep link with the upgrades filter shows the count in the card meta.
+	await expect(page.getByText('3 upg').first()).toBeVisible();
+});
+
+test('movies header shows the quality distribution from file data (§18)', async ({ page }) => {
+	await page.goto('/library?view=movies');
+	const strip = page.locator('[aria-label="Quality distribution"]');
+	await expect(strip).toBeVisible();
+	// All mock movie files are 1080p — the strip mirrors file data, never ideal.
+	await expect(strip.getByText('1080p')).toBeVisible();
+});

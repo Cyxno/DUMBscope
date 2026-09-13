@@ -62,6 +62,7 @@ export const GET: RequestHandler = async ({ url }) => {
 		queue: view.queue,
 		healthWarnings: view.healthWarnings.slice(0, 20),
 		attention: view.attention,
+		recent: view.recent,
 		trends: {
 			windowDays,
 			tv: libraryTrend('tv', windowDays),

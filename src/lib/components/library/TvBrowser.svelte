@@ -32,6 +32,9 @@
 		qualityProfile: string | null;
 		posterVersion: string | null;
 		addedAt: number | null;
+		/** Cutoff-unmet episodes (brief §20/§47); absent in older payloads. */
+		upgradeCount?: number;
+		oldestMissingAt?: number | null;
 	}
 	export interface UpcomingItem {
 		key: string;
@@ -58,6 +61,7 @@
 	const FILTERS = [
 		{ id: 'all', label: 'All' },
 		{ id: 'incomplete', label: 'Incomplete' },
+		{ id: 'upgrades', label: 'Upgrades' },
 		{ id: 'continuing', label: 'Continuing' },
 		{ id: 'ended', label: 'Ended' },
 		{ id: 'monitored', label: 'Monitored' },
@@ -67,6 +71,7 @@
 		{ id: 'name', label: 'Name' },
 		{ id: 'completion', label: 'Completion' },
 		{ id: 'missing', label: 'Most missing' },
+		{ id: 'missing-oldest', label: 'Oldest missing' },
 		{ id: 'added', label: 'Recently added' },
 		{ id: 'year', label: 'Year' }
 	] as const;
@@ -207,7 +212,9 @@
 			completionPct: null,
 			qualityProfile: null,
 			posterVersion: null,
-			addedAt: null
+			addedAt: null,
+			upgradeCount: 0,
+			oldestMissingAt: null
 		};
 	}
 
@@ -379,6 +386,18 @@
 			description="The library fills in automatically once the inventory poll completes — usually within a minute."
 			neutral
 		/>
+	{:else if total === 0 && filter === 'upgrades'}
+		<EmptyState
+			title="No upgrades available"
+			description="Every series meets its quality profile cutoff."
+			neutral
+		/>
+	{:else if total === 0 && filter === 'incomplete'}
+		<EmptyState
+			title="No incomplete series"
+			description="Every monitored series has all of its released episodes."
+			neutral
+		/>
 	{:else if total === 0}
 		<EmptyState title="No series in this filter" description="Adjust the filters above." neutral />
 	{:else if grid}
@@ -408,6 +427,9 @@
 								<span class="tnum">{series.completionPct}%</span> complete
 								{#if series.missingCount > 0}
 									· <span class="text-degraded tnum">{series.missingCount} missing</span>
+								{/if}
+								{#if (series.upgradeCount ?? 0) > 0}
+									· <span class="text-text-faint tnum">{series.upgradeCount} upg</span>
 								{/if}
 							</p>
 						{:else}
@@ -464,6 +486,14 @@
 								: 'text-text-faint'}"
 						>
 							{series.missingCount > 0 ? `${series.missingCount} missing` : 'complete'}
+						</span>
+						<span
+							class="tnum w-16 shrink-0 text-right text-[11px] {(series.upgradeCount ?? 0) > 0
+								? 'text-text-muted'
+								: 'text-text-faint'}"
+							title="{series.upgradeCount ?? 0} episodes could be upgraded"
+						>
+							{(series.upgradeCount ?? 0) > 0 ? `${series.upgradeCount} upg` : '—'}
 						</span>
 					</button>
 				</li>

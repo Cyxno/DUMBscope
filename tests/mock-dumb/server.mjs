@@ -81,6 +81,10 @@ let tick = 0;
 let postgresDown = false;
 let sonarrCrashing = false;
 
+// Reliability-rehearsal control: per-process RSS overrides (GB) so an e2e run
+// can walk a memory-anomaly journey (raise → warning → restore → resolve).
+const rssOverrides = new Map();
+
 const FORCE_POSTGRES_DOWN = process.env.MOCK_POSTGRES_DOWN === '1';
 
 function scenarioTick() {
@@ -216,7 +220,9 @@ function metricsSnapshot() {
 			pid: 100 + i,
 			name: s.name,
 			cpu_percent: Math.max(0.1, seed(i)),
-			rss: 134217728 + i * 52428800
+			rss: rssOverrides.has(s.name)
+				? rssOverrides.get(s.name)
+				: 134217728 + i * 52428800
 		})),
 		external: [],
 		database_health: {
@@ -309,6 +315,28 @@ const server = http.createServer((req, res) => {
 		setGateway(false);
 		res.writeHead(200, { 'content-type': 'application/json' });
 		res.end(JSON.stringify({ gatewayDown: false }));
+		return;
+	}
+	if (url.pathname === '/__control/rss' && req.method === 'POST') {
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			try {
+				const { name, bytes } = JSON.parse(body);
+				if (typeof name !== 'string' || !(bytes === null || typeof bytes === 'number')) {
+					res.writeHead(400, { 'content-type': 'application/json' });
+					res.end(JSON.stringify({ detail: 'name (string) and bytes (number|null) required' }));
+					return;
+				}
+				if (bytes === null) rssOverrides.delete(name);
+				else rssOverrides.set(name, bytes);
+				res.writeHead(200, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ ok: true, name, bytes: bytes ?? null }));
+			} catch {
+				res.writeHead(400, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ detail: 'Bad request' }));
+			}
+		});
 		return;
 	}
 	if (gatewayDown) {

@@ -56,6 +56,7 @@ function reliabilityTuningOverrides(): {
 			evaluateIntervalMs: 2_000,
 			persistenceMs: 5_000,
 			baselineMinSamples: 6,
+			baselineLagMs: 6_000,
 			resolveSustainMs: 5_000,
 			retentionMs: 24 * 60 * 60_000,
 			pruneIntervalMs: 10 * 60_000

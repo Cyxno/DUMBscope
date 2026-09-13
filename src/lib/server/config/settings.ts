@@ -23,6 +23,12 @@ export interface AppSettings {
 	statusInterval: number;
 	metricsInterval: number;
 	reducedMotion: boolean;
+	/** Reliability monitoring switches (read-only observation; no remediation). */
+	mountMonitoring: boolean;
+	memoryMonitoring: boolean;
+	/** Per-process RSS thresholds in GiB for memory anomaly detection. */
+	memoryWarningGb: number;
+	memoryCriticalGb: number;
 }
 
 function getSetting(key: string): string | null {
@@ -54,7 +60,11 @@ export function getSettings(): AppSettings {
 		accent: (getSetting('ui.accent') as AppSettings['accent']) ?? 'cyan',
 		statusInterval: clampInterval(getSetting('dumb.statusInterval'), 2),
 		metricsInterval: clampInterval(getSetting('dumb.metricsInterval'), 2),
-		reducedMotion: getSetting('ui.reducedMotion') === 'true'
+		reducedMotion: getSetting('ui.reducedMotion') === 'true',
+		mountMonitoring: getSetting('reliability.mountMonitoring') !== 'false',
+		memoryMonitoring: getSetting('reliability.memoryMonitoring') !== 'false',
+		memoryWarningGb: clampGb(getSetting('reliability.memoryWarningGb'), 3.5),
+		memoryCriticalGb: clampGb(getSetting('reliability.memoryCriticalGb'), 4.5)
 	};
 }
 
@@ -68,7 +78,11 @@ export function getSettingsForClient() {
 		accent: s.accent,
 		statusInterval: s.statusInterval,
 		metricsInterval: s.metricsInterval,
-		reducedMotion: s.reducedMotion
+		reducedMotion: s.reducedMotion,
+		mountMonitoring: s.mountMonitoring,
+		memoryMonitoring: s.memoryMonitoring,
+		memoryWarningGb: s.memoryWarningGb,
+		memoryCriticalGb: s.memoryCriticalGb
 	};
 }
 
@@ -76,6 +90,14 @@ function clampInterval(raw: string | null, fallback: number): number {
 	const n = raw ? Number(raw) : NaN;
 	if (!Number.isFinite(n)) return fallback;
 	return Math.min(10, Math.max(0.5, n));
+}
+
+/** Memory thresholds live in 0.5–64 GiB; the critical bar can never sit below
+ *  the warning bar (enforced here so a bad patch cannot silence detection). */
+function clampGb(raw: string | null, fallback: number): number {
+	const n = raw ? Number(raw) : NaN;
+	if (!Number.isFinite(n)) return fallback;
+	return Math.min(64, Math.max(0.5, n));
 }
 
 export function setDumbUrl(url: string): void {
@@ -116,4 +138,31 @@ export function setUiPreference(key: 'theme' | 'accent' | 'reducedMotion', value
 
 export function setStreamInterval(key: 'statusInterval' | 'metricsInterval', value: number): void {
 	setSetting(`dumb.${key}`, String(Math.min(10, Math.max(0.5, value))));
+}
+
+// -------------------------------------------------------------------------
+// Reliability monitoring (read-only observation — no remediation knobs)
+// -------------------------------------------------------------------------
+
+export function setReliabilityEnabled(
+	key: 'mountMonitoring' | 'memoryMonitoring',
+	enabled: boolean
+): void {
+	setSetting(`reliability.${key}`, String(enabled));
+}
+
+export function setMemoryThresholds(warningGb: number, criticalGb: number): void {
+	const warn = clampGb(String(warningGb), 3.5);
+	const crit = Math.max(clampGb(String(criticalGb), 4.5), warn);
+	setSetting('reliability.memoryWarningGb', String(warn));
+	setSetting('reliability.memoryCriticalGb', String(crit));
+}
+
+/** Monitored mount targets: a JSON list of MountTarget. */
+export function getMountTargetsJson(): string | null {
+	return getSetting('reliability.mounts');
+}
+
+export function setMountTargetsJson(json: string): void {
+	setSetting('reliability.mounts', json);
 }

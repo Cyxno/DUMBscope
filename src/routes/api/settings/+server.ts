@@ -11,7 +11,9 @@ import {
 	setUiPreference,
 	setStreamInterval,
 	setDumbUrl,
-	setDumbCredentials
+	setDumbCredentials,
+	setReliabilityEnabled,
+	setMemoryThresholds
 } from '$lib/server/config/settings';
 import { getHub } from '$lib/server/telemetry/hub';
 import { DumbClient, DumbAuthError, DumbError } from '$lib/server/dumb/client';
@@ -26,7 +28,12 @@ const patchSchema = z.object({
 	metricsInterval: z.number().min(0.5).max(10).optional(),
 	dumbUrl: dumbUrlSchema.optional(),
 	dumbUsername: z.string().trim().min(1).max(128).optional(),
-	dumbPassword: z.string().min(1).max(256).optional()
+	dumbPassword: z.string().min(1).max(256).optional(),
+	// Reliability monitoring (read-only observation; no remediation knobs).
+	mountMonitoring: z.boolean().optional(),
+	memoryMonitoring: z.boolean().optional(),
+	memoryWarningGb: z.number().min(0.5).max(64).optional(),
+	memoryCriticalGb: z.number().min(0.5).max(64).optional()
 });
 
 /** Settings view: never includes secrets, only presence flags. */
@@ -49,6 +56,20 @@ export const PATCH: RequestHandler = async ({ request }) => {
 		setUiPreference('reducedMotion', String(patch.reducedMotion));
 	if (patch.statusInterval) setStreamInterval('statusInterval', patch.statusInterval);
 	if (patch.metricsInterval) setStreamInterval('metricsInterval', patch.metricsInterval);
+
+	// Reliability switches apply immediately: the hub reads the settings on
+	// every housekeeping pass, no reload needed.
+	if (patch.mountMonitoring !== undefined)
+		setReliabilityEnabled('mountMonitoring', patch.mountMonitoring);
+	if (patch.memoryMonitoring !== undefined)
+		setReliabilityEnabled('memoryMonitoring', patch.memoryMonitoring);
+	if (patch.memoryWarningGb !== undefined || patch.memoryCriticalGb !== undefined) {
+		const current = getSettings();
+		setMemoryThresholds(
+			patch.memoryWarningGb ?? current.memoryWarningGb,
+			patch.memoryCriticalGb ?? current.memoryCriticalGb
+		);
+	}
 
 	// Connection changes: validate, then test credentials when provided.
 	const url = patch.dumbUrl ?? getSettings().dumbUrl;

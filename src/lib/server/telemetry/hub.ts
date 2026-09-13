@@ -13,6 +13,8 @@ import type {
 	LogLine,
 	MetricsHistoryPoint,
 	MetricsSnapshot,
+	MountTarget,
+	ReliabilitySnapshot,
 	ServiceStatus,
 	StackOverview,
 	TopologyGraph
@@ -23,7 +25,7 @@ import { normalizeDiscovered, normalizeMetrics, normalizeServiceStatus } from '.
 import { DumbStream } from '../dumb/streams';
 import { ConnectivityTracker, classifyProbeError } from '../dumb/connection';
 import type { DumbMetricsSnapshot, DumbProcessesResponse, DumbServiceStatus } from '../dumb/types';
-import { getSettings, getDumbCredentials } from '../config/settings';
+import { getSettings, getDumbCredentials, getMountTargetsJson } from '../config/settings';
 import { appInfo } from '$lib/shared/app-info';
 import { configDir } from '../database/db';
 import { splitLines, parseLogLine } from '../logs/parse';
@@ -32,6 +34,68 @@ import { buildTopology } from '../topology/graph';
 import { onActivity, recordActivity, recentActivity, type ActivityEntry } from './activity';
 import { onIntegrationStateChange } from '../integrations/manager';
 import { sweepRateLimits } from '../security/rate-limit';
+import { MountMonitor } from '../reliability/mounts';
+import { MemoryAnomalyTracker, type MemoryTuningOverrides } from '../reliability/memory';
+import { fsProbeCallCount } from '../reliability/fsprobe';
+
+const GIB = 1024 ** 3;
+
+/**
+ * Reliability fast-clock (tests/e2e only): shortens persistence/recovery
+ * windows so a CI browser run can watch a finding open and resolve. Never set
+ * in production deployments; defaults stay at the documented values.
+ */
+function reliabilityTuningOverrides(): {
+	memory: MemoryTuningOverrides;
+	mountIntervalMs: number | null;
+} | null {
+	if (process.env.DUMBSCOPE_RELIABILITY_FAST !== '1') return null;
+	return {
+		memory: {
+			sampleIntervalMs: 2_000,
+			evaluateIntervalMs: 2_000,
+			persistenceMs: 5_000,
+			baselineMinSamples: 6,
+			resolveSustainMs: 5_000,
+			retentionMs: 24 * 60 * 60_000,
+			pruneIntervalMs: 10 * 60_000
+		},
+		mountIntervalMs: 3_000
+	};
+}
+
+/**
+ * Monitored mount targets (FASE B). Empty by default: probing paths that the
+ * container cannot see would only produce false `missing` verdicts, so a
+ * deployment opts in explicitly via the DUMBSCOPE_MOUNTS env (JSON list of
+ * MountTarget) or the `reliability.mounts` setting, which wins over the env.
+ */
+function loadMountTargets(): MountTarget[] {
+	const raw = getMountTargetsJson() ?? process.env.DUMBSCOPE_MOUNTS ?? null;
+	if (!raw) return [];
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		const targets: MountTarget[] = [];
+		for (const entry of parsed) {
+			const t = entry as Partial<MountTarget>;
+			if (typeof t.path !== 'string' || !t.path.startsWith('/')) continue;
+			targets.push({
+				id: typeof t.id === 'string' && t.id ? t.id : t.path,
+				label: typeof t.label === 'string' && t.label ? t.label : t.path,
+				path: t.path,
+				kind: t.kind === 'fuse' || t.kind === 'symlink-root' ? t.kind : 'local',
+				consumers: Array.isArray(t.consumers)
+					? t.consumers.filter((c): c is string => typeof c === 'string')
+					: []
+			});
+		}
+		return targets;
+	} catch {
+		console.log('[dumbscope] invalid DUMBSCOPE_MOUNTS JSON — mount monitoring disabled');
+		return [];
+	}
+}
 
 const METRICS_RING_SIZE = 1800; // ~1h at the default 2s interval
 const LOG_RING_SIZE = 5000;
@@ -73,6 +137,11 @@ export class Hub {
 	private tracker: ConnectivityTracker;
 	private lastConnectionSignature: string | null = null;
 
+	// -- reliability core (FASE B/C): read-only monitors -----------------------
+	private mountMonitor: MountMonitor;
+	private memoryTracker: MemoryAnomalyTracker;
+	private lastReliabilitySignature: string | null = null;
+
 	// ----- infrastructure ----------------------------------------------------
 	private client: DumbClient | null = null;
 	private streams: DumbStream[] = [];
@@ -104,6 +173,26 @@ export class Hub {
 			{ onIncidentChange: (incident) => this.broadcast('incident', incident) },
 			options.testClock
 		);
+		const clock = options.testClock ?? (() => Date.now());
+		const fast = reliabilityTuningOverrides();
+		this.mountMonitor = new MountMonitor({
+			now: clock,
+			targets: loadMountTargets(),
+			enabled: () => getSettings().mountMonitoring,
+			...(fast?.mountIntervalMs !== null && fast
+				? { roundIntervalMs: fast.mountIntervalMs }
+				: process.env.DUMBSCOPE_MOUNT_INTERVAL_MS
+					? { roundIntervalMs: Number(process.env.DUMBSCOPE_MOUNT_INTERVAL_MS) }
+					: {})
+		});
+		this.memoryTracker = new MemoryAnomalyTracker({
+			now: clock,
+			enabled: () => getSettings().memoryMonitoring,
+			warningBytes: () => getSettings().memoryWarningGb * GIB,
+			criticalBytes: () => getSettings().memoryCriticalGb * GIB,
+			onAssessment: (assessment) => this.engine.onMemory(assessment),
+			tuning: fast?.memory
+		});
 	}
 
 	/**
@@ -440,6 +529,9 @@ export class Hub {
 		this.engine.onMetrics(snapshot);
 		this.broadcast('metrics', snapshot);
 		this.emitServices();
+		// FASE C: per-process RSS samples for anomaly detection. Failure-
+		// isolated inside the tracker — never disturbs the metrics pipeline.
+		this.memoryTracker.onSnapshot(snapshot);
 		this.tracker.dataReceived(snapshot.receivedAt);
 		this.publishConnection();
 	}
@@ -494,6 +586,7 @@ export class Hub {
 		this.engine.onTick(this.metricsLatest?.receivedAt ?? null, statusLive);
 		this.engine.correlate(this.topology());
 		this.engine.onConnection(connection);
+		this.runReliabilityChecks();
 
 		// REST recovery: probe while the bootstrap never succeeded this session,
 		// while the connection is not delivering (mid-run outage), and once more
@@ -549,6 +642,62 @@ export class Hub {
 			this.reload();
 		}
 		this.publishConnection();
+	}
+
+	/**
+	 * FASE B/C reliability passes, driven by the same 10s housekeeping tick.
+	 * Both monitors are strictly read-only and failure-isolated (brief §45):
+	 * a hung mount probe or a bad memory series can never affect the DUMB
+	 * connection, the service registry or this poller. The mount tick is
+	 * awaited only by its own promise chain — the housekeeper returns
+	 * immediately; results land in the engine when the probes finish.
+	 */
+	private runReliabilityChecks(): void {
+		const runningProcesses = new Set(
+			[...this.services.values()].filter((s) => s.runState === 'running').map((s) => s.processName)
+		);
+		void this.mountMonitor
+			.tick({ runningProcesses })
+			.then(() => {
+				if (!this.mountMonitor.dirty) return;
+				this.mountMonitor.dirty = false;
+				this.engine.onMountHealth(this.mountMonitor.getReports());
+				this.publishReliability();
+			})
+			.catch(() => {
+				// Mount observability must never break the hub.
+			});
+		const hostMemPercent = this.metricsLatest?.memory?.percent ?? null;
+		this.memoryTracker.evaluate(hostMemPercent);
+		this.publishReliability();
+	}
+
+	/** Current reliability picture for the API/SSE/UI (read-only). */
+	getReliability(): ReliabilitySnapshot {
+		const mountStats = this.mountMonitor.stats();
+		return {
+			mounts: this.mountMonitor.getReports(),
+			memory: this.memoryTracker.getViews(),
+			stats: {
+				mountRounds: mountStats.mountRounds,
+				fsCalls: fsProbeCallCount(),
+				lastRoundMs: mountStats.lastRoundMs,
+				memoryTracked: this.memoryTracker.trackedCount
+			}
+		};
+	}
+
+	/** Fan reliability state out only when something visible changed. */
+	private publishReliability(): void {
+		const snapshot = this.getReliability();
+		const signature = JSON.stringify([
+			snapshot.mounts,
+			snapshot.memory,
+			snapshot.stats.memoryTracked
+		]);
+		if (signature === this.lastReliabilitySignature) return;
+		this.lastReliabilitySignature = signature;
+		this.broadcast('reliability', snapshot);
 	}
 
 	// -------------------------------------------------------------------------

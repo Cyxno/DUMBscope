@@ -21,5 +21,11 @@ export const Fingerprints = {
 	dumbOffline: () => `dumb-offline:${fingerprint('gateway-unreachable')}`,
 	dumbCredentials: () => `dumb-credentials:${fingerprint('credentials-invalid')}`,
 	telemetryStale: () => `telemetry-stale:${fingerprint('metrics-not-updating')}`,
-	integrationDown: (id: string) => `integration-down:${fingerprint(id)}`
+	integrationDown: (id: string) => `integration-down:${fingerprint(id)}`,
+	/** FASE B: one finding per monitored mount path. */
+	mountUnhealthy: (path: string) => `mount:${fingerprint(path)}`,
+	/** FASE B: systemic broken-symlink signal per symlink root. */
+	symlinksBroken: (path: string) => `symlinks:${fingerprint(path)}`,
+	/** FASE C: one finding per process name. */
+	memoryAnomaly: (process: string) => `memory:${fingerprint(process)}`
 };

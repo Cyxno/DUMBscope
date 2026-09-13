@@ -12,6 +12,7 @@ import type {
 	LogLine,
 	MetricsHistoryPoint,
 	MetricsSnapshot,
+	ReliabilitySnapshot,
 	ServiceStatus,
 	StackOverview,
 	TopologyGraph
@@ -67,6 +68,11 @@ class LiveStore {
 	logs = $state<LogLine[]>([]);
 	activeIncidents = $state<Incident[]>([]);
 	topology = $state<TopologyGraph>({ nodes: [], edges: [] });
+	reliability = $state<ReliabilitySnapshot>({
+		mounts: [],
+		memory: [],
+		stats: { mountRounds: 0, fsCalls: 0, lastRoundMs: null, memoryTracked: 0 }
+	});
 	capabilities = $state<Record<string, unknown>>({});
 	version = $state<string | null>(null);
 	feed = $state<FeedState>('connecting');
@@ -190,6 +196,9 @@ class LiveStore {
 		});
 		on<TopologyGraph>('topology', (data) => {
 			this.topology = data;
+		});
+		on<ReliabilitySnapshot>('reliability', (data) => {
+			this.reliability = data;
 		});
 	}
 

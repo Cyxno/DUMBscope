@@ -158,6 +158,23 @@ const MIGRATIONS: Migration[] = [
 			);
 			CREATE INDEX idx_media_snapshots_kind_at ON media_snapshots(kind, at);
 		`
+	},
+	{
+		version: 5,
+		name: 'memory samples for anomaly detection',
+		sql: `
+			-- FASE C: compact per-process RSS samples, at most one row per
+			-- process per minute. Bounded by retention pruning (default 26h):
+			-- worst case ~1.5k rows/process · few MB total, never a raw probe
+			-- firehose. Powers rolling-median baselines and 1h/6h/24h deltas.
+			CREATE TABLE IF NOT EXISTS memory_samples (
+				process TEXT NOT NULL,
+				at INTEGER NOT NULL,
+				rss_bytes INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_memory_samples_process_at ON memory_samples(process, at);
+			CREATE INDEX IF NOT EXISTS idx_memory_samples_at ON memory_samples(at);
+		`
 	}
 ];
 export function currentVersion(db: DatabaseSync): number {

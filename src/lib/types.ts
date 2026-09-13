@@ -231,7 +231,7 @@ export type IncidentStatus = 'active' | 'resolved';
 
 export interface IncidentEvidence {
 	at: number;
-	source: 'status' | 'logs' | 'metrics' | 'connection' | 'integration';
+	source: 'status' | 'logs' | 'metrics' | 'connection' | 'integration' | 'reliability';
 	message: string;
 }
 
@@ -351,4 +351,119 @@ export interface AppInfo {
 	buildSha: string | null;
 	buildTime: string | null;
 	nodeVersion: string;
+}
+
+// ---------------------------------------------------------------------------
+// Reliability — mount health (FASE B, read-only observability)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalized health of one monitored mount path. Everything here is derived
+ * from read-only probes (stat / bounded listing / symlink sampling) with hard
+ * timeouts — mounting, remounting or restarting anything is out of scope.
+ */
+export type MountHealth =
+	/** Probes succeeded; latency within bounds. */
+	| 'healthy'
+	/** Probes succeeded but latency is conspicuously high. */
+	| 'slow'
+	/** Some recent probe rounds failed (mixed or isolated failures). */
+	| 'degraded'
+	/** Probes repeatedly time out while the path exists — FUSE likely hung. */
+	| 'unresponsive'
+	/** The configured path does not exist (wrong bind, mount not present). */
+	| 'missing'
+	/** The path exists but reads fail (EIO / permissions). */
+	| 'read-error'
+	/** No probe result yet. */
+	| 'unknown';
+
+/** What consumes a mount — used for honest "may be affected" correlation. */
+export interface MountTarget {
+	/** Stable id, e.g. `tv-symlinks`. */
+	id: string;
+	/** Display label, e.g. `TV symlink root`. */
+	label: string;
+	/** Absolute path *as visible from the DUMBscope container*. */
+	path: string;
+	/** `fuse` (debrid/rclone view), `symlink-root`, or `local`. */
+	kind: 'fuse' | 'symlink-root' | 'local';
+	/** Consumer names shown in findings, e.g. `Plex Media Server`. */
+	consumers: string[];
+}
+
+/** Bounded symlink-sampling result for one probe round. */
+export interface SymlinkSample {
+	/** Number of links actually probed (hard-capped). */
+	sampled: number;
+	/** Target resolved and stat-able. */
+	valid: number;
+	/** Target missing (stale link). */
+	broken: number;
+	/** lstat/stat failed in a non-ENOENT way (permissions, I/O, timeout). */
+	unreadable: number;
+	/** How many filesystem entries the bounded listing saw (≤ cap). */
+	entriesScanned: number;
+	/** True when the listing hit its entry cap (sampling from a subset). */
+	truncated: boolean;
+}
+
+/** Latest derived report for one monitored mount. */
+export interface MountReport {
+	target: MountTarget;
+	state: MountHealth;
+	/** Last stat latency in ms (null when the stat never succeeded). */
+	statLatencyMs: number | null;
+	/** Last bounded-listing latency in ms. */
+	listLatencyMs: number | null;
+	/** Consecutive failed probe rounds (timeout / IO error). */
+	failedRounds: number;
+	/** Consecutive healthy probe rounds (hysteresis input). */
+	healthyRounds: number;
+	symlink: SymlinkSample | null;
+	lastProbeAt: number | null;
+	/** Epoch ms of the last fully successful round. */
+	lastSuccessAt: number | null;
+	/** Plain-language detail of the most recent failure, if any. */
+	lastError: string | null;
+}
+
+// ---------------------------------------------------------------------------
+// Reliability — memory anomalies (FASE C)
+// ---------------------------------------------------------------------------
+
+export type MemoryAnomalyLevel = 'ok' | 'warning' | 'critical';
+
+/** One process's memory picture as shown in the UI (drawer + cards). */
+export interface ProcessMemoryView {
+	process: string;
+	/** Most recent sample. */
+	currentBytes: number | null;
+	/** Rolling median baseline (typical use) over the baseline window. */
+	baselineBytes: number | null;
+	delta1hBytes: number | null;
+	delta6hBytes: number | null;
+	/** Peak RSS within the retention window (up to 24h). */
+	peak24hBytes: number | null;
+	level: MemoryAnomalyLevel;
+	/** Sample count backing the view (0 when history is still building). */
+	samples: number;
+	lastSampleAt: number | null;
+}
+
+/** Full reliability payload for the API/SSE and the System page. */
+export interface ReliabilitySnapshot {
+	mounts: MountReport[];
+	/** Views for the most memory-heavy tracked processes, anomalies first. */
+	memory: ProcessMemoryView[];
+	stats: {
+		/** Total mount probe rounds since process start. */
+		mountRounds: number;
+		/** Filesystem operations issued to probe workers since start. */
+		fsCalls: number;
+		/** Duration of the last full mount round (all targets) in ms. */
+		lastRoundMs: number | null;
+		/** Processes currently sampled for memory. */
+		memoryTracked: number;
+	};
 }

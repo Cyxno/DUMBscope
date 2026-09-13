@@ -5,7 +5,52 @@
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { formatBytes, formatPercent, relativeTime } from '$lib/utils/format';
 	import { CONNECTION_LABELS } from '$lib/utils/status';
-	import { Cpu, MemoryStick, HardDrive, ArrowDownUp } from '@lucide/svelte';
+	import type { MountHealth, MemoryAnomalyLevel } from '$lib/types';
+	import {
+		Cpu,
+		MemoryStick,
+		HardDrive,
+		ArrowDownUp,
+		HardDriveDownload,
+		TriangleAlert
+	} from '@lucide/svelte';
+
+	const mounts = $derived(live.reliability.mounts);
+	const memoryViews = $derived(live.reliability.memory);
+
+	function mountColor(state: MountHealth): string {
+		switch (state) {
+			case 'healthy':
+				return 'var(--healthy)';
+			case 'slow':
+			case 'degraded':
+				return 'var(--degraded)';
+			case 'unresponsive':
+			case 'read-error':
+				return 'var(--critical)';
+			case 'missing':
+				return 'var(--degraded)';
+			default:
+				return 'var(--unknown)';
+		}
+	}
+
+	function memoryColor(level: MemoryAnomalyLevel): string {
+		switch (level) {
+			case 'critical':
+				return 'var(--critical)';
+			case 'warning':
+				return 'var(--degraded)';
+			default:
+				return 'var(--text-muted)';
+		}
+	}
+
+	function signed(bytes: number | null): string {
+		if (bytes === null) return '—';
+		const sign = bytes >= 0 ? '+' : '−';
+		return `${sign}${formatBytes(Math.abs(bytes))}`;
+	}
 
 	let hours = $state(1);
 	let remotePoints = $state<
@@ -170,6 +215,118 @@
 				{/if}
 			</ul>
 		</div>
+	</Card>
+
+	<!-- Storage mounts (FASE B): read-only observability, states + latency. -->
+	<Card
+		title="Storage mounts"
+		subtitle="Read-only probe results — stat latency and bounded symlink sampling"
+	>
+		{#if mounts.length === 0}
+			<p class="rounded-lg bg-surface-2 px-3 py-3 text-xs text-text-muted">
+				No mount paths configured. Set <code class="text-text-secondary">DUMBSCOPE_MOUNTS</code>
+				(JSON) to monitor debrid mounts, symlink roots or media paths.
+			</p>
+		{:else}
+			<ul class="grid grid-cols-1 gap-2 lg:grid-cols-2">
+				{#each mounts as mount (mount.target.id)}
+					<li class="rounded-lg bg-surface-2 px-3 py-2.5 text-xs">
+						<div class="flex items-center justify-between gap-2">
+							<span class="flex min-w-0 items-center gap-2">
+								<HardDriveDownload
+									size={13}
+									style="color:{mountColor(mount.state)}"
+									aria-hidden="true"
+								/>
+								<span class="min-w-0">
+									<span class="block truncate font-medium text-text-primary"
+										>{mount.target.label}</span
+									>
+									<span class="block truncate text-[10px] text-text-faint" title={mount.target.path}
+										>{mount.target.path}</span
+									>
+								</span>
+							</span>
+							<span class="font-semibold capitalize" style="color:{mountColor(mount.state)}"
+								>{mount.state}</span
+							>
+						</div>
+						<div class="tnum mt-1.5 flex flex-wrap gap-x-3 gap-y-0.5 text-[10px] text-text-muted">
+							<span>
+								{mount.state === 'missing'
+									? 'not mounted'
+									: mount.statLatencyMs === null
+										? 'no response yet'
+										: `stat ${Math.round(mount.statLatencyMs)} ms`}
+							</span>
+							{#if mount.listLatencyMs !== null}
+								<span>list {Math.round(mount.listLatencyMs)} ms</span>
+							{/if}
+							{#if mount.symlink}
+								<span>
+									links {mount.symlink.sampled} sampled · {mount.symlink.valid} valid ·
+									<span class={mount.symlink.broken > 0 ? 'text-degraded' : ''}
+										>{mount.symlink.broken} broken</span
+									>
+								</span>
+							{/if}
+							{#if mount.failedRounds > 0}
+								<span class="text-degraded"
+									>{mount.failedRounds} failed round{mount.failedRounds === 1 ? '' : 's'}</span
+								>
+							{/if}
+							{#if mount.lastError}
+								<span class="w-full text-degraded" title={mount.lastError}>{mount.lastError}</span>
+							{/if}
+						</div>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</Card>
+
+	<!-- Memory anomalies (FASE C): current vs typical vs growth. -->
+	<Card title="Memory anomalies" subtitle="Per-process RSS against its rolling-median baseline">
+		{#if memoryViews.length === 0}
+			<p class="rounded-lg bg-surface-2 px-3 py-3 text-xs text-text-muted">
+				Collecting per-process memory samples — baselines form within about an hour.
+			</p>
+		{:else}
+			<ul class="space-y-1.5 text-xs">
+				{#each memoryViews as view (view.process)}
+					{@const anomalous = view.level !== 'ok'}
+					<li
+						class="flex items-center gap-2.5 rounded-lg bg-surface-2 px-3 py-2 {anomalous
+							? 'border border-degraded'
+							: ''}"
+					>
+						{#if anomalous}
+							<TriangleAlert size={13} style="color:{memoryColor(view.level)}" aria-hidden="true" />
+						{/if}
+						<span class="min-w-0 flex-1 truncate font-medium text-text-primary">{view.process}</span
+						>
+						<span class="tnum w-16 text-right font-semibold" style="color:{memoryColor(view.level)}"
+							>{formatBytes(view.currentBytes)}</span
+						>
+						<span class="tnum w-16 text-right text-text-muted" title="Typical (6h baseline median)"
+							>{view.baselineBytes === null ? '—' : formatBytes(view.baselineBytes)}</span
+						>
+						<span
+							class="tnum w-16 text-right"
+							style="color:{(view.delta6hBytes ?? 0) > 0 ? 'var(--degraded)' : 'var(--text-muted)'}"
+							>{signed(view.delta6hBytes)}</span
+						>
+						<span class="tnum w-16 text-right text-text-faint" title="24h peak"
+							>{formatBytes(view.peak24hBytes)}</span
+						>
+					</li>
+				{/each}
+			</ul>
+			<p class="mt-2 text-[10px] text-text-faint">
+				Columns: current · typical · 6h change · 24h peak. Anomalous processes keep their finding
+				until memory stays near typical for 10 minutes.
+			</p>
+		{/if}
 	</Card>
 
 	{#if !metrics}

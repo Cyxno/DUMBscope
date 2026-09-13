@@ -15,6 +15,10 @@
 	let reducedMotion = $state(false);
 	let statusInterval = $state(2);
 	let metricsInterval = $state(2);
+	let mountMonitoring = $state(true);
+	let memoryMonitoring = $state(true);
+	let memoryWarningGb = $state(3.5);
+	let memoryCriticalGb = $state(4.5);
 
 	let saving = $state(false);
 	let message = $state<{ kind: 'ok' | 'error'; text: string } | null>(null);
@@ -36,6 +40,10 @@
 			reducedMotion: boolean;
 			statusInterval: number;
 			metricsInterval: number;
+			mountMonitoring: boolean;
+			memoryMonitoring: boolean;
+			memoryWarningGb: number;
+			memoryCriticalGb: number;
 		};
 		dumbUrl = data.dumbUrl ?? '';
 		hasCredentials = data.hasDumbCredentials;
@@ -44,6 +52,10 @@
 		reducedMotion = data.reducedMotion;
 		statusInterval = data.statusInterval;
 		metricsInterval = data.metricsInterval;
+		mountMonitoring = data.mountMonitoring;
+		memoryMonitoring = data.memoryMonitoring;
+		memoryWarningGb = data.memoryWarningGb;
+		memoryCriticalGb = data.memoryCriticalGb;
 	}
 
 	async function saveDisplay() {
@@ -53,10 +65,23 @@
 			const response = await fetch('/api/settings', {
 				method: 'PATCH',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ theme, accent, reducedMotion, statusInterval, metricsInterval })
+				body: JSON.stringify({
+					theme,
+					accent,
+					reducedMotion,
+					statusInterval,
+					metricsInterval,
+					mountMonitoring,
+					memoryMonitoring,
+					memoryWarningGb,
+					memoryCriticalGb
+				})
 			});
 			if (response.ok) {
-				message = { kind: 'ok', text: 'Display preferences saved.' };
+				message = {
+					kind: 'ok',
+					text: 'Preferences saved. Reliability settings apply immediately.'
+				};
 				applyTheme();
 			} else {
 				const data = (await response.json()) as { error?: string };
@@ -280,6 +305,65 @@
 			>
 				{saving ? 'Saving…' : 'Save preferences'}
 			</button>
+		</div>
+	</Card>
+
+	<Card
+		title="Reliability"
+		subtitle="Read-only monitoring — DUMBscope never restarts or repairs anything"
+	>
+		<div class="space-y-4">
+			<div class="grid grid-cols-1 gap-2 sm:grid-cols-2">
+				<label class="flex items-center gap-2.5 text-xs text-text-secondary">
+					<input
+						type="checkbox"
+						bind:checked={mountMonitoring}
+						class="h-4 w-4 accent-[var(--accent)]"
+					/>
+					Mount monitoring (stat + bounded symlink sampling)
+				</label>
+				<label class="flex items-center gap-2.5 text-xs text-text-secondary">
+					<input
+						type="checkbox"
+						bind:checked={memoryMonitoring}
+						class="h-4 w-4 accent-[var(--accent)]"
+					/>
+					Memory anomaly detection (per-process RSS)
+				</label>
+			</div>
+			<div class="grid grid-cols-2 gap-3">
+				<label class="block">
+					<span class="mb-1 block text-xs font-medium text-text-secondary"
+						>Memory warning at {memoryWarningGb} GB</span
+					>
+					<input
+						type="range"
+						min="1"
+						max="12"
+						step="0.5"
+						bind:value={memoryWarningGb}
+						class="w-full accent-[var(--accent)]"
+					/>
+				</label>
+				<label class="block">
+					<span class="mb-1 block text-xs font-medium text-text-secondary"
+						>Memory critical at {memoryCriticalGb} GB</span
+					>
+					<input
+						type="range"
+						min="1"
+						max="12"
+						step="0.5"
+						bind:value={memoryCriticalGb}
+						class="w-full accent-[var(--accent)]"
+					/>
+				</label>
+			</div>
+			<p class="text-[11px] text-text-faint">
+				Warning only fires when a process is also far above its own baseline or rising fast — a
+				barely-over-threshold steady state stays quiet. Findings resolve after ~10 minutes of
+				sustained recovery.
+			</p>
 		</div>
 	</Card>
 

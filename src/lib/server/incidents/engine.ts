@@ -17,12 +17,15 @@ import type {
 	IncidentSeverity,
 	LogLine,
 	MetricsSnapshot,
+	MountReport,
 	ServiceStatus
 } from '$lib/types';
 import type { TopologyGraph } from '$lib/types';
+import type { MemoryAssessment } from '../reliability/memory';
 import { Fingerprints, fingerprint } from './fingerprint';
 import { incidentRepository, newIncidentId } from './repository';
 import { INCIDENT_TUNING as TUNING } from './tuning';
+import { MOUNT_TUNING } from '../reliability/mounts';
 import { serviceKeyFromName } from '../dumb/normalize';
 
 interface OpenState {
@@ -39,6 +42,10 @@ interface OpenState {
 	metricsStaleSince: number | null;
 	diskAboveSince: Map<string, number>;
 	restartFailures: Map<string, number>;
+	/** Healthy rounds per mount, gating finding resolution (hysteresis). */
+	mountHealthyRounds: Map<string, number>;
+	/** Rounds since the systemic symlink signal last held, per mount. */
+	symlinkCleanRounds: Map<string, number>;
 }
 
 export interface EngineEvents {
@@ -468,6 +475,173 @@ export class IncidentEngine {
 	}
 
 	// -------------------------------------------------------------------------
+	// Reliability findings — mounts (FASE B) and memory (FASE C)
+	//
+	// These follow the same rules as every other incident: dedupe by
+	// fingerprint, open only on sustained evidence, resolve with hysteresis.
+	// There is no second findings engine — the incident layer *is* the findings
+	// model (brief §25): fingerprint = category+identity, severity, evidence,
+	// firstSeen/lastSeen, status, occurrences for flap history.
+	// -------------------------------------------------------------------------
+
+	/**
+	 * One mount probe round. `unresponsive`/`read-error` are critical
+	 * findings, `missing` a warning; resolution requires several consecutive
+	 * healthy rounds (MOUNT_TUNING.healthyRoundsForRecovery). Correlation copy
+	 * ("storage mount appears unhealthy", consumers "may be affected") comes
+	 * from the report itself and stays honest — consumers are never opened an
+	 * incident of their own.
+	 */
+	onMountHealth(reports: MountReport[]): void {
+		const now = this.nowFn();
+		for (const report of reports) {
+			const path = report.target.path;
+			const fp = Fingerprints.mountUnhealthy(path);
+			const down = report.state === 'unresponsive' || report.state === 'read-error';
+			const missing = report.state === 'missing';
+			const degraded = report.state === 'degraded';
+
+			if (down || missing || degraded) {
+				const severity: IncidentSeverity = down ? 'critical' : 'warning';
+				const stateLabel = report.state;
+				const consumerNote =
+					report.target.consumers.length > 0
+						? ` May be affected: ${report.target.consumers.join(', ')}.`
+						: '';
+				const storageNote = report.lastError?.includes('storage mount appears unhealthy')
+					? ' The storage service reports running, so the storage mount itself appears unhealthy.'
+					: '';
+				this.openIncident({
+					fingerprint: fp,
+					severity,
+					title: `${report.target.label}: ${stateLabel}`,
+					summary:
+						(stateLabel === 'unresponsive'
+							? `Storage mount is not answering probes${storageNote}`
+							: stateLabel === 'read-error'
+								? `Storage mount exists but reads fail${storageNote}`
+								: stateLabel === 'missing'
+									? 'Configured mount path does not exist inside the DUMBscope container'
+									: 'Storage mount is answering intermittently') + consumerNote,
+					service: null,
+					evidenceMessage:
+						(report.lastError ?? `state=${stateLabel}`) +
+						(report.statLatencyMs !== null ? `, stat ${Math.round(report.statLatencyMs)}ms` : '') +
+						` (${report.failedRounds} failed probe round${report.failedRounds === 1 ? '' : 's'})`,
+					source: 'reliability',
+					refreshSummary: true
+				});
+				this.state.mountHealthyRounds.delete(path);
+				continue;
+			}
+
+			if (report.state === 'healthy' || report.state === 'slow') {
+				const healthy = (this.state.mountHealthyRounds.get(path) ?? 0) + 1;
+				this.state.mountHealthyRounds.set(path, healthy);
+				if (healthy >= MOUNT_TUNING.healthyRoundsForRecovery) {
+					this.resolveIfActive(
+						fp,
+						now,
+						`Mount is answering again (${Math.round(report.statLatencyMs ?? 0)}ms stat latency)`
+					);
+				}
+			}
+			if (report.state === 'unknown') continue;
+
+			// Systemic symlink signal only (brief §23): a couple of stale links
+			// is noise; a strongly broken sample is the rclone/debrid target
+			// being gone.
+			const symlinkFp = Fingerprints.symlinksBroken(path);
+			const sample = report.symlink;
+			const systemic =
+				sample !== null &&
+				sample.sampled >= MOUNT_TUNING.systemicMinSample &&
+				sample.broken / sample.sampled >= MOUNT_TUNING.systemicBrokenRatio;
+			if (systemic && sample) {
+				this.state.symlinkCleanRounds.delete(path);
+				this.openIncident({
+					fingerprint: symlinkFp,
+					severity: 'warning',
+					title: `${report.target.label}: most sampled symlinks are broken`,
+					summary: `${sample.broken} of ${sample.sampled} sampled links point at missing targets — the storage behind this root looks unavailable.${report.target.consumers.length > 0 ? ` May be affected: ${report.target.consumers.join(', ')}.` : ''}`,
+					service: null,
+					evidenceMessage: `sampled=${sample.sampled} valid=${sample.valid} broken=${sample.broken} unreadable=${sample.unreadable}`,
+					source: 'reliability',
+					refreshSummary: true
+				});
+			} else if (sample && sample.sampled >= MOUNT_TUNING.systemicMinSample) {
+				const clean = (this.state.symlinkCleanRounds.get(path) ?? 0) + 1;
+				this.state.symlinkCleanRounds.set(path, clean);
+				if (clean >= MOUNT_TUNING.healthyRoundsForRecovery) {
+					this.resolveIfActive(
+						symlinkFp,
+						now,
+						sample.broken === 0
+							? 'Sampled symlinks resolve again'
+							: `Symlink integrity back within bounds (${sample.broken}/${sample.sampled} broken)`
+					);
+				}
+			}
+		}
+	}
+
+	/**
+	 * One memory detection pass (FASE C). The tracker owns thresholds,
+	 * persistence and hysteresis; the engine only translates the assessment
+	 * into the finding lifecycle. A single summary carries the UI line:
+	 * "<process> memory use is unusually high — 4.2 GB · +1.8 GB over 6h".
+	 */
+	onMemory(assessmentToApply: MemoryAssessment): void {
+		const now = this.nowFn();
+		const fp = Fingerprints.memoryAnomaly(assessmentToApply.process);
+		if (assessmentToApply.level === 'ok') {
+			this.resolveIfActive(
+				fp,
+				now,
+				`${assessmentToApply.process} memory returned to typical levels (${formatGb(assessmentToApply.currentBytes)})`
+			);
+			return;
+		}
+		const typical =
+			assessmentToApply.baselineBytes !== null
+				? ` · typical ${formatGb(assessmentToApply.baselineBytes)}`
+				: '';
+		const delta =
+			assessmentToApply.delta6hBytes !== null
+				? ` · ${assessmentToApply.delta6hBytes >= 0 ? '+' : '−'}${formatGb(Math.abs(assessmentToApply.delta6hBytes))} over 6h`
+				: '';
+		const evidence = [
+			`rss=${formatGb(assessmentToApply.currentBytes)}`,
+			assessmentToApply.baselineBytes !== null
+				? `baseline=${formatGb(assessmentToApply.baselineBytes)}`
+				: null,
+			assessmentToApply.delta1hBytes !== null
+				? `Δ1h=${assessmentToApply.delta1hBytes >= 0 ? '+' : '−'}${formatGb(Math.abs(assessmentToApply.delta1hBytes))}`
+				: null,
+			assessmentToApply.peak24hBytes !== null
+				? `peak24h=${formatGb(assessmentToApply.peak24hBytes)}`
+				: null,
+			...assessmentToApply.reasons
+		]
+			.filter(Boolean)
+			.join(', ');
+		this.openIncident({
+			fingerprint: fp,
+			severity: assessmentToApply.level === 'critical' ? 'critical' : 'warning',
+			title: `${assessmentToApply.process} memory use is unusually high`,
+			summary:
+				`${formatGb(assessmentToApply.currentBytes)}${delta}${typical}` +
+				(assessmentToApply.hostMemPercent !== null && assessmentToApply.hostMemPercent >= 90
+					? ` · host memory pressure ${assessmentToApply.hostMemPercent.toFixed(0)}%`
+					: ''),
+			service: null,
+			evidenceMessage: evidence,
+			source: 'reliability',
+			refreshSummary: true
+		});
+	}
+
+	// -------------------------------------------------------------------------
 	// Correlation
 	// -------------------------------------------------------------------------
 
@@ -583,6 +757,21 @@ export class IncidentEngine {
 
 		if (existing && existing.status === 'active') {
 			if (input.refreshSummary && input.summary) existing.summary = input.summary;
+			// Severity escalation/de-escalation while active (e.g. a memory
+			// finding that keeps growing): record the transition in the timeline.
+			if (input.severity !== existing.severity) {
+				const previous = existing.severity;
+				existing.severity = input.severity;
+				existing.timeline.push({
+					at: now,
+					severity: input.severity,
+					message:
+						input.severity === 'critical'
+							? `Escalated from ${previous} to critical`
+							: `De-escalated from ${previous} to warning`
+				});
+				this.trim(existing);
+			}
 			existing.lastSeen = now;
 			incidentRepository.update(existing);
 			this.state.byFingerprint.set(input.fingerprint, existing);
@@ -686,7 +875,9 @@ function freshState(): OpenState {
 		liveSince: null,
 		metricsStaleSince: null,
 		diskAboveSince: new Map(),
-		restartFailures: new Map()
+		restartFailures: new Map(),
+		mountHealthyRounds: new Map(),
+		symlinkCleanRounds: new Map()
 	};
 }
 
@@ -742,4 +933,12 @@ function formatBytes(bytes: number): string {
 	const units = ['B', 'KB', 'MB', 'GB', 'TB'];
 	const i = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
 	return `${(bytes / 1024 ** i).toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
+}
+
+/** Compact GB-scale formatting for memory findings (4.2 GB, 640 MB). */
+function formatGb(bytes: number): string {
+	if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+	const gb = bytes / 1024 ** 3;
+	if (gb >= 1) return `${gb.toFixed(1)} GB`;
+	return `${(bytes / 1024 ** 2).toFixed(0)} MB`;
 }

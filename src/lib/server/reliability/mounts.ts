@@ -188,8 +188,7 @@ export class MountMonitor {
 		state.consecutiveMissing = 0;
 
 		if (statOk && listOk) {
-			// A fully successful round: reset failure tracking immediately, but
-			// only flip the state after the round actually worked end to end.
+			// A fully successful round: reset failure tracking immediately.
 			report.failedRounds = 0;
 			report.healthyRounds++;
 			report.statLatencyMs = stat.latencyMs ?? null;
@@ -197,10 +196,11 @@ export class MountMonitor {
 			report.symlink = list.sample ?? null;
 			report.lastSuccessAt = this.nowFn();
 			report.lastError = null;
-			report.state =
-				Math.max(report.statLatencyMs ?? 0, report.listLatencyMs ?? 0) > MOUNT_TUNING.slowLatencyMs
-					? 'slow'
-					: 'healthy';
+			// 'slow' follows the *stat* latency: plain responsiveness of the
+			// mount. The bounded walk's list latency is budgeted work (400
+			// entries over a FUSE/shfs stack easily exceeds a second on a
+			// healthy array) — reported in the UI, but never a health signal.
+			report.state = (report.statLatencyMs ?? 0) > MOUNT_TUNING.slowLatencyMs ? 'slow' : 'healthy';
 			return;
 		}
 

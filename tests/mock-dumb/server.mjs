@@ -220,9 +220,7 @@ function metricsSnapshot() {
 			pid: 100 + i,
 			name: s.name,
 			cpu_percent: Math.max(0.1, seed(i)),
-			rss: rssOverrides.has(s.name)
-				? rssOverrides.get(s.name)
-				: 134217728 + i * 52428800
+			rss: rssOverrides.has(s.name) ? rssOverrides.get(s.name) : 134217728 + i * 52428800
 		})),
 		external: [],
 		database_health: {

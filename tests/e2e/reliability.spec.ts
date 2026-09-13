@@ -1,4 +1,4 @@
-import { expect, test } from '@playwright/test';
+import { expect, test, type Page } from '@playwright/test';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -43,7 +43,7 @@ async function setRss(name: string, bytes: number | null): Promise<void> {
 }
 
 /** The Active section of the incidents page (history rows are separate). */
-function activeSection(page: import('@playwright/test').Page) {
+function activeSection(page: Page) {
 	return page
 		.locator('section')
 		.filter({ has: page.getByRole('heading', { name: 'Active', exact: true }) });

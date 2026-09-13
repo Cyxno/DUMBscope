@@ -83,6 +83,12 @@ export class DumbStream {
 		if (this.closedByUs) return;
 		const url = this.options.url();
 		this.clearTimers();
+		// A fired reconnect timer must never block close handling again: its
+		// stale (truthy) handle used to make onclose return early forever, so
+		// a socket that had reconnected once went deaf on every later
+		// disconnect and the stream stayed 'live' while frozen (production
+		// false-live/false-offline symptom, FASE A root cause #2).
+		this.connectTimer = null;
 		this.setState(this.attempts === 0 ? 'connecting' : 'reconnecting', undefined, true);
 
 		let ws: WebSocket;
@@ -95,6 +101,15 @@ export class DumbStream {
 		this.ws = ws;
 
 		ws.onopen = () => {
+			if (this.ws !== ws) {
+				// Late open of a superseded socket: discard it.
+				try {
+					ws.close();
+				} catch {
+					// already gone
+				}
+				return;
+			}
 			this.attempts = 0;
 			this.lastMessageAt = Date.now();
 			this.setState('live');
@@ -102,12 +117,14 @@ export class DumbStream {
 		};
 
 		ws.onmessage = (event: MessageEvent) => {
+			if (this.ws !== ws) return;
 			this.lastMessageAt = Date.now();
 			const data = typeof event.data === 'string' ? event.data : '';
 			if (data.length > 0) this.options.onMessage(data);
 		};
 
 		ws.onerror = () => {
+			if (this.ws !== ws) return;
 			// Node's WebSocket fires only 'error' on a failed handshake (e.g. 401);
 			// treat it as a connection failure so reconnect logic engages.
 			if (this.state === 'live') {
@@ -118,6 +135,7 @@ export class DumbStream {
 		};
 
 		ws.onclose = (event: CloseEvent) => {
+			if (this.ws !== ws) return; // stale socket from a previous attempt
 			this.clearTimers();
 			this.ws = null;
 			if (this.closedByUs) {
@@ -169,6 +187,9 @@ export class DumbStream {
 		const base = Math.min(1000 * 2 ** Math.min(this.attempts - 1, 6), maxBackoffMs);
 		const jitter = base * (0.5 + Math.random() * 0.5);
 		const delay = floorMs ? Math.max(floorMs, jitter) : jitter;
-		this.connectTimer = setTimeout(() => this.connect(), delay);
+		this.connectTimer = setTimeout(() => {
+			this.connectTimer = null;
+			this.connect();
+		}, delay);
 	}
 }

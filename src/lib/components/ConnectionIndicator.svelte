@@ -41,7 +41,9 @@
 			case 'connecting':
 				return 'Connecting to DUMB…';
 			case 'reconnecting': {
-				const ago = c.lastSuccessAt ? ` · last successful contact ${relativeTime(c.lastSuccessAt)}` : '';
+				const ago = c.lastSuccessAt
+					? ` · last successful contact ${relativeTime(c.lastSuccessAt)}`
+					: '';
 				return `Reconnecting to DUMB${ago}`;
 			}
 			case 'degraded':
@@ -51,7 +53,9 @@
 			case 'stale':
 				return 'Connection is up, but no new data is arriving — it will be restarted automatically.';
 			case 'offline': {
-				const ago = c.lastSuccessAt ? `Last successful contact ${relativeTime(c.lastSuccessAt)}. ` : '';
+				const ago = c.lastSuccessAt
+					? `Last successful contact ${relativeTime(c.lastSuccessAt)}. `
+					: '';
 				return `${ago}DUMB is not responding.`;
 			}
 			case 'credentials-invalid':

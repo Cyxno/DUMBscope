@@ -26,12 +26,7 @@
  * Only `offline` claims DUMB is genuinely unreachable, and only after the
  * grace windows expired with failing probes.
  */
-import type {
-	ConnectionProbe,
-	ConnectionSnapshot,
-	ConnectionState,
-	StreamName
-} from '$lib/types';
+import type { ConnectionProbe, ConnectionSnapshot, ConnectionState, StreamName } from '$lib/types';
 
 export const CONNECTIVITY_TUNING = {
 	/** Amber ceiling after DUMBscope/hub start while DUMB may still be booting.
@@ -62,8 +57,6 @@ export interface ConnectivityTrackerOptions {
 	staleAfterMs?: number;
 }
 
-const STREAM_NAMES: StreamName[] = ['rest', 'status', 'metrics', 'logs'];
-
 function emptyProbe(): ConnectionProbe {
 	return { status: 'unknown', code: null, detail: null, at: null, okAt: null };
 }
@@ -73,7 +66,10 @@ function emptyProbe(): ConnectionProbe {
  * detail (brief §6/§186): "connection refused", "timed out after 10s", DNS
  * failure, HTTP status — never raw errno in user-facing copy.
  */
-export function classifyProbeError(err: unknown): { code: ConnectionProbe['code']; detail: string } {
+export function classifyProbeError(err: unknown): {
+	code: ConnectionProbe['code'];
+	detail: string;
+} {
 	if (err instanceof Error && err.name === 'AbortError') {
 		return { code: 'timeout', detail: 'request timed out' };
 	}
@@ -163,7 +159,12 @@ export class ConnectivityTracker {
 	 *  must not erase evidence. */
 	hubRestart(): void {
 		this.bootAt = this.nowFn();
-		this.streams = { rest: this.streams.rest, status: 'connecting', metrics: 'connecting', logs: 'connecting' };
+		this.streams = {
+			rest: this.streams.rest,
+			status: 'connecting',
+			metrics: 'connecting',
+			logs: 'connecting'
+		};
 		this.credentialsInvalid = false;
 		// A reload drops live sockets: if contact existed before, this instant
 		// starts the recovery window (never an unbounded sticky state).
@@ -203,8 +204,7 @@ export class ConnectivityTracker {
 		this.streams[name] = state;
 		const now = this.nowFn();
 		if (name !== 'status' && name !== 'metrics') return;
-		const coreBothLive =
-			this.streams.status === 'live' && this.streams.metrics === 'live';
+		const coreBothLive = this.streams.status === 'live' && this.streams.metrics === 'live';
 		const anyCoreLive = this.streams.status === 'live' || this.streams.metrics === 'live';
 		if (coreBothLive) {
 			// The working mode is fully restored — reset the recovery clock.
@@ -231,8 +231,7 @@ export class ConnectivityTracker {
 			// A REST success re-opens a partial (REST-only) working mode.
 			if (layer === 'rest') {
 				this.credentialsInvalid = false;
-				const coreBothLive =
-					this.streams.status === 'live' && this.streams.metrics === 'live';
+				const coreBothLive = this.streams.status === 'live' && this.streams.metrics === 'live';
 				if (!coreBothLive) this.sessionLostAt = null;
 			}
 		} else if (
@@ -301,8 +300,7 @@ export class ConnectivityTracker {
 		const coreBothLive = status === 'live' && metrics === 'live';
 
 		// Data freshness overrules nominal sockets: connected but frozen.
-		const dataFrozen =
-			this.lastUpdateAt !== null && now - this.lastUpdateAt > this.staleAfterMs;
+		const dataFrozen = this.lastUpdateAt !== null && now - this.lastUpdateAt > this.staleAfterMs;
 		if (status === 'stale' || metrics === 'stale') return 'stale';
 		if (coreBothLive) return dataFrozen ? 'stale' : 'live';
 

@@ -276,8 +276,46 @@ function processesPayload() {
 // HTTP server
 // ---------------------------------------------------------------------------
 
+// Connectivity-rehearsal control (brief §13/§143): simulate the gateway going
+// away for real — sockets are destroyed, new requests are refused — without
+// killing the process, so an e2e run can exercise reconnect semantics.
+let gatewayDown = false;
+
+function setGateway(down) {
+	if (gatewayDown === down) return;
+	gatewayDown = down;
+	if (down) {
+		for (const client of connections) {
+			try {
+				client.socket.destroy();
+			} catch {
+				/* already gone */
+			}
+		}
+		connections.clear();
+	}
+	console.log(`[mock-dumb] gateway ${down ? 'DOWN' : 'UP'}`);
+}
+
 const server = http.createServer((req, res) => {
 	const url = new URL(req.url, 'http://localhost');
+	if (url.pathname === '/__control/down') {
+		setGateway(true);
+		res.writeHead(200, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ gatewayDown: true }));
+		return;
+	}
+	if (url.pathname === '/__control/up') {
+		setGateway(false);
+		res.writeHead(200, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ gatewayDown: false }));
+		return;
+	}
+	if (gatewayDown) {
+		// Behave like a host that vanished: tear the TCP connection down.
+		req.socket.destroy();
+		return;
+	}
 	const respond = (code, payload) => {
 		res.writeHead(code, { 'content-type': 'application/json' });
 		res.end(JSON.stringify(payload));
@@ -397,6 +435,10 @@ const server = http.createServer((req, res) => {
 const connections = new Set();
 
 server.on('upgrade', (req, socket) => {
+	if (gatewayDown) {
+		socket.destroy();
+		return;
+	}
 	const url = new URL(req.url, 'http://localhost');
 	const token = url.searchParams.get('token');
 	const claims = verify(token ?? '');

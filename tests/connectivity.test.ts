@@ -17,10 +17,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { Hub } from '../src/lib/server/telemetry/hub';
-import {
-	ConnectivityTracker,
-	classifyProbeError
-} from '../src/lib/server/dumb/connection';
+import { ConnectivityTracker, classifyProbeError } from '../src/lib/server/dumb/connection';
 import { setDumbCredentials, setDumbUrl } from '../src/lib/server/config/settings';
 
 // ---------------------------------------------------------------------------
@@ -214,6 +211,8 @@ describe('connectivity: sticky false-offline after a reboot (production repro)',
 
 		expect(hub.getConnection().state).toBe('degraded');
 		expect(hub.getConnection().probes.rest.status).toBe('ok');
+		expect(hub.getConnection().probes.http.status).toBe('ok');
+		expect(hub.getConnection().probes.auth.status).toBe('ok');
 	});
 });
 
@@ -466,9 +465,7 @@ describe('connectivity: startup grace and automatic incident recovery', () => {
 		clock += 31_000;
 		hub.housekeep();
 		expect(hub.getActiveIncidents()).toHaveLength(0);
-		const resolved = hub
-			.getActiveIncidents()
-			.every((i) => i.status !== 'active');
+		const resolved = hub.getActiveIncidents().every((i) => i.status !== 'active');
 		expect(resolved).toBe(true);
 	});
 
@@ -487,9 +484,7 @@ describe('connectivity: startup grace and automatic incident recovery', () => {
 		await new Promise((r) => setTimeout(r, 1_200));
 		expect(stream('status')).not.toBe(FakeWebSocket.instances[initialWsCount - 3]);
 		expect(
-			hub
-				.getConnection()
-				.streams.status === 'reconnecting' || stream('status')!.readyState === 0
+			hub.getConnection().streams.status === 'reconnecting' || stream('status')!.readyState === 0
 		).toBe(true);
 
 		// The gateway comes back: REST bootstrap succeeds.

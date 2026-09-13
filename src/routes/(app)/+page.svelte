@@ -72,7 +72,9 @@
 
 	const recoverBanner = $derived.by(() => {
 		const c = live.connection;
-		const lastSeen = c.lastSuccessAt ? ` · last successful contact ${relativeTime(c.lastSuccessAt)}` : '';
+		const lastSeen = c.lastSuccessAt
+			? ` · last successful contact ${relativeTime(c.lastSuccessAt)}`
+			: '';
 		switch (c.state) {
 			case 'starting':
 				return `DUMB may still be starting after a restart — waiting for it to come online${lastSeen}`;
@@ -171,9 +173,7 @@
 					class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60"
 					style="background: var(--degraded)"
 				></span>
-				<span
-					class="relative inline-flex h-2 w-2 rounded-full"
-					style="background: var(--degraded)"
+				<span class="relative inline-flex h-2 w-2 rounded-full" style="background: var(--degraded)"
 				></span>
 			</span>
 			<p class="min-w-0 text-xs text-text-secondary">{recoverBanner}</p>

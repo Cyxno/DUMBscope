@@ -135,10 +135,7 @@ export class Hub {
 		this.publishConnection();
 	}
 
-	private startStreams(settings: {
-		statusInterval: number;
-		metricsInterval: number;
-	}): void {
+	private startStreams(settings: { statusInterval: number; metricsInterval: number }): void {
 		const statusStream = new DumbStream({
 			name: 'status',
 			url: () =>
@@ -216,6 +213,10 @@ export class Hub {
 			}
 
 			await client.ensureAuthenticated();
+			// An authenticated round trip proves the HTTP layer is up too — the
+			// HTTP probe would otherwise stay 'unknown' on healthy stacks (it is
+			// otherwise only recorded when a failure needs classifying).
+			this.tracker.probe('http', { ok: true });
 			const [processes, capabilities] = await Promise.all([
 				client.processes(),
 				client.capabilities().catch(() => ({}))
@@ -494,8 +495,21 @@ export class Hub {
 		this.engine.correlate(this.topology());
 		this.engine.onConnection(connection);
 
-		// REST recovery while the bootstrap has never succeeded this session.
-		if (connection.probes.rest.okAt === null && this.configured) {
+		// REST recovery: probe while the bootstrap never succeeded this session,
+		// while the connection is not delivering (mid-run outage), and once more
+		// after a recovery that rode in on the streams' own backoff (their
+		// success proves the gateway is back but leaves the REST probe verdicts
+		// stale until one successful round trip reconciles them).
+		const connectionDelivering =
+			connection.state === 'live' ||
+			connection.state === 'degraded' ||
+			connection.state === 'starting';
+		if (
+			this.configured &&
+			(connection.probes.rest.okAt === null ||
+				connection.probes.rest.status === 'failed' ||
+				!connectionDelivering)
+		) {
 			void this.bootstrapRest();
 		}
 		// Keep the rate limiter's per-key map bounded.

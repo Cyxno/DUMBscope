@@ -419,8 +419,7 @@ export class IncidentEngine {
 		// anyone (brief §12/§139). Only the tracker's derived `offline` (grace
 		// windows expired, probes failing) and a hard auth rejection open
 		// connectivity incidents.
-		const unreachable =
-			snapshot.state === 'offline' || snapshot.state === 'credentials-invalid';
+		const unreachable = snapshot.state === 'offline' || snapshot.state === 'credentials-invalid';
 
 		if (snapshot.state === 'live') {
 			this.state.liveSince ??= now;
@@ -461,10 +460,7 @@ export class IncidentEngine {
 				title: 'DUMB gateway unreachable',
 				summary: `No connection to the DUMB gateway since ${new Date(this.state.offlineSince).toLocaleTimeString()} — ${lastContact}`,
 				service: null,
-				evidenceMessage:
-					snapshot.probes.http.detail ??
-					snapshot.lastError ??
-					'connection offline',
+				evidenceMessage: snapshot.probes.http.detail ?? snapshot.lastError ?? 'connection offline',
 				source: 'connection',
 				refreshSummary: true
 			});

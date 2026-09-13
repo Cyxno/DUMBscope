@@ -56,12 +56,42 @@
 					? 'var(--critical)'
 					: 'var(--degraded)';
 		return [
-			{ name: 'HTTP', value: conn.probes.http.status, detail: conn.probes.http.detail, color: colorFor(conn.probes.http.status) },
-			{ name: 'Auth', value: conn.probes.auth.status, detail: conn.probes.auth.detail, color: colorFor(conn.probes.auth.status) },
-			{ name: 'REST', value: conn.probes.rest.status, detail: conn.probes.rest.detail, color: colorFor(conn.probes.rest.status) },
-			{ name: 'Status stream', value: conn.streams.status, detail: null, color: colorFor(conn.streams.status) },
-			{ name: 'Metrics stream', value: conn.streams.metrics, detail: null, color: colorFor(conn.streams.metrics) },
-			{ name: 'Logs stream', value: conn.streams.logs, detail: null, color: colorFor(conn.streams.logs) }
+			{
+				name: 'HTTP',
+				value: conn.probes.http.status,
+				detail: conn.probes.http.detail,
+				color: colorFor(conn.probes.http.status)
+			},
+			{
+				name: 'Auth',
+				value: conn.probes.auth.status,
+				detail: conn.probes.auth.detail,
+				color: colorFor(conn.probes.auth.status)
+			},
+			{
+				name: 'REST',
+				value: conn.probes.rest.status,
+				detail: conn.probes.rest.detail,
+				color: colorFor(conn.probes.rest.status)
+			},
+			{
+				name: 'Status stream',
+				value: conn.streams.status,
+				detail: null,
+				color: colorFor(conn.streams.status)
+			},
+			{
+				name: 'Metrics stream',
+				value: conn.streams.metrics,
+				detail: null,
+				color: colorFor(conn.streams.metrics)
+			},
+			{
+				name: 'Logs stream',
+				value: conn.streams.logs,
+				detail: null,
+				color: colorFor(conn.streams.logs)
+			}
 		];
 	});
 </script>

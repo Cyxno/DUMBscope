@@ -17,10 +17,11 @@ import type {
 	StackOverview,
 	TopologyGraph
 } from '$lib/types';
-import { DumbClient, DumbAuthError, DumbError } from '../dumb/client';
+import { DumbClient, DumbAuthError } from '../dumb/client';
 import { parseCapabilities } from '../dumb/capabilities';
 import { normalizeDiscovered, normalizeMetrics, normalizeServiceStatus } from '../dumb/normalize';
 import { DumbStream } from '../dumb/streams';
+import { ConnectivityTracker, classifyProbeError } from '../dumb/connection';
 import type { DumbMetricsSnapshot, DumbProcessesResponse, DumbServiceStatus } from '../dumb/types';
 import { getSettings, getDumbCredentials } from '../config/settings';
 import { appInfo } from '$lib/shared/app-info';
@@ -34,7 +35,6 @@ import { sweepRateLimits } from '../security/rate-limit';
 
 const METRICS_RING_SIZE = 1800; // ~1h at the default 2s interval
 const LOG_RING_SIZE = 5000;
-const STATUS_INTERVAL_FRESH_MS = 15_000;
 /** How often the service registry is refreshed from DUMB's REST API. */
 const DISCOVERY_REFRESH_MS = 10 * 60_000;
 /** Minimum spacing between proactive token refreshes. */
@@ -62,27 +62,21 @@ export class Hub {
 	private metricsLatest: MetricsSnapshot | null = null;
 	private metricsHistory: MetricsHistoryPoint[] = [];
 	private logBuffer: LogLine[] = [];
-	private connection: ConnectionSnapshot = {
-		state: 'unconfigured',
-		streams: {
-			rest: 'unconfigured',
-			status: 'unconfigured',
-			metrics: 'unconfigured',
-			logs: 'unconfigured'
-		},
-		lastUpdateAt: null,
-		lastError: null,
-		reconnectAttempts: 0,
-		dumbVersion: null,
-		authMode: 'unknown'
-	};
+	/**
+	 * Single source of truth for connection health (FASE A): the tracker
+	 * derives the connection state from layer facts; the hub never writes it
+	 * ad hoc. Before the tracker, a failed REST bootstrap could clobber live
+	 * stream flags and stick the hub on "offline" for hours while DUMB was
+	 * healthy (production incident 2026-09-13). Assigned in the constructor
+	 * so the injectable test clock reaches it.
+	 */
+	private tracker: ConnectivityTracker;
+	private lastConnectionSignature: string | null = null;
 
 	// ----- infrastructure ----------------------------------------------------
 	private client: DumbClient | null = null;
 	private streams: DumbStream[] = [];
-	private engine = new IncidentEngine({
-		onIncidentChange: (incident) => this.broadcast('incident', incident)
-	});
+	private engine: IncidentEngine;
 	private subscribers = new Map<number, Subscriber>();
 	private nextSubscriberId = 1;
 	private housekeeper: ReturnType<typeof setInterval> | null = null;
@@ -101,6 +95,18 @@ export class Hub {
 	private cachedProcessesResponse: DumbProcessesResponse | null = null;
 
 	/**
+	 * @param options.testClock injectable clock for the connectivity state
+	 *   machine (startup/recovery grace windows, incident lifecycles in tests).
+	 */
+	constructor(private readonly options: { testClock?: () => number } = {}) {
+		this.tracker = new ConnectivityTracker({ now: options.testClock });
+		this.engine = new IncidentEngine(
+			{ onIncidentChange: (incident) => this.broadcast('incident', incident) },
+			options.testClock
+		);
+	}
+
+	/**
 	 * (Re)configure and start. Safe to call again after settings changes;
 	 * tears down existing streams first.
 	 */
@@ -109,9 +115,11 @@ export class Hub {
 		const settings = getSettings();
 		this.configured = Boolean(settings.dumbUrl);
 		this.stopStreams();
+		this.tracker.setConfigured(this.configured);
+		this.tracker.hubRestart();
 
 		if (!settings.dumbUrl) {
-			this.setConnection({ state: 'unconfigured' });
+			this.publishConnection();
 			return;
 		}
 
@@ -120,9 +128,17 @@ export class Hub {
 			getCredentials: () => getDumbCredentials()
 		});
 
-		this.setConnection({ state: 'connecting', lastError: null, reconnectAttempts: 0 });
 		void this.bootstrapRest();
 
+		this.startStreams(settings);
+		this.housekeeper ??= setInterval(() => this.housekeep(), 10_000);
+		this.publishConnection();
+	}
+
+	private startStreams(settings: {
+		statusInterval: number;
+		metricsInterval: number;
+	}): void {
 		const statusStream = new DumbStream({
 			name: 'status',
 			url: () =>
@@ -155,8 +171,6 @@ export class Hub {
 		});
 		this.streams = [statusStream, metricsStream, logsStream];
 		for (const stream of this.streams) stream.start();
-
-		this.housekeeper ??= setInterval(() => this.housekeep(), 10_000);
 	}
 
 	private stopStreams(): void {
@@ -180,7 +194,7 @@ export class Hub {
 	}
 
 	// -------------------------------------------------------------------------
-	// REST bootstrap (discovery + capabilities)
+	// REST bootstrap (layered probes: auth → REST discovery, HTTP-classified)
 	// -------------------------------------------------------------------------
 
 	private async bootstrapRest(): Promise<void> {
@@ -190,15 +204,13 @@ export class Hub {
 			const authStatus = await client.authStatus().catch(() => null);
 			if (authStatus) {
 				const mode = authStatus.enabled ? (authStatus.mode ?? 'local') : 'none';
-				this.setConnection({
-					authMode: (mode as ConnectionSnapshot['authMode']) ?? 'unknown'
-				});
+				this.tracker.setAuthMode((mode as ConnectionSnapshot['authMode']) ?? 'unknown');
+				this.tracker.probe('auth', { ok: true });
 				if (authStatus.enabled && !getDumbCredentials()) {
-					this.setConnection({
-						state: 'credentials-invalid',
-						streams: emptyStreams('unconfigured'),
-						lastError: 'DUMB requires authentication but no credentials are stored'
-					});
+					this.tracker.noteCredentialsInvalid(
+						'DUMB requires authentication but no credentials are stored'
+					);
+					this.publishConnection();
 					return;
 				}
 			}
@@ -212,24 +224,53 @@ export class Hub {
 			this.capabilities = parseCapabilities(capabilities);
 			this.applyDiscovered(processes);
 			this.discoveryReady = true;
-			this.setConnection({ streams: { ...this.connection.streams, rest: 'live' } });
+			this.tracker.probe('rest', { ok: true });
+			this.tracker.setLastError(null);
+			this.maybeBounceStreams();
 		} catch (err) {
 			if (err instanceof DumbAuthError) {
-				this.setConnection({
-					state: 'credentials-invalid',
-					lastError: err.message,
-					streams: emptyStreams('offline')
-				});
+				this.tracker.probe('auth', { ok: false, code: 'auth-rejected', detail: err.message });
+				this.tracker.noteCredentialsInvalid(err.message);
 			} else {
-				const message = err instanceof DumbError ? err.message : 'Could not reach DUMB';
-				this.setConnection({
-					state: 'offline',
-					lastError: message,
-					streams: emptyStreams('offline')
-				});
+				// Classify where the chain broke: if plain HTTP still answers, the
+				// failure sits in the auth/REST layer; otherwise the gateway is
+				// not reachable at all (refused / DNS / timeout — brief §6).
+				const failure = classifyProbeError(err);
+				const health = await client.health().then(
+					() => ({ up: true, failure: null }),
+					(healthErr: unknown) => ({ up: false, failure: classifyProbeError(healthErr) })
+				);
+				if (health.up) {
+					this.tracker.probe('http', { ok: true });
+					this.tracker.probe('rest', { ok: false, ...failure });
+				} else {
+					this.tracker.probe('http', { ok: false, ...health.failure });
+					this.tracker.probe('auth', { ok: false, ...health.failure });
+					this.tracker.probe('rest', { ok: false, ...health.failure });
+				}
+				this.tracker.setLastError(failure.detail);
 			}
 			// Keep retrying REST in the background via the housekeeper.
 		}
+		this.publishConnection();
+	}
+
+	/**
+	 * Recovery acceleration (brief §8): when REST proves the gateway is back
+	 * while the streams are stuck waiting out their reconnect backoff, restart
+	 * them immediately so they reconnect with fresh credentials instead of
+	 * grinding through up to a minute of exponential backoff. Streams that are
+	 * mid-first-connect are left alone.
+	 */
+	private maybeBounceStreams(): void {
+		const waitingInBackoff = this.streams.some((s) => s.connectionState === 'reconnecting');
+		if (!waitingInBackoff) return;
+		const now = Date.now();
+		if (now - this.lastStreamsBounceAt < 15_000) return;
+		this.lastStreamsBounceAt = now;
+		const settings = getSettings();
+		this.stopStreams();
+		this.startStreams(settings);
 	}
 
 	private applyDiscovered(response: DumbProcessesResponse): void {
@@ -356,9 +397,10 @@ export class Hub {
 			}
 		}
 
-		this.setConnection({ lastUpdateAt: now });
+		this.tracker.dataReceived(now);
 		this.engine.onStatus(previous, new Map(this.services));
 		this.emitServices(now);
+		this.publishConnection();
 	}
 
 	private handleMetricsMessage(data: string): void {
@@ -397,6 +439,8 @@ export class Hub {
 		this.engine.onMetrics(snapshot);
 		this.broadcast('metrics', snapshot);
 		this.emitServices();
+		this.tracker.dataReceived(snapshot.receivedAt);
+		this.publishConnection();
 	}
 
 	private handleLogMessage(data: string): void {
@@ -417,58 +461,41 @@ export class Hub {
 		state: ConnectionState,
 		error?: string
 	): void {
-		const streams = { ...this.connection.streams, [stream]: state };
-		let overall: ConnectionState = this.connection.state;
-		if (state === 'live') {
-			overall = 'live';
-		} else if (state === 'reconnecting' && this.connection.state === 'live') {
-			// One stream flapping does not take the whole dashboard down.
-			overall = 'live';
-		} else if (this.connection.state === 'live' && state === 'stale') {
-			overall = 'stale';
-		}
-
-		if (state === 'reconnecting' || state === 'connecting') {
-			overall = overall === 'live' ? 'live' : 'reconnecting';
-		}
-		if (
-			streams.status === 'offline' &&
-			streams.metrics === 'offline' &&
-			streams.logs === 'offline' &&
-			streams.rest !== 'live'
-		) {
-			overall = 'offline';
-		}
-
-		this.setConnection({
-			streams,
-			state: overall === 'unconfigured' ? 'offline' : overall,
-			lastError: error ?? this.connection.lastError,
-			reconnectAttempts: Math.max(
+		this.tracker.streamState(stream, state);
+		this.tracker.setReconnectAttempts(
+			Math.max(
 				this.streams[0]?.reconnectAttempts ?? 0,
 				this.streams[1]?.reconnectAttempts ?? 0,
 				this.streams[2]?.reconnectAttempts ?? 0
 			)
-		});
+		);
+		if (error && this.streams.every((s) => s.connectionState !== 'live')) {
+			this.tracker.setLastError(error);
+		}
 		if (state === 'offline') {
 			void this.bootstrapRest();
 		}
+		this.publishConnection();
 	}
 
 	// -------------------------------------------------------------------------
 	// Housekeeping
 	// -------------------------------------------------------------------------
 
-	private housekeep(): void {
+	/** Periodic maintenance: telemetry freshness, incident evaluation, token
+	 *  refresh, discovery refresh and stale-stream recovery. Public so tests
+	 *  can drive ticks deterministically. */
+	housekeep(): void {
 		if (this.stopped) return;
 		const now = Date.now();
-		const statusLive = this.connection.streams.status === 'live';
+		const connection = this.tracker.snapshot();
+		const statusLive = connection.streams.status === 'live';
 		this.engine.onTick(this.metricsLatest?.receivedAt ?? null, statusLive);
 		this.engine.correlate(this.topology());
-		this.engine.onConnection(this.connection);
+		this.engine.onConnection(connection);
 
-		// REST recovery when the bootstrap failed at startup.
-		if (this.connection.streams.rest !== 'live' && this.configured) {
+		// REST recovery while the bootstrap has never succeeded this session.
+		if (connection.probes.rest.okAt === null && this.configured) {
 			void this.bootstrapRest();
 		}
 		// Keep the rate limiter's per-key map bounded.
@@ -494,20 +521,12 @@ export class Hub {
 			this.lastDiscoveryRefreshAt = now;
 			void this.bootstrapRest();
 		}
-		// Freshness: connected but nothing new for a long time → stale.
-		if (
-			this.connection.state === 'live' &&
-			this.connection.lastUpdateAt !== null &&
-			now - this.connection.lastUpdateAt > STATUS_INTERVAL_FRESH_MS * 6
-		) {
-			this.setConnection({ state: 'stale' });
-		}
 		// A stale stream whose socket quietly died (gateway restart, dropped
 		// NAT table) never fires onclose, so the backoff loop never kicks in.
 		// Bounce the streams periodically while telemetry stays frozen; each
 		// bounce reconnects with freshly authenticated credentials.
 		if (
-			this.connection.state === 'stale' &&
+			connection.state === 'stale' &&
 			this.configured &&
 			now - this.lastStreamsBounceAt > STREAMS_BOUNCE_THROTTLE_MS
 		) {
@@ -515,6 +534,7 @@ export class Hub {
 			console.log('[dumbscope] telemetry stale — restarting DUMB streams');
 			this.reload();
 		}
+		this.publishConnection();
 	}
 
 	// -------------------------------------------------------------------------
@@ -536,7 +556,7 @@ export class Hub {
 	}
 
 	getConnection(): ConnectionSnapshot {
-		return this.connection;
+		return this.tracker.snapshot();
 	}
 
 	getServices(): ServiceStatus[] {
@@ -591,10 +611,31 @@ export class Hub {
 		const unhealthy = statuses.filter((s) => s.health === 'unhealthy').length;
 		const stopped = statuses.filter((s) => s.runState === 'stopped').length;
 		const critical = active.filter((i) => i.severity === 'critical').length;
+		const connectionState = this.tracker.snapshot().state;
 		let health: StackOverview['health'] = 'healthy';
 		if (!this.configured) health = 'unknown';
-		else if (this.connection.state === 'offline' || critical > 0) health = 'incident';
-		else if (unhealthy > 0 || degraded > 0 || active.length > 0) health = 'degraded';
+		else if (
+			connectionState === 'offline' ||
+			connectionState === 'credentials-invalid' ||
+			critical > 0
+		)
+			health = 'incident';
+		else if (
+			connectionState === 'starting' ||
+			connectionState === 'connecting' ||
+			connectionState === 'reconnecting'
+		) {
+			// Amber connectivity states are never a red headline (brief §12):
+			// while nothing is known yet, stay neutral instead of claiming health.
+			health = statuses.length === 0 ? 'unknown' : 'degraded';
+		} else if (
+			unhealthy > 0 ||
+			degraded > 0 ||
+			active.length > 0 ||
+			connectionState === 'degraded' ||
+			connectionState === 'stale'
+		)
+			health = 'degraded';
 		return {
 			health,
 			servicesOnline: online,
@@ -669,17 +710,25 @@ export class Hub {
 	// Internal helpers
 	// -------------------------------------------------------------------------
 
-	private setConnection(patch: Partial<ConnectionSnapshot>): void {
-		const next = { ...this.connection, ...patch };
-		// Only broadcast meaningful changes; lastUpdateAt ticks would spam SSE.
-		const meaningful =
-			next.state !== this.connection.state ||
-			next.authMode !== this.connection.authMode ||
-			next.lastError !== this.connection.lastError ||
-			next.reconnectAttempts !== this.connection.reconnectAttempts ||
-			JSON.stringify(next.streams) !== JSON.stringify(this.connection.streams);
-		this.connection = next;
-		if (meaningful) this.broadcast('connection', this.connection);
+	/**
+	 * Refresh the derived connection snapshot and fan it out when anything
+	 * meaningful changed. Derived twice per tick at most; the signature
+	 * comparison keeps SSE free of lastUpdateAt spam.
+	 */
+	private publishConnection(): void {
+		const snapshot = this.tracker.snapshot();
+		const signature = JSON.stringify([
+			snapshot.state,
+			snapshot.streams,
+			snapshot.probes,
+			snapshot.lastError,
+			snapshot.reconnectAttempts,
+			snapshot.authMode,
+			snapshot.lastUpdateAt
+		]);
+		if (signature === this.lastConnectionSignature) return;
+		this.lastConnectionSignature = signature;
+		this.broadcast('connection', snapshot);
 	}
 
 	private pushHistoryPoint(snapshot: MetricsSnapshot): void {
@@ -693,12 +742,6 @@ export class Hub {
 			this.metricsHistory = this.metricsHistory.slice(-METRICS_RING_SIZE);
 		}
 	}
-}
-
-function emptyStreams(
-	state: ConnectionState
-): Record<'rest' | 'status' | 'metrics' | 'logs', ConnectionState> {
-	return { rest: state, status: state, metrics: state, logs: state };
 }
 
 // -----------------------------------------------------------------------------

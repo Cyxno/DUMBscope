@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { live } from '$lib/stores/live.svelte';
-	import { CONNECTION_LABELS } from '$lib/utils/status';
+	import { CONNECTION_LABELS, connectionTone } from '$lib/utils/status';
 	import { relativeTime } from '$lib/utils/format';
 	import { fade } from 'svelte/transition';
 	import { WifiOff, Radio } from '@lucide/svelte';
@@ -16,15 +16,62 @@
 
 	const label = $derived(CONNECTION_LABELS[connState] ?? connState.toUpperCase());
 
-	const color = $derived(
-		connState === 'live'
-			? 'var(--live)'
-			: connState === 'stale'
-				? 'var(--degraded)'
-				: connState === 'offline' || connState === 'credentials-invalid'
-					? 'var(--critical)'
-					: 'var(--unknown)'
-	);
+	const tone = $derived(connectionTone(connState));
+	const color = $derived.by(() => {
+		switch (tone) {
+			case 'healthy':
+				return 'var(--live)';
+			case 'degraded':
+				return 'var(--degraded)';
+			case 'critical':
+				return 'var(--critical)';
+			default:
+				return 'var(--unknown)';
+		}
+	});
+
+	/** Honest one-line story of what is (not) working (brief §4/§189). */
+	const summary = $derived.by(() => {
+		const c = live.connection;
+		switch (connState) {
+			case 'live':
+				return 'Connected — telemetry is updating.';
+			case 'starting':
+				return 'DUMB may still be starting after a restart — waiting for it to come online.';
+			case 'connecting':
+				return 'Connecting to DUMB…';
+			case 'reconnecting': {
+				const ago = c.lastSuccessAt ? ` · last successful contact ${relativeTime(c.lastSuccessAt)}` : '';
+				return `Reconnecting to DUMB${ago}`;
+			}
+			case 'degraded':
+				return c.probes.rest.status === 'ok'
+					? 'HTTP is reachable, but some WebSocket streams are unavailable.'
+					: 'Some streams are delivering, but the REST layer is not responding.';
+			case 'stale':
+				return 'Connection is up, but no new data is arriving — it will be restarted automatically.';
+			case 'offline': {
+				const ago = c.lastSuccessAt ? `Last successful contact ${relativeTime(c.lastSuccessAt)}. ` : '';
+				return `${ago}DUMB is not responding.`;
+			}
+			case 'credentials-invalid':
+				return 'DUMB rejected the stored credentials — update them in Settings.';
+			default:
+				return '';
+		}
+	});
+
+	const probeRows = $derived([
+		{ name: 'HTTP', probe: live.connection.probes.http },
+		{ name: 'Auth', probe: live.connection.probes.auth },
+		{ name: 'REST', probe: live.connection.probes.rest }
+	]);
+
+	function probeColor(status: string): string {
+		if (status === 'ok') return 'var(--healthy)';
+		if (status === 'failed') return 'var(--critical)';
+		return 'var(--unknown)';
+	}
 
 	function toggle() {
 		open = !open;
@@ -66,7 +113,7 @@
 
 	{#if open}
 		<div
-			class="absolute right-0 top-9 z-50 w-72 rounded-xl border border-border-subtle bg-surface-2 p-3.5 shadow-[var(--shadow-3)]"
+			class="absolute right-0 top-9 z-50 w-80 rounded-xl border border-border-subtle bg-surface-2 p-3.5 shadow-[var(--shadow-3)]"
 			transition:fade={{ duration: 100 }}
 			role="dialog"
 			aria-label="Connection details"
@@ -75,25 +122,43 @@
 				<Radio size={13} class="text-text-muted" aria-hidden="true" />
 				DUMB connection
 			</p>
+			<p class="mb-2.5 text-[11.5px] leading-relaxed text-text-secondary">{summary}</p>
 			<dl class="space-y-1.5 text-xs">
-				{#each Object.entries(live.connection.streams) as [name, streamState] (name)}
-					<div class="flex items-center justify-between">
-						<dt class="text-text-muted capitalize">
-							{name === 'rest' ? 'REST' : `${name} stream`}
-						</dt>
-						<dd
-							class="font-medium capitalize"
-							style="color: {streamState === 'live'
-								? 'var(--healthy)'
-								: streamState === 'offline' || streamState === 'credentials-invalid'
-									? 'var(--critical)'
-									: 'var(--degraded)'}"
-						>
-							{streamState}
+				{#each probeRows as row (row.name)}
+					<div class="flex items-center justify-between gap-2">
+						<dt class="text-text-muted">{row.name}</dt>
+						<dd class="flex items-center gap-1.5 text-right">
+							{#if row.probe.detail}
+								<span class="text-[11px] text-text-faint">{row.probe.detail}</span>
+							{/if}
+							<span class="font-medium capitalize" style="color: {probeColor(row.probe.status)}">
+								{row.probe.status}
+							</span>
 						</dd>
 					</div>
 				{/each}
+				{#each Object.entries(live.connection.streams) as [name, streamState] (name)}
+					{#if name !== 'rest'}
+						<div class="flex items-center justify-between">
+							<dt class="text-text-muted">{name} stream</dt>
+							<dd
+								class="font-medium capitalize"
+								style="color: {streamState === 'live'
+									? 'var(--healthy)'
+									: streamState === 'offline' || streamState === 'credentials-invalid'
+										? 'var(--critical)'
+										: 'var(--degraded)'}"
+							>
+								{streamState}
+							</dd>
+						</div>
+					{/if}
+				{/each}
 				<div class="flex items-center justify-between border-t border-border-subtle pt-1.5">
+					<dt class="text-text-muted">Last successful contact</dt>
+					<dd class="tnum text-text-secondary">{relativeTime(live.connection.lastSuccessAt)}</dd>
+				</div>
+				<div class="flex items-center justify-between">
 					<dt class="text-text-muted">Last update</dt>
 					<dd class="tnum text-text-secondary">{relativeTime(live.connection.lastUpdateAt)}</dd>
 				</div>

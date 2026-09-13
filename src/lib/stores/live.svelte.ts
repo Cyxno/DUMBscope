@@ -31,10 +31,18 @@ function defaults(): ConnectionSnapshot {
 			logs: 'connecting'
 		},
 		lastUpdateAt: null,
+		lastSuccessAt: null,
+		connectedSince: null,
+		stateSince: Date.now(),
 		lastError: null,
 		reconnectAttempts: 0,
 		dumbVersion: null,
-		authMode: 'unknown'
+		authMode: 'unknown',
+		probes: {
+			http: { status: 'unknown', code: null, detail: null, at: null, okAt: null },
+			auth: { status: 'unknown', code: null, detail: null, at: null, okAt: null },
+			rest: { status: 'unknown', code: null, detail: null, at: null, okAt: null }
+		}
 	};
 }
 

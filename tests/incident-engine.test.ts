@@ -69,14 +69,23 @@ function metricsSnapshot(overrides: Partial<MetricsSnapshot> = {}): MetricsSnaps
 }
 
 function connection(overrides: Partial<ConnectionSnapshot> = {}): ConnectionSnapshot {
+	const now = Date.now();
 	return {
 		state: 'live',
 		streams: { rest: 'live', status: 'live', metrics: 'live', logs: 'live' },
-		lastUpdateAt: Date.now(),
+		lastUpdateAt: now,
+		lastSuccessAt: now,
+		connectedSince: null,
+		stateSince: now,
 		lastError: null,
 		reconnectAttempts: 0,
 		dumbVersion: null,
 		authMode: 'local',
+		probes: {
+			http: { status: 'ok', code: null, detail: null, at: now, okAt: now },
+			auth: { status: 'ok', code: null, detail: null, at: now, okAt: now },
+			rest: { status: 'ok', code: null, detail: null, at: now, okAt: now }
+		},
 		...overrides
 	};
 }

@@ -157,23 +157,69 @@ export interface LogLine {
 
 export type StreamName = 'rest' | 'status' | 'metrics' | 'logs';
 
+/**
+ * Hub-level connection states (FASE A reliability state machine).
+ *
+ * The state is *derived* from layer facts (REST/auth probes + per-stream
+ * sockets) by a single tracker; it is never written ad hoc. Amber states
+ * (`starting`, `connecting`, `reconnecting`, `degraded`, `stale`) are honest
+ * partial states — only `offline` claims that DUMB is genuinely unreachable.
+ */
 export type ConnectionState =
+	/** Bounded grace right after DUMBscope/hub start, driven by real probe
+	 *  progress — never a fixed delay. Amber, never an incident by itself. */
+	| 'starting'
 	| 'connecting'
 	| 'live'
+	/** Partial connectivity: e.g. HTTP/REST reachable but streams down, or
+	 *  only some streams delivering. Reported honestly instead of as offline. */
+	| 'degraded'
+	/** Contact was established before and is being re-established. */
 	| 'reconnecting'
 	| 'stale'
+	/** Probes failing beyond the startup/recovery grace windows. */
 	| 'offline'
 	| 'unconfigured'
 	| 'credentials-invalid';
+
+/** Result of one layered connectivity probe (HTTP / auth / REST). */
+export interface ConnectionProbe {
+	status: 'ok' | 'failed' | 'unknown';
+	/** Stable machine-readable failure class for evidence and diagnostics. */
+	code:
+		| 'refused'
+		| 'timeout'
+		| 'dns'
+		| 'network'
+		| 'http-error'
+		| 'auth-rejected'
+		| 'no-credentials'
+		| 'error'
+		| null;
+	/** Human-readable detail, e.g. "connection refused" or "HTTP 503". */
+	detail: string | null;
+	/** Epoch ms of the last probe attempt (ok or failed). */
+	at: number | null;
+	/** Epoch ms of the last success on this layer. */
+	okAt: number | null;
+}
 
 export interface ConnectionSnapshot {
 	state: ConnectionState;
 	streams: Record<StreamName, ConnectionState>;
 	lastUpdateAt: number | null;
+	/** Epoch ms of the last successful contact with DUMB on any layer. */
+	lastSuccessAt: number | null;
+	/** Epoch ms the current live session started (null when not live). */
+	connectedSince: number | null;
+	/** Epoch ms the current state was entered. */
+	stateSince: number | null;
 	lastError: string | null;
 	reconnectAttempts: number;
 	dumbVersion: string | null;
 	authMode: 'none' | 'local' | 'oidc' | 'hybrid' | 'unknown';
+	/** Layered probe results; stream layers are covered by `streams`. */
+	probes: Record<'http' | 'auth' | 'rest', ConnectionProbe>;
 }
 
 // ---------------------------------------------------------------------------

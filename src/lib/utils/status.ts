@@ -68,11 +68,36 @@ export function severityRank(health: HealthStatus): number {
 }
 
 export const CONNECTION_LABELS: Record<string, string> = {
-	live: 'LIVE',
+	starting: 'STARTING',
+	live: 'CONNECTED',
 	connecting: 'CONNECTING',
+	degraded: 'PARTIAL',
 	reconnecting: 'RECONNECTING',
 	stale: 'STALE',
-	offline: 'OFFLINE',
+	offline: 'UNREACHABLE',
 	unconfigured: 'NOT CONFIGURED',
 	'credentials-invalid': 'AUTH NEEDED'
 };
+
+/**
+ * Honest tone per connection state (brief §12): only a derived `offline`
+ * verdict or an auth wall is red; every grace/partial state is amber or
+ * neutral — never a false red during a reboot.
+ */
+export function connectionTone(state: string): Severity {
+	switch (state) {
+		case 'live':
+			return 'healthy';
+		case 'starting':
+		case 'connecting':
+		case 'reconnecting':
+		case 'degraded':
+		case 'stale':
+			return 'degraded';
+		case 'offline':
+		case 'credentials-invalid':
+			return 'critical';
+		default:
+			return 'unknown';
+	}
+}

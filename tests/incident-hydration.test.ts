@@ -8,7 +8,32 @@ import { IncidentEngine } from '../src/lib/server/incidents/engine';
 import { incidentRepository, newIncidentId } from '../src/lib/server/incidents/repository';
 import { Fingerprints } from '../src/lib/server/incidents/fingerprint';
 import { getDb } from '../src/lib/server/database/db';
-import type { Incident, ServiceStatus } from '$lib/types';
+import type { ConnectionSnapshot, Incident, ServiceStatus } from '$lib/types';
+
+function connectionFixture(overrides: Partial<ConnectionSnapshot> = {}): ConnectionSnapshot {
+	const now = Date.now();
+	const probe = (status: 'ok' | 'failed' | 'unknown') => ({
+		status,
+		code: null,
+		detail: null,
+		at: now,
+		okAt: status === 'ok' ? now : null
+	});
+	return {
+		state: 'live',
+		streams: { rest: 'live', status: 'live', metrics: 'live', logs: 'live' },
+		lastUpdateAt: now,
+		lastSuccessAt: now,
+		connectedSince: now,
+		stateSince: now,
+		lastError: null,
+		reconnectAttempts: 0,
+		dumbVersion: null,
+		authMode: 'local',
+		probes: { http: probe('ok'), auth: probe('ok'), rest: probe('ok') },
+		...overrides
+	};
+}
 
 function serviceStatus(overrides: Partial<ServiceStatus> & { key: string }): ServiceStatus {
 	return {
@@ -61,20 +86,12 @@ describe('incident hydration across restarts', () => {
 	it('Scenario A: active credentials incident resolves after hydrate + live connection', () => {
 		// Before the restart: DUMB rejected credentials, incident opened+persisted.
 		const engine1 = new IncidentEngine();
-		const rejected = {
-			state: 'credentials-invalid' as const,
-			streams: {
-				rest: 'offline' as const,
-				status: 'offline' as const,
-				metrics: 'offline' as const,
-				logs: 'offline' as const
-			},
+		const rejected = connectionFixture({
+			state: 'credentials-invalid',
+			streams: { rest: 'offline', status: 'offline', metrics: 'offline', logs: 'offline' },
 			lastUpdateAt: null,
-			lastError: 'DUMB rejected the stored credentials',
-			reconnectAttempts: 0,
-			dumbVersion: null,
-			authMode: 'local' as const
-		};
+			lastError: 'DUMB rejected the stored credentials'
+		});
 		// Sustained credentials-invalid state opens the incident (grace elapsed).
 		for (let i = 0; i < 10; i++) engine1.onConnection(rejected);
 		expect(engine1.getActive().some((i) => i.fingerprint === Fingerprints.dumbCredentials())).toBe(
@@ -87,20 +104,11 @@ describe('incident hydration across restarts', () => {
 		engine2.hydrate();
 		expect(engine2.getActive()).toHaveLength(1); // hydrated, still active
 
-		const live = {
-			state: 'live' as const,
-			streams: {
-				rest: 'live' as const,
-				status: 'live' as const,
-				metrics: 'live' as const,
-				logs: 'live' as const
-			},
+		const live = connectionFixture({
+			state: 'live',
 			lastUpdateAt: Date.now(),
-			lastError: null,
-			reconnectAttempts: 0,
-			dumbVersion: '1.8.2',
-			authMode: 'local' as const
-		};
+			dumbVersion: '1.8.2'
+		});
 		engine2.onConnection(live);
 
 		const active = engine2.getActive();

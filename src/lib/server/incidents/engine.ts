@@ -414,7 +414,13 @@ export class IncidentEngine {
 
 	onConnection(snapshot: ConnectionSnapshot): void {
 		const now = this.nowFn();
-		const offline = snapshot.state === 'offline' || snapshot.state === 'credentials-invalid';
+		// Amber states (starting/connecting/reconnecting/degraded/stale) are
+		// honest partial states reported in the UI — they must never page
+		// anyone (brief §12/§139). Only the tracker's derived `offline` (grace
+		// windows expired, probes failing) and a hard auth rejection open
+		// connectivity incidents.
+		const unreachable =
+			snapshot.state === 'offline' || snapshot.state === 'credentials-invalid';
 
 		if (snapshot.state === 'live') {
 			this.state.liveSince ??= now;
@@ -428,7 +434,7 @@ export class IncidentEngine {
 		}
 
 		this.state.liveSince = null;
-		if (!offline) return; // connecting/reconnecting: debounce, no incident.
+		if (!unreachable) return; // amber: debounce, no incident.
 
 		if (snapshot.state === 'credentials-invalid') {
 			this.openIncident({
@@ -446,13 +452,19 @@ export class IncidentEngine {
 
 		this.state.offlineSince ??= now;
 		if (now - this.state.offlineSince >= TUNING.offlineGraceMs) {
+			const lastContact = snapshot.lastSuccessAt
+				? `Last successful contact ${Math.round((now - snapshot.lastSuccessAt) / 1000)}s ago.`
+				: 'No successful contact this session.';
 			this.openIncident({
 				fingerprint: Fingerprints.dumbOffline(),
 				severity: 'critical',
 				title: 'DUMB gateway unreachable',
-				summary: `No connection to the DUMB gateway since ${new Date(this.state.offlineSince).toLocaleTimeString()}`,
+				summary: `No connection to the DUMB gateway since ${new Date(this.state.offlineSince).toLocaleTimeString()} — ${lastContact}`,
 				service: null,
-				evidenceMessage: snapshot.lastError ?? 'connection offline',
+				evidenceMessage:
+					snapshot.probes.http.detail ??
+					snapshot.lastError ??
+					'connection offline',
 				source: 'connection',
 				refreshSummary: true
 			});

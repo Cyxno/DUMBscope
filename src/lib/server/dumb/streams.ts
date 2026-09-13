@@ -33,6 +33,7 @@ export class DumbStream {
 
 	start(): void {
 		this.closedByUs = false;
+		this.attempts = 0;
 		this.connect();
 	}
 

@@ -22,9 +22,9 @@
 			case 'incident':
 				return 'Your stack needs attention';
 			default:
-				return live.connection.state === 'offline'
-					? 'DUMB is unreachable'
-					: 'Connecting to your stack…';
+				return live.connection.state === 'unconfigured'
+					? 'DUMBscope is not configured yet'
+					: 'Waiting for the DUMB connection…';
 		}
 	});
 	const healthySubline = $derived.by(() => {
@@ -63,6 +63,29 @@
 	const offline = $derived(
 		live.connection.state === 'offline' || live.connection.state === 'credentials-invalid'
 	);
+	/** Honest amber connectivity states — never styled as a red outage. */
+	const recovering = $derived(
+		['starting', 'connecting', 'reconnecting', 'degraded', 'stale'].includes(
+			live.connection.state
+		) && live.connection.state !== 'connecting'
+	);
+
+	const recoverBanner = $derived.by(() => {
+		const c = live.connection;
+		const lastSeen = c.lastSuccessAt ? ` · last successful contact ${relativeTime(c.lastSuccessAt)}` : '';
+		switch (c.state) {
+			case 'starting':
+				return `DUMB may still be starting after a restart — waiting for it to come online${lastSeen}`;
+			case 'reconnecting':
+				return `Reconnecting to DUMB${lastSeen}`;
+			case 'degraded':
+				return 'Partial connection to DUMB — some layers are still unavailable';
+			case 'stale':
+				return 'DUMB connection is quiet — restarting telemetry automatically';
+			default:
+				return `Connecting to DUMB${lastSeen}`;
+		}
+	});
 </script>
 
 <div class="mx-auto max-w-[1400px] space-y-5 px-4 py-6 md:px-8">
@@ -131,12 +154,29 @@
 						: 'DUMB is currently unreachable'}
 				</p>
 				<p class="text-text-muted">
-					{#if live.connection.lastUpdateAt}
-						Last connected {relativeTime(live.connection.lastUpdateAt)} ·
+					{#if live.connection.lastSuccessAt}
+						Last successful contact {relativeTime(live.connection.lastSuccessAt)} ·
 					{/if}
 					Retrying automatically…
 				</p>
 			</div>
+		</div>
+	{:else if recovering}
+		<div
+			class="flex items-center gap-3 rounded-[14px] border px-4 py-3"
+			style="border-color: color-mix(in srgb, var(--degraded) 30%, transparent); background: var(--degraded-soft)"
+		>
+			<span class="relative flex h-2 w-2 shrink-0">
+				<span
+					class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60"
+					style="background: var(--degraded)"
+				></span>
+				<span
+					class="relative inline-flex h-2 w-2 rounded-full"
+					style="background: var(--degraded)"
+				></span>
+			</span>
+			<p class="min-w-0 text-xs text-text-secondary">{recoverBanner}</p>
 		</div>
 	{/if}
 

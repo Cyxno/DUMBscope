@@ -3,7 +3,8 @@
 	import Card from '$lib/components/Card.svelte';
 	import AreaChart from '$lib/components/AreaChart.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
-	import { formatBytes, formatPercent } from '$lib/utils/format';
+	import { formatBytes, formatPercent, relativeTime } from '$lib/utils/format';
+	import { CONNECTION_LABELS } from '$lib/utils/status';
 	import { Cpu, MemoryStick, HardDrive, ArrowDownUp } from '@lucide/svelte';
 
 	let hours = $state(1);
@@ -45,6 +46,24 @@
 	const metrics = $derived(live.metrics);
 	const nets = $derived(metrics?.network ?? []);
 	const dbs = $derived(metrics?.databaseHealth ?? []);
+
+	const conn = $derived(live.connection);
+	const layerRows = $derived.by(() => {
+		const colorFor = (status: string) =>
+			status === 'ok' || status === 'live'
+				? 'var(--healthy)'
+				: status === 'failed' || status === 'offline' || status === 'credentials-invalid'
+					? 'var(--critical)'
+					: 'var(--degraded)';
+		return [
+			{ name: 'HTTP', value: conn.probes.http.status, detail: conn.probes.http.detail, color: colorFor(conn.probes.http.status) },
+			{ name: 'Auth', value: conn.probes.auth.status, detail: conn.probes.auth.detail, color: colorFor(conn.probes.auth.status) },
+			{ name: 'REST', value: conn.probes.rest.status, detail: conn.probes.rest.detail, color: colorFor(conn.probes.rest.status) },
+			{ name: 'Status stream', value: conn.streams.status, detail: null, color: colorFor(conn.streams.status) },
+			{ name: 'Metrics stream', value: conn.streams.metrics, detail: null, color: colorFor(conn.streams.metrics) },
+			{ name: 'Logs stream', value: conn.streams.logs, detail: null, color: colorFor(conn.streams.logs) }
+		];
+	});
 </script>
 
 <div class="mx-auto max-w-[1400px] space-y-5 px-4 py-6 md:px-8">
@@ -71,6 +90,57 @@
 			{/each}
 		</div>
 	</header>
+
+	<!-- DUMB connection diagnostics (brief §10): troubleshooting detail, honest per layer. -->
+	<Card
+		title="DUMB connection"
+		subtitle="Per-layer connectivity of the shared server-side connection"
+	>
+		<div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+			<ul class="space-y-1.5 text-xs">
+				{#each layerRows as row (row.name)}
+					<li class="flex items-center justify-between gap-2 rounded-lg bg-surface-2 px-3 py-2">
+						<span class="font-medium text-text-primary">{row.name}</span>
+						<span class="flex items-center gap-2 text-right">
+							{#if row.detail}
+								<span class="text-[11px] text-text-faint">{row.detail}</span>
+							{/if}
+							<span class="font-medium capitalize" style="color: {row.color}">{row.value}</span>
+						</span>
+					</li>
+				{/each}
+			</ul>
+			<ul class="space-y-1.5 text-xs">
+				<li class="flex items-center justify-between rounded-lg bg-surface-2 px-3 py-2">
+					<span class="text-text-muted">Overall</span>
+					<span class="font-semibold">{CONNECTION_LABELS[conn.state] ?? conn.state}</span>
+				</li>
+				<li class="flex items-center justify-between rounded-lg bg-surface-2 px-3 py-2">
+					<span class="text-text-muted">Last successful contact</span>
+					<span class="tnum text-text-secondary">{relativeTime(conn.lastSuccessAt)}</span>
+				</li>
+				<li class="flex items-center justify-between rounded-lg bg-surface-2 px-3 py-2">
+					<span class="text-text-muted">Last telemetry update</span>
+					<span class="tnum text-text-secondary">{relativeTime(conn.lastUpdateAt)}</span>
+				</li>
+				<li class="flex items-center justify-between rounded-lg bg-surface-2 px-3 py-2">
+					<span class="text-text-muted">Current session</span>
+					<span class="tnum text-text-secondary">
+						{conn.connectedSince ? `since ${relativeTime(conn.connectedSince)}` : '—'}
+					</span>
+				</li>
+				<li class="flex items-center justify-between rounded-lg bg-surface-2 px-3 py-2">
+					<span class="text-text-muted">Reconnect attempts</span>
+					<span class="tnum text-text-secondary">{conn.reconnectAttempts}</span>
+				</li>
+				{#if conn.lastError}
+					<li class="rounded-lg bg-surface-2 px-3 py-2 text-[11px] text-degraded">
+						{conn.lastError}
+					</li>
+				{/if}
+			</ul>
+		</div>
+	</Card>
 
 	{#if !metrics}
 		<EmptyState

@@ -18,10 +18,10 @@ preferences.
 
 ## Storage model (§96/§151)
 
-| Layer | Scope | Contents |
-| ----- | ----- | -------- |
+| Layer                                                          | Scope       | Contents                                                                                                                                                                                                                                                                  |
+| -------------------------------------------------------------- | ----------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Browser-local (`localStorage`, versioned `dumbscope.prefs.v1`) | per browser | theme, accent, motion, density, chart palette, text size, contrast, focus outlines, transparency, status labels, sidebar mode, landing page, nav order/visibility, dashboard widgets/order/preset, library defaults, date/time style, units, status detail, technical ids |
-| Account (SQLite `settings`) | per install | DUMB URL + credentials, stream intervals, reliability monitoring switches and memory thresholds, legacy `ui.theme`/`ui.accent`/`ui.reducedMotion` (kept as first-run seeds) |
+| Account (SQLite `settings`)                                    | per install | DUMB URL + credentials, stream intervals, reliability monitoring switches and memory thresholds, legacy `ui.theme`/`ui.accent`/`ui.reducedMotion` (kept as first-run seeds)                                                                                               |
 
 - Existing users upgrade to exactly the current UI: every preference default
   reproduces the pre-customization look, and the stored account theme seeds the

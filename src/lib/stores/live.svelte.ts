@@ -10,8 +10,10 @@ import type {
 	DiscoveredService,
 	Incident,
 	LogLine,
+	MediaFlowSnapshot,
 	MetricsHistoryPoint,
 	MetricsSnapshot,
+	RemediationActionView,
 	ReliabilitySnapshot,
 	ServiceStatus,
 	StackOverview,
@@ -72,6 +74,23 @@ class LiveStore {
 		mounts: [],
 		memory: [],
 		stats: { mountRounds: 0, fsCalls: 0, lastRoundMs: null, memoryTracked: 0 }
+	});
+	mediaFlow = $state<
+		MediaFlowSnapshot & {
+			recommendations: RemediationActionView[];
+			actions: RemediationActionView[];
+		}
+	>({
+		generatedAt: 0,
+		items: [],
+		metrics: {
+			repeatedRequests24h: 0,
+			activeMediaMismatches: 0,
+			resolvedMediaMismatches: 0,
+			propagation: { samples: 0, medianMs: null, p95Ms: null }
+		},
+		recommendations: [],
+		actions: []
 	});
 	capabilities = $state<Record<string, unknown>>({});
 	version = $state<string | null>(null);
@@ -199,6 +218,14 @@ class LiveStore {
 		});
 		on<ReliabilitySnapshot>('reliability', (data) => {
 			this.reliability = data;
+		});
+		on<
+			MediaFlowSnapshot & {
+				recommendations: RemediationActionView[];
+				actions: RemediationActionView[];
+			}
+		>('mediaFlow', (data) => {
+			this.mediaFlow = data;
 		});
 	}
 

@@ -37,6 +37,8 @@ import { sweepRateLimits } from '../security/rate-limit';
 import { MountMonitor } from '../reliability/mounts';
 import { MemoryAnomalyTracker, type MemoryTuningOverrides } from '../reliability/memory';
 import { fsProbeCallCount } from '../reliability/fsprobe';
+import { getRemediationManager, type RemediationManager } from '../reliability/remediation';
+import { MediaFlowCorrelator, loadArrObservations } from '../media/flow';
 
 const GIB = 1024 ** 3;
 
@@ -143,6 +145,11 @@ export class Hub {
 	private memoryTracker: MemoryAnomalyTracker;
 	private lastReliabilitySignature: string | null = null;
 
+	// -- media correlation + remediation (DEEL 2): observe-first ---------------
+	private mediaFlow: MediaFlowCorrelator;
+	private remediation: RemediationManager;
+	private lastMediaSignature: string | null = null;
+
 	// ----- infrastructure ----------------------------------------------------
 	private client: DumbClient | null = null;
 	private streams: DumbStream[] = [];
@@ -194,6 +201,21 @@ export class Hub {
 			onAssessment: (assessment) => this.engine.onMemory(assessment),
 			tuning: fast?.memory
 		});
+		this.mediaFlow = new MediaFlowCorrelator({
+			now: clock,
+			loader: loadArrObservations,
+			tuning: fast ? { cycleMs: 4_000 } : undefined,
+			onFinding: (finding) =>
+				this.engine.reportFinding({
+					fingerprint: finding.fingerprint,
+					severity: finding.severity,
+					title: finding.title,
+					summary: finding.summary,
+					evidence: finding.evidence
+				}),
+			onResolve: (fingerprint, message) => this.engine.resolveFinding(fingerprint, message)
+		});
+		this.remediation = getRemediationManager();
 	}
 
 	/**
@@ -217,6 +239,7 @@ export class Hub {
 			baseUrl: settings.dumbUrl,
 			getCredentials: () => getDumbCredentials()
 		});
+		this.bindRemediation();
 
 		void this.bootstrapRest();
 
@@ -670,7 +693,144 @@ export class Hub {
 			});
 		const hostMemPercent = this.metricsLatest?.memory?.percent ?? null;
 		this.memoryTracker.evaluate(hostMemPercent);
+
+		// DEEL 2: media-state correlation (throttled internally to its own
+		// cycle) + remediation verification passes. Both failure-isolated and
+		// strictly observation-first: the correlator never mutates anything.
+		const mountReports = this.mountMonitor.getReports();
+		const mountUnhealthy = mountReports.some(
+			(r) => r.state === 'unresponsive' || r.state === 'read-error'
+		);
+		const mountLabel =
+			mountReports.find((r) => r.state === 'unresponsive' || r.state === 'read-error')?.target
+				.label ?? null;
+		void this.mediaFlow
+			.tick({ mountUnhealthy, mountLabel })
+			.then(() => this.publishMediaFlow())
+			.catch(() => {});
+		this.remediation.verifyPending();
+
 		this.publishReliability();
+	}
+
+	/**
+	 * Bind the remediation executor to live telemetry: DUMB's official
+	 * single-service restart route plus the current process/memory picture
+	 * for preflight and verification.
+	 */
+	private bindRemediation(): void {
+		const client = this.client;
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- building the executor closure over this hub
+		const hub = this;
+		this.remediation.bindExecutor({
+			execute: async (target) => {
+				if (!client) return false;
+				return client.restartService(target);
+			},
+			targetStatus: (target) => {
+				const status = hub
+					.getServices()
+					.find((s) => s.processName === target || s.key === target || s.name === target);
+				return {
+					managed: Boolean(status) || hub.getDiscovered().some((d) => d.processName === target),
+					running: status?.runState === 'running',
+					restartPending: status?.restart?.pending === true,
+					pid: status?.pid ?? null
+				};
+			},
+			targetMemoryRss: (target) =>
+				hub.getMetrics()?.processes.find((p) => p.name === target)?.memoryBytes ?? null,
+			activeWorkReliablyVisible: () => true, // arr queue pollers run when connected
+			activeWorkDetected: (target) => {
+				// Restarting a *storage* service risks in-flight mount work; the
+				// hint stays conservative and never blocks manual action.
+				void target;
+				return false;
+			}
+		});
+	}
+
+	/** Current media-flow picture for the API/SSE/UI (read-only). */
+	getMediaFlow() {
+		return {
+			...this.mediaFlow.snapshot(),
+			recommendations: this.mediaRecommendations(),
+			actions: this.remediation.recent()
+		};
+	}
+
+	/**
+	 * Recommendation-only remediation proposals (brief §41): a sustained
+	 * memory anomaly on a managed, running process proposes a single-service
+	 * restart. No automatic execution exists in this phase.
+	 */
+	private mediaRecommendations() {
+		const out: {
+			id: string;
+			kind: 'restart-managed-service';
+			target: string;
+			reason: string | null;
+			evidence: string[];
+			state: 'requested';
+			requestedAt: null;
+			executedAt: null;
+			verifiedAt: null;
+			verification: null;
+			cooldownRemainingMs: number;
+			attempts24h: number;
+			attemptLimit: number;
+			suspended: boolean;
+			findingFingerprint: null;
+		}[] = [];
+		for (const view of this.memoryTracker
+			.getViews()
+			.filter((v) => v.level === 'critical' || v.level === 'warning')
+			.slice(0, 3)) {
+			const target = view.process;
+			const status = this.getServices().find((s) => s.processName === target);
+			if (!status || status.runState !== 'running') continue;
+			if (this.remediation.cooldownRemainingMs(target) > 0) continue;
+			const attempts = this.remediation.attempts24h(target);
+			if (attempts >= 2) continue;
+			out.push({
+				id: `recommendation:${target}`,
+				kind: 'restart-managed-service',
+				target,
+				reason:
+					view.level === 'critical'
+						? 'Memory usage is unusually high and critical'
+						: 'Memory usage is unusually high and has grown continuously',
+				evidence: [
+					`Current ${((view.currentBytes ?? 0) / 1024 ** 3).toFixed(1)} GB`,
+					view.baselineBytes !== null
+						? `Typical ${(view.baselineBytes / 1024 ** 3).toFixed(1)} GB`
+						: null,
+					view.delta6hBytes !== null
+						? `${view.delta6hBytes >= 0 ? '+' : '−'}${(Math.abs(view.delta6hBytes) / 1024 ** 3).toFixed(1)} GB over 6h`
+						: null
+				].filter((e): e is string => e !== null),
+				state: 'requested',
+				requestedAt: null,
+				executedAt: null,
+				verifiedAt: null,
+				verification: null,
+				cooldownRemainingMs: 0,
+				attempts24h: attempts,
+				attemptLimit: 2,
+				suspended: attempts >= 2,
+				findingFingerprint: null
+			});
+		}
+		return out;
+	}
+
+	/** Fan media-flow state out when something visible changed. */
+	private publishMediaFlow(): void {
+		const media = this.getMediaFlow();
+		const signature = JSON.stringify([media.items, media.metrics, media.actions]);
+		if (signature === this.lastMediaSignature) return;
+		this.lastMediaSignature = signature;
+		this.broadcast('mediaFlow', media);
 	}
 
 	/** Current reliability picture for the API/SSE/UI (read-only). */

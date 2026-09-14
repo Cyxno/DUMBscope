@@ -475,6 +475,38 @@ export class IncidentEngine {
 	}
 
 	// -------------------------------------------------------------------------
+	// Generic findings API (DEEL 2): media-state findings reuse the exact same
+	// lifecycle — dedupe by fingerprint, resolve with hysteresis, occurrences
+	// for flap history. No second engine (brief §25).
+	// -------------------------------------------------------------------------
+
+	/** Report one finding (opens/refreshes by fingerprint). */
+	reportFinding(input: {
+		fingerprint: string;
+		severity: IncidentSeverity;
+		title: string;
+		summary: string;
+		evidence: string;
+		refreshSummary?: boolean;
+	}): void {
+		this.openIncident({
+			fingerprint: input.fingerprint,
+			severity: input.severity,
+			title: input.title,
+			summary: input.summary,
+			service: null,
+			evidenceMessage: input.evidence,
+			source: 'reliability',
+			refreshSummary: input.refreshSummary ?? true
+		});
+	}
+
+	/** Resolve one finding if active (message recorded in the timeline). */
+	resolveFinding(fingerprint: string, message: string): void {
+		this.resolveIfActive(fingerprint, this.nowFn(), message);
+	}
+
+	// -------------------------------------------------------------------------
 	// Reliability findings — mounts (FASE B) and memory (FASE C)
 	//
 	// These follow the same rules as every other incident: dedupe by

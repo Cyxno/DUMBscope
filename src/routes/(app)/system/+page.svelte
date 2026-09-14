@@ -12,11 +12,62 @@
 		HardDrive,
 		ArrowDownUp,
 		HardDriveDownload,
-		TriangleAlert
+		TriangleAlert,
+		RefreshCw,
+		Repeat2
 	} from '@lucide/svelte';
+	import type { MediaFlowItem } from '$lib/types';
 
 	const mounts = $derived(live.reliability.mounts);
 	const memoryViews = $derived(live.reliability.memory);
+
+	let confirmTarget = $state<string | null>(null);
+	let confirmBusy = $state(false);
+	let actionMessage = $state<{ kind: 'ok' | 'error'; text: string } | null>(null);
+
+	const mediaItems = $derived(live.mediaFlow.items);
+	const mediaMetrics = $derived(live.mediaFlow.metrics);
+	const recommendations = $derived(live.mediaFlow.recommendations);
+	const recentActions = $derived(live.mediaFlow.actions);
+
+	async function requestRestart(target: string) {
+		confirmBusy = true;
+		actionMessage = null;
+		try {
+			const res = await fetch('/api/reliability/actions', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ target })
+			});
+			const data = (await res.json()) as { error?: string; state?: string };
+			if (res.ok) {
+				actionMessage = {
+					kind: 'ok',
+					text: 'Restart accepted for ' + target + ' — DUMBscope will verify recovery.'
+				};
+			} else {
+				actionMessage = { kind: 'error', text: data.error ?? 'Action rejected.' };
+			}
+		} finally {
+			confirmBusy = false;
+			confirmTarget = null;
+		}
+	}
+
+	function flowSummaryColor(item: MediaFlowItem): string {
+		switch (item.summary) {
+			case 'available':
+				return 'var(--healthy)';
+			case 'failed':
+				return 'var(--critical)';
+			case 'acquiring':
+			case 'importing':
+			case 'downloading':
+				return 'var(--degraded)';
+			default:
+				return 'var(--unknown)';
+		}
+	}
 
 	function mountColor(state: MountHealth): string {
 		switch (state) {
@@ -328,6 +379,182 @@
 			</p>
 		{/if}
 	</Card>
+
+	<!-- Media state (DEEL 2): cross-service acquisition correlation. -->
+	<Card
+		title="Media state"
+		subtitle="Sonarr/Radarr acquisition flow — observe and correlate, never auto-fix"
+	>
+		<div class="mb-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-text-muted">
+			<span class="tnum"
+				><Repeat2
+					size={11}
+					class="mr-1 inline text-degraded"
+					aria-hidden="true"
+				/>{mediaMetrics.repeatedRequests24h}
+				repeated request{mediaMetrics.repeatedRequests24h === 1 ? '' : 's'} (24h)</span
+			>
+			<span class="tnum"
+				>{mediaMetrics.activeMediaMismatches} active mismatch{mediaMetrics.activeMediaMismatches ===
+				1
+					? ''
+					: 'es'}</span
+			>
+			{#if mediaMetrics.propagation.medianMs !== null}
+				<span class="tnum"
+					>grab→import median {Math.round(mediaMetrics.propagation.medianMs / 1000)}s · p95
+					{Math.round((mediaMetrics.propagation.p95Ms ?? 0) / 1000)}s</span
+				>
+			{/if}
+		</div>
+		{#if mediaItems.length === 0}
+			<p class="rounded-lg bg-surface-2 px-3 py-3 text-xs text-text-muted">
+				No recent acquisition activity to correlate. Items appear here while they are being
+				acquired, repeated or stuck.
+			</p>
+		{:else}
+			<ul class="space-y-1.5 text-xs">
+				{#each mediaItems.slice(0, 8) as item (item.mediaKey)}
+					{@const attention =
+						item.classification === 'repeated-request' ||
+						item.classification === 'mount-unavailable'}
+					<li class="rounded-lg bg-surface-2 px-3 py-2 {attention ? 'border border-degraded' : ''}">
+						<div class="flex items-center justify-between gap-2">
+							<span class="min-w-0 truncate font-medium text-text-primary">{item.title}</span>
+							<span
+								class="shrink-0 font-semibold capitalize"
+								style="color:{flowSummaryColor(item)}"
+							>
+								{item.summary}
+							</span>
+						</div>
+						<p class="mt-0.5 truncate text-[10px] text-text-muted">
+							{item.observations.map((o) => o.source + ': ' + o.state).join(' · ')}
+							{#if item.acquisitions > 1}· {item.acquisitions} requests{/if}
+						</p>
+						{#if attention && item.reason}
+							<p class="mt-0.5 text-[10px] text-degraded">{item.reason}</p>
+						{/if}
+					</li>
+				{/each}
+			</ul>
+		{/if}
+	</Card>
+
+	<!-- Recommended actions (DEEL 2): recommendation-only, confirmation before any execution. -->
+	<Card
+		title="Recommended actions"
+		subtitle="Recommendation-only — nothing runs without explicit confirmation"
+	>
+		{#if actionMessage}
+			<p
+				class="mb-2 rounded-lg px-3 py-2 text-xs {actionMessage.kind === 'ok'
+					? 'bg-healthy-soft text-text-secondary'
+					: 'bg-critical-soft text-text-secondary'}"
+			>
+				{actionMessage.text}
+			</p>
+		{/if}
+		{#if recommendations.length === 0}
+			<p class="rounded-lg bg-surface-2 px-3 py-3 text-xs text-text-muted">
+				No recommended actions. Recommendations appear when sustained evidence (for example a memory
+				anomaly) supports a single-service restart — and always require manual confirmation.
+			</p>
+		{:else}
+			<ul class="space-y-2 text-xs">
+				{#each recommendations as rec (rec.id)}
+					<li class="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2.5">
+						<div class="flex items-center justify-between gap-2">
+							<span class="flex min-w-0 items-center gap-2">
+								<RefreshCw size={13} class="shrink-0 text-degraded" aria-hidden="true" />
+								<span class="min-w-0">
+									<span class="block truncate font-medium text-text-primary"
+										>Restart {rec.target}</span
+									>
+									<span class="block text-[10px] text-text-muted">{rec.reason}</span>
+								</span>
+							</span>
+							<button
+								type="button"
+								class="shrink-0 rounded-lg bg-accent px-3 py-1.5 text-[11px] font-semibold text-bg transition-opacity hover:opacity-90"
+								onclick={() => (confirmTarget = rec.target)}
+							>
+								Review…
+							</button>
+						</div>
+						<p class="tnum mt-1 text-[10px] text-text-faint">{rec.evidence.join(' · ')}</p>
+					</li>
+				{/each}
+			</ul>
+		{/if}
+		{#if recentActions.length > 0}
+			<details class="mt-3">
+				<summary class="cursor-pointer text-[11px] font-medium text-text-muted">
+					Recent actions ({recentActions.length})
+				</summary>
+				<ul class="mt-1.5 space-y-1 text-[10px] text-text-muted">
+					{#each recentActions as action (action.id)}
+						<li class="flex items-center justify-between gap-2 rounded bg-surface-2 px-2.5 py-1.5">
+							<span class="min-w-0 truncate"
+								>{action.target} · {action.state}{action.verification
+									? ' — ' + action.verification
+									: ''}</span
+							>
+							<span class="tnum shrink-0"
+								>{action.requestedAt ? relativeTime(action.requestedAt) : ''}</span
+							>
+						</li>
+					{/each}
+				</ul>
+			</details>
+		{/if}
+	</Card>
+
+	{#if confirmTarget}
+		<div
+			class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+			role="presentation"
+		>
+			<div
+				class="w-full max-w-md rounded-[16px] border border-border-subtle bg-surface-1 p-5 shadow-2xl"
+				role="dialog"
+				aria-modal="true"
+				aria-label="Confirm restart"
+			>
+				<h3 class="text-sm font-semibold text-text-primary">Restart {confirmTarget}?</h3>
+				<p class="mt-1.5 text-xs text-text-secondary">
+					Only this managed service will be restarted, via DUMB's own management route. No other
+					services and no container are affected.
+				</p>
+				<p class="mt-2 text-[11px] text-text-muted">Current evidence:</p>
+				<ul class="mt-1 space-y-0.5 text-[11px] text-text-muted">
+					{#each recommendations.find((r) => r.target === confirmTarget)?.evidence ?? [] as line (line)}
+						<li class="font-mono">• {line}</li>
+					{/each}
+				</ul>
+				<p class="mt-2 text-[11px] text-text-faint">
+					DUMBscope will verify recovery afterwards. Cooldown 6 h, max 2 attempts per 24 h.
+				</p>
+				<div class="mt-4 flex justify-end gap-2">
+					<button
+						type="button"
+						class="rounded-lg border border-border-subtle px-3.5 py-2 text-xs font-medium text-text-secondary hover:border-border-strong"
+						onclick={() => (confirmTarget = null)}
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						disabled={confirmBusy}
+						class="rounded-lg bg-accent px-3.5 py-2 text-xs font-semibold text-bg transition-opacity hover:opacity-90 disabled:opacity-50"
+						onclick={() => confirmTarget && requestRestart(confirmTarget)}
+					>
+						{confirmBusy ? 'Requesting…' : 'Restart service'}
+					</button>
+				</div>
+			</div>
+		</div>
+	{/if}
 
 	{#if !metrics}
 		<EmptyState

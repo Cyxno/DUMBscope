@@ -25,6 +25,11 @@ const json = (res, body, code = 200) => {
 	res.end(JSON.stringify(body));
 };
 
+// Media-flow rehearsal control (DEEL 2): controllable grab history + missing
+// override so an e2e run can walk acquisition/repeat journeys read-only.
+const flowEvents = [];
+let missingOverride = null;
+
 const series = [
 	...(BIG ? [{ id: 14, title: 'Mega Volume', epCount: 1000, fileCount: 995, missing: 5 }] : []),
 	{ id: 1, title: 'Anne of Avonlea', epCount: 40, fileCount: 40, missing: 0 },
@@ -192,6 +197,32 @@ function authorize(req, res) {
 
 const sonarrHandler = (req, res, url) => {
 	if (!authorize(req, res)) return;
+	if (url.pathname === '/__control/media-flow' && req.method === 'POST') {
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			try {
+				const parsed = JSON.parse(body);
+				if (Array.isArray(parsed.grabs)) flowEvents.length = 0;
+				for (const grab of parsed.grabs ?? []) {
+					flowEvents.push({
+						eventType: grab.event ?? 'grabbed',
+						date: new Date(Date.now() - (grab.ageMin ?? 5) * 60000).toISOString(),
+						seriesId: grab.seriesId ?? 4,
+						episodeId: grab.episodeId ?? 101,
+						downloadId: grab.downloadId,
+						sourceTitle: grab.title ?? 'Mock.Series.S02E07.2160p.MOCK',
+						data: { downloadClient: grab.client ?? 'SABnzbd' }
+					});
+				}
+				if ('missingIds' in parsed) missingOverride = parsed.missingIds;
+				json(res, { ok: true });
+			} catch (err) {
+				json(res, { detail: String(err) }, 400);
+			}
+		});
+		return;
+	}
 	if (url.pathname === '/api/v3/system/status')
 		return json(res, { version: '4.0.0.1100', appName: 'Sonarr' });
 	if (url.pathname === '/api/v3/series')
@@ -247,7 +278,11 @@ const sonarrHandler = (req, res, url) => {
 		const page = Number(url.searchParams.get('page') ?? 1);
 		const pageSize = Number(url.searchParams.get('pageSize') ?? 100);
 		const start = (page - 1) * pageSize;
-		const slice = (COMPLETE ? [] : missingEpisodes).slice(start, start + pageSize).map((e) => ({
+		const base =
+			missingOverride !== null
+				? missingEpisodes.filter((e) => missingOverride.includes(e.id))
+				: missingEpisodes;
+		const slice = (COMPLETE ? [] : base).slice(start, start + pageSize).map((e) => ({
 			id: e.id,
 			seriesId: e.seriesId,
 			series: includeSeries ? { id: e.seriesId, title: e.seriesTitle } : undefined,
@@ -262,7 +297,7 @@ const sonarrHandler = (req, res, url) => {
 		return json(res, {
 			page,
 			pageSize,
-			totalRecords: scale(missingEpisodes.length),
+			totalRecords: scale(missingOverride !== null ? base.length : missingEpisodes.length),
 			records: slice
 		});
 	}
@@ -343,14 +378,17 @@ const sonarrHandler = (req, res, url) => {
 		const pageSize = Number(url.searchParams.get('pageSize') ?? 10);
 		// One event per series; the Sonarr history endpoint ignores seriesId
 		// filters (audited), so the caller must filter server-side.
-		const records = series.map((s) => ({
-			eventType: 'grabbed',
-			date: new Date(Date.now() - 3_600_000).toISOString(),
-			seriesId: s.id,
-			episodeId: s.id * 1000 + 1,
-			sourceTitle: 'Mock.Series.S01E01.1080p.MOCK',
-			quality: { quality: { name: 'WEBDL-1080p', resolution: 1080 } }
-		}));
+		const records = [
+			...flowEvents,
+			...series.map((s) => ({
+				eventType: 'grabbed',
+				date: new Date(Date.now() - 3_600_000).toISOString(),
+				seriesId: s.id,
+				episodeId: s.id * 1000 + 1,
+				sourceTitle: 'Mock.Series.S01E01.1080p.MOCK',
+				quality: { quality: { name: 'WEBDL-1080p', resolution: 1080 } }
+			}))
+		];
 		return json(res, {
 			page: 1,
 			pageSize,

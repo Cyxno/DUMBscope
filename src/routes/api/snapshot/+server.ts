@@ -15,6 +15,7 @@ export const GET: RequestHandler = async () => {
 		capabilities: hub.getCapabilities().raw,
 		activeIncidents: hub.getActiveIncidents(),
 		recentIncidents: incidentRepository.recent(25),
-		reliability: hub.getReliability()
+		reliability: hub.getReliability(),
+		mediaFlow: hub.getMediaFlow()
 	});
 };

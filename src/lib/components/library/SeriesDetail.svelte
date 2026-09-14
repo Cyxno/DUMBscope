@@ -6,6 +6,7 @@
 	 * from the main seasons (§16). Read-only throughout.
 	 */
 	import PosterImage from './PosterImage.svelte';
+	import MediaFlowCard from './MediaFlowCard.svelte';
 	import { relativeTime, formatBytes } from '$lib/utils/format';
 	import {
 		episodeStateClass,
@@ -101,6 +102,7 @@
 
 	let series = $state<SeriesShape | null>(summary);
 	let seasons = $state<SeasonGroup[]>([]);
+	let integrationId = $state<string | null>(null);
 	let upgradeCount = $state<number | null>(null);
 	let episodesLoading = $state(true);
 	let episodesError = $state<string | null>(null);
@@ -139,8 +141,11 @@
 				return;
 			}
 			if (detailResponse.ok) {
-				const data = (await detailResponse.json()) as { series: SeriesFull };
+				const data = (await detailResponse.json()) as {
+					series: SeriesFull & { integrationId?: string };
+				};
 				series = data.series;
+				integrationId = data.series.integrationId ?? null;
 			}
 			if (episodesResponse.ok) {
 				const data = (await episodesResponse.json()) as {
@@ -251,6 +256,15 @@
 			</div>
 		</div>
 	</div>
+
+	<!-- Cross-service media flow (DEEL 2): only when a correlated flow exists. -->
+	<MediaFlowCard
+		keys={integrationId
+			? seasons.flatMap((season) =>
+					season.episodes.map((episode) => 'sonarr:' + integrationId + ':episode:' + episode.id)
+				)
+			: []}
+	/>
 
 	<!-- Library status (§13) -->
 	<div

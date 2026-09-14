@@ -343,6 +343,154 @@ export interface ActivityEntry {
 }
 
 // ---------------------------------------------------------------------------
+// Media state correlation (DEEL 2)
+// ---------------------------------------------------------------------------
+
+/**
+ * Normalized acquisition-flow state for one media item, as observed at one
+ * source. The raw per-source state is always kept (brief §13) — the derived
+ * summary exists only for the UI and never erases provenance.
+ */
+export type MediaFlowState =
+	| 'missing'
+	| 'requested'
+	| 'accepted'
+	| 'queued'
+	| 'downloading'
+	| 'importing'
+	| 'mounted'
+	| 'available'
+	| 'indexed'
+	| 'failed'
+	| 'unknown';
+
+export type MediaSourceName =
+	'sonarr' | 'radarr' | 'decypharr' | 'infinidysk' | 'filesystem' | 'plex';
+
+export interface MediaSourceObservation {
+	source: MediaSourceName;
+	/** Namespaced stable key of the integration instance. */
+	integrationId: string;
+	state: MediaFlowState;
+	observedAt: number;
+	confidence: 'exact' | 'derived' | 'inferred';
+	/** Plain-language evidence line, e.g. "grabbed 09:17 via SABnzbd". */
+	evidence?: string | null;
+}
+
+/** One acquisition attempt tracked by its upstream request identity. */
+export interface MediaAcquisition {
+	/** Namespaced integration instance id (sonarr:<id> / radarr:<id>). */
+	integrationId: string;
+	/** Upstream download/request GUID — stable across polls. */
+	requestId: string;
+	mediaKey: string;
+	title: string;
+	/** Emulated client at the Arr boundary: SABnzbd = InfiniDysk path,
+	 *  qBittorrent = Decypharr path. */
+	client: string | null;
+	firstSeen: number;
+	lastObservedAt: number;
+	acceptedAt: number | null;
+	failedAt: number | null;
+	completedAt: number | null;
+	lastEvent: string | null;
+}
+
+/** UI summary of one item's cross-service flow. */
+export interface MediaFlowItem {
+	mediaKey: string;
+	/** Best-effort display title (from the Arr missing list or history). */
+	title: string;
+	sourceType: 'sonarr' | 'radarr';
+	integrationId: string;
+	/** Arr-native id for deep links. */
+	mediaId: number | null;
+	observations: MediaSourceObservation[];
+	/** UI-only derived summary (brief §14/§15). */
+	summary: MediaFlowState | 'acquiring';
+	/** Plain-language reason for the summary (evidence-based). */
+	reason: string | null;
+	/** Distinct acquisition requests observed for this item in the window. */
+	acquisitions: number;
+	lastGrabAt: number | null;
+	lastImportAt: number | null;
+	lastFailureAt: number | null;
+	/** Classified root cause when a finding applies. */
+	classification:
+		| 'acquisition-in-progress'
+		| 'state-propagation-delay'
+		| 'mount-unavailable'
+		| 'arr-import-delay'
+		| 'repeated-request'
+		| 'identity-mismatch'
+		| 'stale-source-state'
+		| 'unknown'
+		| null;
+}
+
+export interface MediaFlowSnapshot {
+	generatedAt: number;
+	/** Recent flows worth attention (acquiring/repeats/mismatches), capped. */
+	items: MediaFlowItem[];
+	metrics: {
+		repeatedRequests24h: number;
+		activeMediaMismatches: number;
+		resolvedMediaMismatches: number;
+		/** Median + p95 of observed grab→import delay (ms), when enough cases. */
+		propagation: { samples: number; medianMs: number | null; p95Ms: number | null };
+	};
+}
+
+// ---------------------------------------------------------------------------
+// Remediation (DEEL 2) — bounded, allowlisted, verification-first
+// ---------------------------------------------------------------------------
+
+export type RemediationActionState =
+	| 'requested'
+	| 'running'
+	| 'verifying'
+	| 'succeeded'
+	| 'failed'
+	| 'partially-recovered'
+	| 'rejected';
+
+/** A registered remediation action (allowlist — never arbitrary commands). */
+export interface RemediationActionView {
+	id: string;
+	/** 'restart-managed-service' — the only action registered this phase. */
+	kind: 'restart-managed-service';
+	/** Resolved target: the managed DUMB process name. */
+	target: string;
+	/** Human reason shown in the recommendation. */
+	reason: string | null;
+	/** Evidence lines backing the recommendation. */
+	evidence: string[];
+	state: RemediationActionState;
+	requestedAt: number | null;
+	executedAt: number | null;
+	verifiedAt: number | null;
+	/** Verification detail: what was checked and what it found. */
+	verification: string | null;
+	/** Cooldown/attempt status for the target. */
+	cooldownRemainingMs: number;
+	attempts24h: number;
+	attemptLimit: number;
+	suspended: boolean;
+	/** Findings fingerprint this action is linked to. */
+	findingFingerprint: string | null;
+}
+
+export interface RemediationSnapshot {
+	/** Recommendations (no execution yet) for eligible targets. */
+	recommendations: RemediationActionView[];
+	/** Recent executed/running actions (bounded). */
+	recent: RemediationActionView[];
+	/** True when automatic execution is configured (default: never this phase). */
+	automaticEnabled: boolean;
+}
+
+// ---------------------------------------------------------------------------
 // App metadata
 // ---------------------------------------------------------------------------
 

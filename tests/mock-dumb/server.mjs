@@ -84,6 +84,8 @@ let sonarrCrashing = false;
 // Reliability-rehearsal control: per-process RSS overrides (GB) so an e2e run
 // can walk a memory-anomaly journey (raise → warning → restore → resolve).
 const rssOverrides = new Map();
+// Remediation rehearsal: when true, /api/process/restart-service rejects.
+let restartFails = false;
 
 const FORCE_POSTGRES_DOWN = process.env.MOCK_POSTGRES_DOWN === '1';
 
@@ -315,6 +317,22 @@ const server = http.createServer((req, res) => {
 		res.end(JSON.stringify({ gatewayDown: false }));
 		return;
 	}
+	if (url.pathname === '/__control/restart-fail' && req.method === 'POST') {
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			try {
+				const parsed = JSON.parse(body);
+				restartFails = parsed.fail === true;
+				res.writeHead(200, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ ok: true, restartFails }));
+			} catch {
+				res.writeHead(400, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ detail: 'Bad request' }));
+			}
+		});
+		return;
+	}
 	if (url.pathname === '/__control/rss' && req.method === 'POST') {
 		let body = '';
 		req.on('data', (chunk) => (body += chunk));
@@ -413,6 +431,23 @@ const server = http.createServer((req, res) => {
 		return;
 	}
 
+	if (url.pathname === '/api/process/restart-service' && req.method === 'POST') {
+		if (!claims && !wsAuth) return respond(401, { detail: 'Authentication required' });
+		if (restartFails) return respond(500, { detail: 'simulated restart failure' });
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			try {
+				const parsed = JSON.parse(body || '{}');
+				console.log('[mock-dumb] restart-service accepted:', parsed.process_name);
+				res.writeHead(200, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ status: 'accepted', process_name: parsed.process_name ?? null }));
+			} catch {
+				respond(400, { detail: 'Bad request' });
+			}
+		});
+		return;
+	}
 	if (!AUTH_ENABLED || claims || wsAuth) {
 		switch (url.pathname) {
 			case '/api/process/processes':

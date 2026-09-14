@@ -175,6 +175,52 @@ const MIGRATIONS: Migration[] = [
 			CREATE INDEX IF NOT EXISTS idx_memory_samples_process_at ON memory_samples(process, at);
 			CREATE INDEX IF NOT EXISTS idx_memory_samples_at ON memory_samples(at);
 		`
+	},
+	{
+		version: 6,
+		name: 'acquisition ledger and remediation audit',
+		sql: `
+			-- DEEL 2: bounded recent acquisition ledger. One row per upstream
+			-- request (integration + download GUID), deduped by poll retries.
+			-- Retention-pruned at 14 days: ~50-200 grabs/day on this stack →
+			-- well under 3k rows steady state, a few hundred KB.
+			CREATE TABLE IF NOT EXISTS media_acquisitions (
+				integration_id TEXT NOT NULL,
+				request_id TEXT NOT NULL,
+				media_key TEXT NOT NULL,
+				title TEXT NOT NULL,
+				client TEXT,
+				first_seen INTEGER NOT NULL,
+				last_observed_at INTEGER NOT NULL,
+				accepted_at INTEGER,
+				failed_at INTEGER,
+				completed_at INTEGER,
+				last_event TEXT,
+				PRIMARY KEY (integration_id, request_id)
+			);
+			CREATE INDEX IF NOT EXISTS idx_media_acq_media ON media_acquisitions(media_key, first_seen);
+			CREATE INDEX IF NOT EXISTS idx_media_acq_seen ON media_acquisitions(last_observed_at);
+
+			-- Remediation audit trail: one row per action request. Actor,
+			-- evidence, verification and result are recorded — the audit is the
+			-- product, execution is the exception.
+			CREATE TABLE IF NOT EXISTS remediation_actions (
+				id TEXT PRIMARY KEY,
+				kind TEXT NOT NULL,
+				target TEXT NOT NULL,
+				actor TEXT NOT NULL,
+				trigger_source TEXT NOT NULL,
+				reason TEXT,
+				evidence TEXT NOT NULL DEFAULT '[]',
+				state TEXT NOT NULL,
+				finding_fingerprint TEXT,
+				requested_at INTEGER NOT NULL,
+				executed_at INTEGER,
+				verified_at INTEGER,
+				verification TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_remediation_target_at ON remediation_actions(target, requested_at);
+		`
 	}
 ];
 export function currentVersion(db: DatabaseSync): number {

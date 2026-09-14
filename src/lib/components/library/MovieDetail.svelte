@@ -5,12 +5,14 @@
 	 * release age + monitored state — never invented search failures (§40).
 	 */
 	import PosterImage from './PosterImage.svelte';
+	import MediaFlowCard from './MediaFlowCard.svelte';
 	import { formatBytes, relativeTime } from '$lib/utils/format';
 	import { daysAgo, formatDate, qualityBadge } from '$lib/utils/library-ui';
 
 	interface MovieFull {
 		key: string;
 		id: number;
+		integrationId?: string;
 		title: string;
 		year: number | null;
 		status: string;
@@ -147,6 +149,11 @@
 			</div>
 		</div>
 	</div>
+
+	<!-- Cross-service media flow (DEEL 2) -->
+	{#if data.movie.integrationId}
+		<MediaFlowCard keys={['radarr:' + data.movie.integrationId + ':movie:' + data.movie.id]} />
+	{/if}
 
 	<!-- Missing context (§40) / queue (§41) -->
 	{#if missingFlag || data.queue}

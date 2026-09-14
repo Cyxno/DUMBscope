@@ -34,8 +34,8 @@ async function setRestartFail(fail: boolean): Promise<void> {
 }
 
 async function openSeriesDrawer(page: Page): Promise<void> {
-	await page.goto('/library/tv');
-	const grid = page.locator('[role=dialog]').or(page.locator('main'));
+	await page.goto('/library?view=tv');
+	const grid = page.locator('ul.grid');
 	await grid.locator('button', { hasText: 'Dark Meadow' }).first().click();
 	const drawer = page.locator('[role=dialog]');
 	await expect(drawer).toBeVisible();
@@ -49,10 +49,10 @@ test('acquisition active: item flow shows Acquiring and repeated request finding
 	// imported, still on the Arr missing list (the production loop shape).
 	await setFlow(
 		[
-			{ downloadId: 'req-1', episodeId: 101, seriesId: 4, ageMin: 20, client: 'SABnzbd' },
-			{ downloadId: 'req-2', episodeId: 101, seriesId: 4, ageMin: 5, client: 'SABnzbd' }
+			{ downloadId: 'req-1', episodeId: 4043, seriesId: 4, ageMin: 20, client: 'SABnzbd' },
+			{ downloadId: 'req-2', episodeId: 4043, seriesId: 4, ageMin: 5, client: 'SABnzbd' }
 		],
-		[101]
+		[4043]
 	);
 
 	// The System media-state card correlates the flow…
@@ -66,7 +66,21 @@ test('acquisition active: item flow shows Acquiring and repeated request finding
 	});
 
 	// The library drawer carries the per-item evidence.
+	const mf = await (await page.request.get('/api/media-flow')).json();
+	console.log(
+		'[debug] mediaKeys:',
+		JSON.stringify(mf.items.map((i: { mediaKey: string }) => i.mediaKey))
+	);
 	await openSeriesDrawer(page);
+	const detail = await (
+		await page.request.get('/api/library/tv/sonarr-series-4')
+	)
+		.json()
+		.catch(() => null);
+	console.log(
+		'[debug] detail integrationId:',
+		JSON.stringify(detail?.series?.integrationId ?? null)
+	);
 	const drawer = page.locator('[role=dialog]');
 	await expect(drawer.getByText('Media flow')).toBeVisible({ timeout: 30_000 });
 	await expect(drawer.getByText('Acquiring')).toBeVisible();
@@ -81,7 +95,7 @@ test('memory anomaly: recommendation, confirmation modal, execution, verificatio
 	const res = await fetch(`${MOCK_URL}/__control/rss`, {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ name: 'InfiniDysk', bytes: Math.round(4.2 * 1024 ** 3) })
+		body: JSON.stringify({ name: 'rclone w/ InfiniDysk', bytes: Math.round(4.2 * 1024 ** 3) })
 	});
 	if (!res.ok) throw new Error('rss control failed');
 	let restored = false;
@@ -110,11 +124,11 @@ test('memory anomaly: recommendation, confirmation modal, execution, verificatio
 			.getByRole('dialog', { name: 'Confirm restart' })
 			.getByRole('button', { name: 'Restart service' })
 			.click();
-		await expect(page.getByText(/Restart accepted for InfiniDysk/)).toBeVisible({
+		await expect(page.getByText(/Restart accepted for rclone w\/ InfiniDysk/)).toBeVisible({
 			timeout: 30_000
 		});
 		await page.getByText('Recent actions').click();
-		await expect(page.getByText(/InfiniDysk · succeeded/).first()).toBeVisible({
+		await expect(page.getByText(/rclone w\/ InfiniDysk · succeeded/).first()).toBeVisible({
 			timeout: 60_000
 		});
 		// Journey 6: the executed action carries its cooldown window.
@@ -124,7 +138,7 @@ test('memory anomaly: recommendation, confirmation modal, execution, verificatio
 		await fetch(`${MOCK_URL}/__control/rss`, {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ name: 'InfiniDysk', bytes: null })
+			body: JSON.stringify({ name: 'rclone w/ InfiniDysk', bytes: null })
 		}).catch(() => {});
 		if (!restored) await setRestartFail(false).catch(() => {});
 	}

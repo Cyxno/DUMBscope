@@ -23,8 +23,8 @@ the DUMB container; InfiniDysk's own SQLite history; DUMB config):
   (usenet; emulates SABnzbd). Every grab in the Arr history names its client.
 - **InfiniDysk's history is request-driven, not spontaneous.** Every
   InfiniDysk job carries the Arr's `downloadId` GUID (its `WatchdogEntries.
-  ClickId` / `HistoryItems.ArrDownloadId`). Repeated jobs for one title show
-  *different* GUIDs — the Arr genuinely re-offered the request; InfiniDysk
+ClickId` / `HistoryItems.ArrDownloadId`). Repeated jobs for one title show
+  _different_ GUIDs — the Arr genuinely re-offered the request; InfiniDysk
   executed both (e.g. Westworld S02E09: two jobs, 21 minutes apart, two
   different ArrDownloadIds).
 - **The usenet path fails fast and often.** Real timelines from Sonarr:
@@ -55,18 +55,18 @@ the DUMB container; InfiniDysk's own SQLite history; DUMB config):
 
 ### Capability matrix (real endpoints only; nothing invented)
 
-| State        | Sonarr/Radarr (`/api/v3/…`)                        | Decypharr                         | InfiniDysk                                   | Filesystem              |
-| ------------ | -------------------------------------------------- | --------------------------------- | -------------------------------------------- | ----------------------- |
-| Missing      | `wanted/missing` (episodeId/movieId)               | —                                 | —                                            | —                       |
-| Requested    | `history` `grabbed` + `downloadId` + client        | observed as qBittorrent grab      | observed as SABnzbd grab                     | —                       |
-| Accepted     | history grab = accepted at the boundary            | — (no authed API proven this run) | `WatchdogEntries.ClickId` = downloadId       | —                       |
-| Downloading  | `queue` (status, trackedDownloadStatus)            | —                                 | —                                            | —                       |
-| Importing    | `history` `downloadFolderImported` / queue state   | —                                 | —                                            | —                       |
-| Available    | `hasFile` / leaves `wanted/missing`                | —                                 | —                                            | symlink sample (DEEL 1) |
-| Mounted      | —                                                  | —                                 | —                                            | mount probes (DEEL 1)   |
-| Failed       | `history` `downloadFailed`; queue `failure`        | —                                 | `HistoryItems.DownloadStatus=2`              | —                       |
-| Retry/repeat | repeated `grabbed` per episode/movie               | —                                 | repeats per JobName/ContentGroupKey          | —                       |
-| Stable ID    | episodeId/movieId ↔ `downloadId` GUID              | —                                 | ArrDownloadId GUID                           | path (bounded)          |
+| State        | Sonarr/Radarr (`/api/v3/…`)                      | Decypharr                         | InfiniDysk                             | Filesystem              |
+| ------------ | ------------------------------------------------ | --------------------------------- | -------------------------------------- | ----------------------- |
+| Missing      | `wanted/missing` (episodeId/movieId)             | —                                 | —                                      | —                       |
+| Requested    | `history` `grabbed` + `downloadId` + client      | observed as qBittorrent grab      | observed as SABnzbd grab               | —                       |
+| Accepted     | history grab = accepted at the boundary          | — (no authed API proven this run) | `WatchdogEntries.ClickId` = downloadId | —                       |
+| Downloading  | `queue` (status, trackedDownloadStatus)          | —                                 | —                                      | —                       |
+| Importing    | `history` `downloadFolderImported` / queue state | —                                 | —                                      | —                       |
+| Available    | `hasFile` / leaves `wanted/missing`              | —                                 | —                                      | symlink sample (DEEL 1) |
+| Mounted      | —                                                | —                                 | —                                      | mount probes (DEEL 1)   |
+| Failed       | `history` `downloadFailed`; queue `failure`      | —                                 | `HistoryItems.DownloadStatus=2`        | —                       |
+| Retry/repeat | repeated `grabbed` per episode/movie             | —                                 | repeats per JobName/ContentGroupKey    | —                       |
+| Stable ID    | episodeId/movieId ↔ `downloadId` GUID            | —                                 | ArrDownloadId GUID                     | path (bounded)          |
 
 Decypharr's own DB/API was not integrable this run (no authenticated API
 surface proven; its data files are not SQLite). Its state is observed through
@@ -129,7 +129,7 @@ conservatively — timestamps come from one source (the Arr history) per row.
 - **System → Media state**: bounded metrics (repeated requests 24 h, active
   mismatches, grab→import median/p95) plus the attention items with their
   per-source observation lines.
-- **Library item drawers**: a compact *Media flow* block appears only when a
+- **Library item drawers**: a compact _Media flow_ block appears only when a
   correlated flow exists (brief §28) — sources that don't exist are never
   rendered. Repeated-request items carry the "Repeated request detected"
   evidence line (brief §30).

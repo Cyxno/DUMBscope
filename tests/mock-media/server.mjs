@@ -196,7 +196,6 @@ function authorize(req, res) {
 }
 
 const sonarrHandler = (req, res, url) => {
-	if (!authorize(req, res)) return;
 	if (url.pathname === '/__control/media-flow' && req.method === 'POST') {
 		let body = '';
 		req.on('data', (chunk) => (body += chunk));
@@ -215,7 +214,19 @@ const sonarrHandler = (req, res, url) => {
 						data: { downloadClient: grab.client ?? 'SABnzbd' }
 					});
 				}
-				if ('missingIds' in parsed) missingOverride = parsed.missingIds;
+				if ('missingIds' in parsed)
+					missingOverride = parsed.missingIds.map((id) => {
+						const seriesId = Math.floor(id / 1000);
+						const owner = series.find((x) => x.id === seriesId);
+						return {
+							id,
+							seriesId,
+							seriesTitle: owner ? owner.title : 'Unknown',
+							season: 1,
+							episode: id % 1000,
+							ageDays: 6
+						};
+					});
 				json(res, { ok: true });
 			} catch (err) {
 				json(res, { detail: String(err) }, 400);
@@ -223,6 +234,7 @@ const sonarrHandler = (req, res, url) => {
 		});
 		return;
 	}
+	if (!authorize(req, res)) return;
 	if (url.pathname === '/api/v3/system/status')
 		return json(res, { version: '4.0.0.1100', appName: 'Sonarr' });
 	if (url.pathname === '/api/v3/series')
@@ -278,10 +290,7 @@ const sonarrHandler = (req, res, url) => {
 		const page = Number(url.searchParams.get('page') ?? 1);
 		const pageSize = Number(url.searchParams.get('pageSize') ?? 100);
 		const start = (page - 1) * pageSize;
-		const base =
-			missingOverride !== null
-				? missingEpisodes.filter((e) => missingOverride.includes(e.id))
-				: missingEpisodes;
+		const base = missingOverride !== null ? missingOverride : missingEpisodes;
 		const slice = (COMPLETE ? [] : base).slice(start, start + pageSize).map((e) => ({
 			id: e.id,
 			seriesId: e.seriesId,

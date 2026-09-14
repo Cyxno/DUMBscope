@@ -99,6 +99,8 @@ export interface MediaFlowCorrelatorOptions {
 }
 
 interface FlowWork {
+	/** Stable identity — the map key this work was created under. */
+	key: string;
 	observations: MediaSourceObservation[];
 	title: string;
 	sourceType: 'sonarr' | 'radarr';
@@ -188,6 +190,7 @@ export class MediaFlowCorrelator {
 			let w = work.get(mediaKey);
 			if (!w) {
 				w = {
+					key: mediaKey,
 					observations: [],
 					title: 'Unknown',
 					sourceType: 'sonarr',
@@ -268,6 +271,13 @@ export class MediaFlowCorrelator {
 			const last = sorted[sorted.length - 1]!;
 			w.title = last.title || w.title;
 			if (!w.integrationId) w.integrationId = last.integrationId;
+			// The ledger key IS the stable identity: parse the Arr-native id so
+			// items that are not (any longer) missing keep their stable key too.
+			if (w.mediaId === null) {
+				const parts = mediaKey.split(':');
+				const parsed = Number(parts[3]);
+				if (Number.isFinite(parsed)) w.mediaId = parsed;
+			}
 			w.lastGrabAt = Math.max(...sorted.map((a) => a.acceptedAt ?? a.firstSeen));
 			w.lastFailureAt = Math.max(...sorted.map((a) => a.failedAt ?? 0)) || null;
 			w.lastImportAt = Math.max(...sorted.map((a) => a.completedAt ?? 0)) || null;
@@ -290,7 +300,7 @@ export class MediaFlowCorrelator {
 			const repeatFp = `media-repeat:${mediaKey}`;
 			const mismatchFp = `media-mismatch:${mediaKey}`;
 			const failingFp = `media-failing:${mediaKey}`;
-			const repeated = this.detectRepeat(mediaKey, sorted, now);
+			const repeated = this.detectRepeat(mediaKey, sorted, now, w.isMissing);
 			const mismatch = this.detectMismatch(w, sorted, now);
 
 			if (mismatch) {
@@ -361,7 +371,7 @@ export class MediaFlowCorrelator {
 		}
 
 		this.metrics = {
-			repeatedRequests24h: this.countRepeats24h(byMedia, now),
+			repeatedRequests24h: this.countRepeats24h(byMedia, work, now),
 			activeMediaMismatches: this.mismatches.size,
 			resolvedMediaMismatches: this.resolvedMismatchCount,
 			propagation: this.propagation
@@ -405,31 +415,28 @@ export class MediaFlowCorrelator {
 	private detectRepeat(
 		mediaKey: string,
 		sorted: MediaAcquisition[],
-		now: number
+		now: number,
+		stillMissing: boolean
 	): { count: number; clusterStart: number } | null {
 		if (sorted.length < 2) return null;
 		const inWindow = sorted.filter((a) => now - a.firstSeen <= this.t.repeatWindowMs);
 		if (inWindow.length < 2) return null;
 		const latest = sorted[sorted.length - 1]!;
 		const previous = sorted[sorted.length - 2]!;
-		// Previous acquisition still active → the new request is a repeat.
-		const previousActive =
-			previous.completedAt === null &&
-			(latest.acceptedAt ?? latest.firstSeen) - (previous.lastObservedAt ?? previous.firstSeen) <
-				this.t.repeatWindowMs;
-		// Shield: a completed acquisition suppresses repeats for a while — a
-		// fresh request afterwards is a normal new acquisition (brief §20).
-		const shielded =
-			previous.completedAt !== null &&
-			(latest.firstSeen - previous.completedAt > this.t.completionShieldMs ||
-				latest.firstSeen < previous.completedAt);
 		const latestIsNew = (latest.acceptedAt ?? latest.firstSeen) - previous.firstSeen > 60_000;
 		if (!latestIsNew) return null;
-		if (shielded) return null;
-		if (!previousActive && previous.completedAt === null) {
-			// Not completed, not recent: stale row outside the window.
-			return null;
+		if (previous.completedAt !== null) {
+			// The previous request completed. A follow-up grab is only a
+			// *repeat* when the item is STILL missing (the import did not
+			// stick); otherwise it is a normal upgrade/new acquisition
+			// (brief §20). Give quick propagation the mismatch grace first.
+			if (!stillMissing) return null;
+			if (now - previous.completedAt < this.t.mismatchGraceMs) return null;
+			return { count: inWindow.length, clusterStart: inWindow[0]!.firstSeen };
 		}
+		// Previous request never completed: still active inside the window?
+		if ((latest.acceptedAt ?? latest.firstSeen) - previous.firstSeen > this.t.repeatWindowMs)
+			return null;
 		return { count: inWindow.length, clusterStart: inWindow[0]!.firstSeen };
 	}
 
@@ -439,13 +446,17 @@ export class MediaFlowCorrelator {
 		return importedAfterMissing && now - w.lastImportAt >= this.t.mismatchGraceMs;
 	}
 
-	private countRepeats24h(byMedia: Map<string, MediaAcquisition[]>, now: number): number {
+	private countRepeats24h(
+		byMedia: Map<string, MediaAcquisition[]>,
+		work: Map<string, FlowWork>,
+		now: number
+	): number {
 		let count = 0;
-		for (const [, acqs] of byMedia) {
+		for (const [mediaKey, acqs] of byMedia) {
 			if (acqs.length < 2) continue;
 			const sorted = [...acqs].sort((a, b) => a.firstSeen - b.firstSeen);
-			const repeat = this.detectRepeat('', sorted, now);
-			if (repeat) count++;
+			const stillMissing = work.get(mediaKey)?.isMissing ?? false;
+			if (this.detectRepeat(mediaKey, sorted, now, stillMissing)) count++;
 		}
 		return count;
 	}

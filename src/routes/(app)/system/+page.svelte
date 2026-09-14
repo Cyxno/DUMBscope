@@ -498,6 +498,8 @@
 							<span class="min-w-0 truncate"
 								>{action.target} · {action.state}{action.verification
 									? ' — ' + action.verification
+									: ''}{action.cooldownRemainingMs > 0
+									? ' · cooldown ' + Math.ceil(action.cooldownRemainingMs / 3600_000) + 'h'
 									: ''}</span
 							>
 							<span class="tnum shrink-0"

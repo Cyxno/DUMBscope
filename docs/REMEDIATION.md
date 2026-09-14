@@ -1,6 +1,6 @@
 # Remediation (DEEL 2)
 
-The bounded action framework behind the *Recommended actions* view. This is
+The bounded action framework behind the _Recommended actions_ view. This is
 a foundation, deliberately small: one allowlisted action, recommendation-only
 by default, with preflight, confirmation, verification, cooldown, attempt
 caps and a full audit trail. **Automatic execution does not exist in this
@@ -52,7 +52,7 @@ recovery afterwards.
 ## Verification — HTTP 200 is acceptance, not success (§43-§45)
 
 After DUMB accepts a restart the action moves to `running` → `verifying`.
-`running` is *executed and accepted*, never success. The hub's housekeeping
+`running` is _executed and accepted_, never success. The hub's housekeeping
 pass verifies the post-conditions from live telemetry: the process is back
 (`runState=running`, no pending restart) with its PID and RSS reported —
 memory evidence for the memory-restart case. Verification must land within
@@ -64,7 +64,7 @@ unproven, never silently successful.
 - **6 hours per target**: a restart cycle plus meaningful re-growth
   observation spans hours (the DEEL-1 memory anomalies build over ~6 h), so a
   shorter cooldown would just hide a recurring leak.
-- **2 attempts per 24 h**, after which the target is *suspended*: "automatic
+- **2 attempts per 24 h**, after which the target is _suspended_: "automatic
   recovery suspended — manual investigation required" semantics, surfaced as
   `suspended` in the action view.
 

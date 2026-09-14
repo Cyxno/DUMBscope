@@ -145,6 +145,34 @@ describe('media flow correlation', () => {
 		expect(findings.find((f) => f.fingerprint.startsWith('media-repeat:'))).toBeUndefined();
 	});
 
+	it('re-grab after completion while STILL missing: the production loop (repeat)', async () => {
+		// The complaint shape: an acquisition completed but the item never
+		// imported cleanly, so it stays missing and gets re-offered.
+		loader = async () => [
+			observation('sonarr-a', {
+				missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
+				events: [
+					grab('sonarr-a', 1, 'req-1', 120),
+					{
+						requestId: 'req-1',
+						mediaKey: episodeKey('sonarr-a', 1),
+						title: 'x',
+						client: 'SABnzbd',
+						event: 'downloadFolderImported',
+						at: now - 118 * MIN
+					},
+					grab('sonarr-a', 1, 'req-2', 5)
+				]
+			})
+		];
+		await tick();
+		const repeat = findings.find((f) => f.fingerprint.startsWith('media-repeat:'));
+		expect(repeat).toBeDefined();
+		expect(repeat!.summary).toContain('2 requests');
+		// Stable id-based key, never a title key (brief §10).
+		expect(correlator.snapshot().items[0]!.mediaKey).toBe('sonarr:sonarr-a:episode:1');
+	});
+
 	it('imported inside grace: no mismatch warning', async () => {
 		loader = async () => [
 			observation('sonarr-a', {

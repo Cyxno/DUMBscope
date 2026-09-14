@@ -6,6 +6,7 @@
 	 * the URL so deep links and browser back work (§69/§70/§134/§136).
 	 */
 	import { page } from '$app/state';
+	import { prefs } from '$lib/stores/prefs.svelte';
 	import { pushState, replaceState } from '$app/navigation';
 	import AreaChart from '$lib/components/AreaChart.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
@@ -98,6 +99,8 @@
 	/** URL params the browsers own (§136). Cleared on view switches. */
 
 	let view = $state<View>('overview');
+	// Default tab from browser-local preferences (DEEL 3); an explicit URL
+	// parameter still wins (§77).
 	let data = $state<LibraryPayload | null>(null);
 	let error = $state<string | null>(null);
 	let loading = $state(true);
@@ -139,6 +142,10 @@
 		const requestedView = sp.get('view');
 		if (requestedView && (VIEWS as readonly string[]).includes(requestedView)) {
 			view = requestedView as View;
+		} else if (!requestedView) {
+			// No explicit view: the configured default tab applies (§77).
+			const fallback = prefs.libraryTab as View;
+			if (view !== fallback) view = fallback;
 		}
 		urlState = parseUrlState();
 		const item = sp.get('item');

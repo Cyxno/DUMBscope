@@ -225,3 +225,11 @@ dependencies, and keep the one-container constraint.
 ## License
 
 [MIT](LICENSE)
+
+### Reliability & operations (0.5)
+
+- Honest DUMB connectivity states with automatic reconnect
+- Read-only mount health + symlink sampling, memory anomaly detection
+- Cross-service media flow correlation with repeated-request detection
+- Safe, confirmed single-service restart actions (verification + cooldown)
+- Customization: themes/OLED, accents, density, dashboard widgets, navigation, accessibility

@@ -36,7 +36,7 @@
 			{#if actions}<div class="flex shrink-0 items-center gap-2">{@render actions()}</div>{/if}
 		</header>
 	{/if}
-	<div class={padding ? 'p-4' : ''}>
+	<div class={padding ? 'card-body' : ''}>
 		{@render children()}
 	</div>
 </section>
@@ -44,5 +44,8 @@
 <style>
 	.card {
 		box-shadow: var(--shadow-1);
+	}
+	.card-body {
+		padding: var(--pad-card);
 	}
 </style>

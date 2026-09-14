@@ -18,26 +18,25 @@
 	import Logo from './Logo.svelte';
 	import ConnectionIndicator from './ConnectionIndicator.svelte';
 	import CommandPalette from './CommandPalette.svelte';
+	import { prefs, updatePreference } from '$lib/stores/prefs.svelte';
 	import type { Snippet } from 'svelte';
 
 	let { children }: { children: Snippet } = $props();
 
-	const COLLAPSE_KEY = 'dumbscope.sidebar.collapsed';
-
-	let collapsed = $state(false);
 	let mobileNavOpen = $state(false);
 	let paletteOpen = $state(false);
 	let clock = $state(new Date());
 
-	$effect(() => {
-		collapsed = localStorage.getItem(COLLAPSE_KEY) === 'true';
-		const timer = setInterval(() => (clock = new Date()), 15_000);
-		return () => clearInterval(timer);
-	});
+	const sidebarMode = $derived(prefs.sidebarMode);
+	// 'icons' keeps full hit targets with tooltips; 'compact' narrows but
+	// keeps labels. Mobile keeps its own drawer (brief §16).
+	const collapsed = $derived(sidebarMode === 'icons');
+	const sidebarWidth = $derived(
+		sidebarMode === 'icons' ? '64px' : sidebarMode === 'compact' ? '168px' : '216px'
+	);
 
 	function toggleCollapsed() {
-		collapsed = !collapsed;
-		localStorage.setItem(COLLAPSE_KEY, String(collapsed));
+		updatePreference('sidebarMode', collapsed ? 'expanded' : 'icons');
 	}
 
 	$effect(() => {
@@ -83,13 +82,44 @@
 	function isActive(href: string): boolean {
 		return href === '/' ? currentPath === '/' : currentPath.startsWith(href);
 	}
+
+	/** Ordered, visibility-filtered nav (brief §21-§23); Settings stays. */
+	const NAV_SECTIONS = $derived.by(() => {
+		const order = prefs.navOrder.length > 0 ? prefs.navOrder : ['/'];
+		const hidden = new Set(prefs.navHidden);
+		const byHref = new Map(
+			NAV.flatMap((section) =>
+				section.items.map((item) => [item.href, { item, group: section.group }])
+			)
+		);
+		const monitor = order
+			.map((href) => byHref.get(href))
+			.filter(
+				(entry): entry is { item: (typeof NAV)[0]['items'][0]; group: string } =>
+					Boolean(entry) && !hidden.has(entry!.item.href)
+			)
+			.map((entry) => entry!.item);
+		const operateOrder = ['/incidents', '/logs', '/activity', '/system'];
+		const operate = operateOrder
+			.filter((href) => !hidden.has(href))
+			.map((href) => byHref.get(href))
+			.filter((entry): entry is { item: (typeof NAV)[0]['items'][0]; group: string } =>
+				Boolean(entry)
+			)
+			.map((entry) => entry!.item);
+		const sections: { group: string; items: (typeof NAV)[0]['items'] }[] = [];
+		if (monitor.length > 0) sections.push({ group: 'Monitor', items: monitor });
+		if (operate.length > 0) sections.push({ group: 'Operate', items: operate });
+		sections.push({ group: '', items: [{ href: '/settings', label: 'Settings', icon: Settings }] });
+		return sections;
+	});
 </script>
 
 <div class="flex h-dvh overflow-hidden bg-bg">
 	<!-- Desktop sidebar -->
 	<aside
 		class="z-20 hidden shrink-0 flex-col border-r border-border-subtle bg-surface-1 transition-[width] duration-200 md:flex"
-		style="width: {collapsed ? '64px' : '216px'}"
+		style="width: {sidebarWidth}"
 		aria-label="Primary"
 	>
 		<div class="flex h-14 items-center gap-2.5 px-3.5 {collapsed ? 'justify-center' : ''}">
@@ -102,7 +132,7 @@
 		</div>
 
 		<nav class="flex-1 space-y-5 overflow-y-auto px-2.5 py-3">
-			{#each NAV as section (section.group)}
+			{#each NAV_SECTIONS as section (section.group)}
 				<div>
 					{#if section.group && !collapsed}
 						<p
@@ -121,6 +151,7 @@
 										? 'bg-surface-2 text-text-primary'
 										: 'text-text-muted hover:bg-surface-2/60 hover:text-text-secondary'}"
 									title={collapsed ? item.label : undefined}
+									aria-label={item.label}
 									aria-current={isActive(item.href) ? 'page' : undefined}
 								>
 									<span
@@ -181,7 +212,7 @@
 					<span class="text-[15px] font-semibold tracking-tight">DUMBscope</span>
 				</div>
 				<nav class="flex-1 space-y-4 overflow-y-auto px-3 py-3">
-					{#each NAV as section (section.group)}
+					{#each NAV_SECTIONS as section (section.group)}
 						<div>
 							<ul class="space-y-0.5">
 								{#each section.items as item (item.href)}

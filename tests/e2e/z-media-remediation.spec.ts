@@ -66,21 +66,7 @@ test('acquisition active: item flow shows Acquiring and repeated request finding
 	});
 
 	// The library drawer carries the per-item evidence.
-	const mf = await (await page.request.get('/api/media-flow')).json();
-	console.log(
-		'[debug] mediaKeys:',
-		JSON.stringify(mf.items.map((i: { mediaKey: string }) => i.mediaKey))
-	);
 	await openSeriesDrawer(page);
-	const detail = await (
-		await page.request.get('/api/library/tv/sonarr-series-4')
-	)
-		.json()
-		.catch(() => null);
-	console.log(
-		'[debug] detail integrationId:',
-		JSON.stringify(detail?.series?.integrationId ?? null)
-	);
 	const drawer = page.locator('[role=dialog]');
 	await expect(drawer.getByText('Media flow')).toBeVisible({ timeout: 30_000 });
 	await expect(drawer.getByText('Acquiring')).toBeVisible();

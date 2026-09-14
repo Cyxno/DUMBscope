@@ -17,7 +17,7 @@ export interface AppSettings {
 	/** true when a credentials pair is stored for DUMB. */
 	hasDumbCredentials: boolean;
 	setupCompleted: boolean;
-	theme: 'dark' | 'oled' | 'light';
+	theme: 'system' | 'dark' | 'oled' | 'light';
 	accent: 'cyan' | 'blue' | 'indigo' | 'violet';
 	/** Status stream interval in seconds (0.5–10), forwarded to DUMB. */
 	statusInterval: number;

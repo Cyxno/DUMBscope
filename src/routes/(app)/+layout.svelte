@@ -2,18 +2,16 @@
 	import '../../app.css';
 	import AppShell from '$lib/components/AppShell.svelte';
 	import { live } from '$lib/stores/live.svelte';
+	import { initPreferences } from '$lib/stores/prefs.svelte';
 	import type { Snippet } from 'svelte';
 	import type { LayoutData } from './$types';
 
 	let { data, children }: { data: LayoutData; children: Snippet } = $props();
 
 	$effect(() => {
-		document.documentElement.dataset.theme = data.prefs.theme;
-		document.documentElement.dataset.accent = data.prefs.accent;
-		document.documentElement.dataset.reducedMotion = String(data.prefs.reducedMotion);
-	});
-
-	$effect(() => {
+		// Account theme/accent seed the browser-local preferences on first run;
+		// after that the local customization is authoritative (§96/§100).
+		initPreferences({ theme: data.prefs.theme, accent: data.prefs.accent });
 		live.start();
 	});
 </script>

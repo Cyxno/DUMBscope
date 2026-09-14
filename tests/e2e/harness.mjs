@@ -293,11 +293,16 @@ try {
 	writeAuthState(login);
 	console.log('[e2e] environment ready — running Playwright');
 
-	const test = spawn(process.execPath, ['node_modules/@playwright/test/cli.js', 'test'], {
-		cwd: root,
-		stdio: 'inherit',
-		env: process.env
-	});
+	const grepArgs = process.env.E2E_GREP ? ['--grep', process.env.E2E_GREP] : [];
+	const test = spawn(
+		process.execPath,
+		['node_modules/@playwright/test/cli.js', 'test', ...grepArgs],
+		{
+			cwd: root,
+			stdio: 'inherit',
+			env: process.env
+		}
+	);
 	children.push({ name: 'playwright', child: test });
 	exitCode = await new Promise((resolve) => test.on('exit', resolve));
 } catch (err) {

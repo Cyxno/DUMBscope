@@ -39,7 +39,7 @@ test('DUMB outage: amber reconnect banner, automatic recovery, honest layer deta
 		// banner inside the recovery window (brief §12).
 		await expect(indicator).not.toHaveText(/CONNECTED/, { timeout: 30_000 });
 		await expect(page.getByText('DUMB is currently unreachable')).toHaveCount(0);
-		await expect(page.getByText(/Reconnecting to DUMB/)).toBeVisible({ timeout: 30_000 });
+		await expect(page.getByText(/Reconnecting to DUMB/).first()).toBeVisible({ timeout: 30_000 });
 
 		// The indicator popover tells the honest per-layer story while
 		// reconnecting (brief §9/§10).
@@ -52,7 +52,7 @@ test('DUMB outage: amber reconnect banner, automatic recovery, honest layer deta
 		await setGateway(false);
 		restored = true;
 		await expect(indicator).toHaveText(/CONNECTED/, { timeout: 90_000 });
-		await expect(page.getByText(/Reconnecting to DUMB/)).toHaveCount(0);
+		await expect(page.getByText(/Reconnecting to DUMB/).first()).toHaveCount(0);
 
 		// The popover now tells the fully-restored story.
 		await indicator.click();

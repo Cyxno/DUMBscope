@@ -21,8 +21,21 @@ import { z } from 'zod';
 import type { RequestHandler } from './$types';
 
 const patchSchema = z.object({
-	theme: z.enum(['dark', 'oled', 'light']).optional(),
-	accent: z.enum(['cyan', 'blue', 'indigo', 'violet']).optional(),
+	theme: z.enum(['system', 'dark', 'oled', 'light']).optional(),
+	accent: z
+		.enum([
+			'cyan',
+			'blue',
+			'indigo',
+			'violet',
+			'teal',
+			'emerald',
+			'amber',
+			'rose',
+			'orange',
+			'slate'
+		])
+		.optional(),
 	reducedMotion: z.boolean().optional(),
 	statusInterval: z.number().min(0.5).max(10).optional(),
 	metricsInterval: z.number().min(0.5).max(10).optional(),

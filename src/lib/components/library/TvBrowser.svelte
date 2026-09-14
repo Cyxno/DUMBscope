@@ -9,6 +9,7 @@
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { formatDate, seriesStatusLabel, seriesStatusClass } from '$lib/utils/library-ui';
 	import { relativeTime } from '$lib/utils/format';
+	import { prefs } from '$lib/stores/prefs.svelte';
 
 	export interface TvHeader {
 		seriesTotal: number;
@@ -181,7 +182,16 @@
 	$effect(() => {
 		const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(GRID_PREF_KEY) : null;
 		if (stored !== null) grid = stored === '1';
+		else grid = prefs.libraryView === 'list' ? false : true;
 	});
+	const posterCols = $derived(
+		'grid ' +
+			(prefs.posterSize === 'small'
+				? 'grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'
+				: prefs.posterSize === 'large'
+					? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
+					: 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6')
+	);
 	function toggleGrid(): void {
 		grid = !grid;
 		try {
@@ -365,7 +375,7 @@
 
 	<!-- Grid (§6/§9) -->
 	{#if loading && items.length === 0}
-		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+		<div class={posterCols}>
 			{#each Array(12) as _, i (i)}
 				<div class="space-y-2" aria-hidden="true">
 					<div class="aspect-[2/3] animate-pulse rounded-lg bg-surface-2"></div>
@@ -401,7 +411,7 @@
 	{:else if total === 0}
 		<EmptyState title="No series in this filter" description="Adjust the filters above." neutral />
 	{:else if grid}
-		<ul class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+		<ul class={posterCols}>
 			{#each items as series (series.key)}
 				<li>
 					<button

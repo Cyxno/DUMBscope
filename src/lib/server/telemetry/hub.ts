@@ -13,16 +13,19 @@ import type {
 	LogLine,
 	MetricsHistoryPoint,
 	MetricsSnapshot,
+	MountTarget,
+	ReliabilitySnapshot,
 	ServiceStatus,
 	StackOverview,
 	TopologyGraph
 } from '$lib/types';
-import { DumbClient, DumbAuthError, DumbError } from '../dumb/client';
+import { DumbClient, DumbAuthError } from '../dumb/client';
 import { parseCapabilities } from '../dumb/capabilities';
 import { normalizeDiscovered, normalizeMetrics, normalizeServiceStatus } from '../dumb/normalize';
 import { DumbStream } from '../dumb/streams';
+import { ConnectivityTracker, classifyProbeError } from '../dumb/connection';
 import type { DumbMetricsSnapshot, DumbProcessesResponse, DumbServiceStatus } from '../dumb/types';
-import { getSettings, getDumbCredentials } from '../config/settings';
+import { getSettings, getDumbCredentials, getMountTargetsJson } from '../config/settings';
 import { appInfo } from '$lib/shared/app-info';
 import { configDir } from '../database/db';
 import { splitLines, parseLogLine } from '../logs/parse';
@@ -31,10 +34,74 @@ import { buildTopology } from '../topology/graph';
 import { onActivity, recordActivity, recentActivity, type ActivityEntry } from './activity';
 import { onIntegrationStateChange } from '../integrations/manager';
 import { sweepRateLimits } from '../security/rate-limit';
+import { MountMonitor } from '../reliability/mounts';
+import { MemoryAnomalyTracker, type MemoryTuningOverrides } from '../reliability/memory';
+import { fsProbeCallCount } from '../reliability/fsprobe';
+import { getRemediationManager, type RemediationManager } from '../reliability/remediation';
+import { MediaFlowCorrelator, loadArrObservations } from '../media/flow';
+
+const GIB = 1024 ** 3;
+
+/**
+ * Reliability fast-clock (tests/e2e only): shortens persistence/recovery
+ * windows so a CI browser run can watch a finding open and resolve. Never set
+ * in production deployments; defaults stay at the documented values.
+ */
+function reliabilityTuningOverrides(): {
+	memory: MemoryTuningOverrides;
+	mountIntervalMs: number | null;
+} | null {
+	if (process.env.DUMBSCOPE_RELIABILITY_FAST !== '1') return null;
+	return {
+		memory: {
+			sampleIntervalMs: 2_000,
+			evaluateIntervalMs: 2_000,
+			persistenceMs: 5_000,
+			baselineMinSamples: 6,
+			baselineLagMs: 6_000,
+			resolveSustainMs: 5_000,
+			retentionMs: 24 * 60 * 60_000,
+			pruneIntervalMs: 10 * 60_000
+		},
+		mountIntervalMs: 3_000
+	};
+}
+
+/**
+ * Monitored mount targets (FASE B). Empty by default: probing paths that the
+ * container cannot see would only produce false `missing` verdicts, so a
+ * deployment opts in explicitly via the DUMBSCOPE_MOUNTS env (JSON list of
+ * MountTarget) or the `reliability.mounts` setting, which wins over the env.
+ */
+function loadMountTargets(): MountTarget[] {
+	const raw = getMountTargetsJson() ?? process.env.DUMBSCOPE_MOUNTS ?? null;
+	if (!raw) return [];
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		const targets: MountTarget[] = [];
+		for (const entry of parsed) {
+			const t = entry as Partial<MountTarget>;
+			if (typeof t.path !== 'string' || !t.path.startsWith('/')) continue;
+			targets.push({
+				id: typeof t.id === 'string' && t.id ? t.id : t.path,
+				label: typeof t.label === 'string' && t.label ? t.label : t.path,
+				path: t.path,
+				kind: t.kind === 'fuse' || t.kind === 'symlink-root' ? t.kind : 'local',
+				consumers: Array.isArray(t.consumers)
+					? t.consumers.filter((c): c is string => typeof c === 'string')
+					: []
+			});
+		}
+		return targets;
+	} catch {
+		console.log('[dumbscope] invalid DUMBSCOPE_MOUNTS JSON — mount monitoring disabled');
+		return [];
+	}
+}
 
 const METRICS_RING_SIZE = 1800; // ~1h at the default 2s interval
 const LOG_RING_SIZE = 5000;
-const STATUS_INTERVAL_FRESH_MS = 15_000;
 /** How often the service registry is refreshed from DUMB's REST API. */
 const DISCOVERY_REFRESH_MS = 10 * 60_000;
 /** Minimum spacing between proactive token refreshes. */
@@ -62,27 +129,31 @@ export class Hub {
 	private metricsLatest: MetricsSnapshot | null = null;
 	private metricsHistory: MetricsHistoryPoint[] = [];
 	private logBuffer: LogLine[] = [];
-	private connection: ConnectionSnapshot = {
-		state: 'unconfigured',
-		streams: {
-			rest: 'unconfigured',
-			status: 'unconfigured',
-			metrics: 'unconfigured',
-			logs: 'unconfigured'
-		},
-		lastUpdateAt: null,
-		lastError: null,
-		reconnectAttempts: 0,
-		dumbVersion: null,
-		authMode: 'unknown'
-	};
+	/**
+	 * Single source of truth for connection health (FASE A): the tracker
+	 * derives the connection state from layer facts; the hub never writes it
+	 * ad hoc. Before the tracker, a failed REST bootstrap could clobber live
+	 * stream flags and stick the hub on "offline" for hours while DUMB was
+	 * healthy (production incident 2026-09-13). Assigned in the constructor
+	 * so the injectable test clock reaches it.
+	 */
+	private tracker: ConnectivityTracker;
+	private lastConnectionSignature: string | null = null;
+
+	// -- reliability core (FASE B/C): read-only monitors -----------------------
+	private mountMonitor: MountMonitor;
+	private memoryTracker: MemoryAnomalyTracker;
+	private lastReliabilitySignature: string | null = null;
+
+	// -- media correlation + remediation (DEEL 2): observe-first ---------------
+	private mediaFlow: MediaFlowCorrelator;
+	private remediation: RemediationManager;
+	private lastMediaSignature: string | null = null;
 
 	// ----- infrastructure ----------------------------------------------------
 	private client: DumbClient | null = null;
 	private streams: DumbStream[] = [];
-	private engine = new IncidentEngine({
-		onIncidentChange: (incident) => this.broadcast('incident', incident)
-	});
+	private engine: IncidentEngine;
 	private subscribers = new Map<number, Subscriber>();
 	private nextSubscriberId = 1;
 	private housekeeper: ReturnType<typeof setInterval> | null = null;
@@ -101,6 +172,53 @@ export class Hub {
 	private cachedProcessesResponse: DumbProcessesResponse | null = null;
 
 	/**
+	 * @param options.testClock injectable clock for the connectivity state
+	 *   machine (startup/recovery grace windows, incident lifecycles in tests).
+	 */
+	constructor(private readonly options: { testClock?: () => number } = {}) {
+		this.tracker = new ConnectivityTracker({ now: options.testClock });
+		this.engine = new IncidentEngine(
+			{ onIncidentChange: (incident) => this.broadcast('incident', incident) },
+			options.testClock
+		);
+		const clock = options.testClock ?? (() => Date.now());
+		const fast = reliabilityTuningOverrides();
+		this.mountMonitor = new MountMonitor({
+			now: clock,
+			targets: loadMountTargets(),
+			enabled: () => getSettings().mountMonitoring,
+			...(fast?.mountIntervalMs !== null && fast
+				? { roundIntervalMs: fast.mountIntervalMs }
+				: process.env.DUMBSCOPE_MOUNT_INTERVAL_MS
+					? { roundIntervalMs: Number(process.env.DUMBSCOPE_MOUNT_INTERVAL_MS) }
+					: {})
+		});
+		this.memoryTracker = new MemoryAnomalyTracker({
+			now: clock,
+			enabled: () => getSettings().memoryMonitoring,
+			warningBytes: () => getSettings().memoryWarningGb * GIB,
+			criticalBytes: () => getSettings().memoryCriticalGb * GIB,
+			onAssessment: (assessment) => this.engine.onMemory(assessment),
+			tuning: fast?.memory
+		});
+		this.mediaFlow = new MediaFlowCorrelator({
+			now: clock,
+			loader: loadArrObservations,
+			tuning: fast ? { cycleMs: 4_000 } : undefined,
+			onFinding: (finding) =>
+				this.engine.reportFinding({
+					fingerprint: finding.fingerprint,
+					severity: finding.severity,
+					title: finding.title,
+					summary: finding.summary,
+					evidence: finding.evidence
+				}),
+			onResolve: (fingerprint, message) => this.engine.resolveFinding(fingerprint, message)
+		});
+		this.remediation = getRemediationManager();
+	}
+
+	/**
 	 * (Re)configure and start. Safe to call again after settings changes;
 	 * tears down existing streams first.
 	 */
@@ -109,9 +227,11 @@ export class Hub {
 		const settings = getSettings();
 		this.configured = Boolean(settings.dumbUrl);
 		this.stopStreams();
+		this.tracker.setConfigured(this.configured);
+		this.tracker.hubRestart();
 
 		if (!settings.dumbUrl) {
-			this.setConnection({ state: 'unconfigured' });
+			this.publishConnection();
 			return;
 		}
 
@@ -119,10 +239,16 @@ export class Hub {
 			baseUrl: settings.dumbUrl,
 			getCredentials: () => getDumbCredentials()
 		});
+		this.bindRemediation();
 
-		this.setConnection({ state: 'connecting', lastError: null, reconnectAttempts: 0 });
 		void this.bootstrapRest();
 
+		this.startStreams(settings);
+		this.housekeeper ??= setInterval(() => this.housekeep(), 10_000);
+		this.publishConnection();
+	}
+
+	private startStreams(settings: { statusInterval: number; metricsInterval: number }): void {
 		const statusStream = new DumbStream({
 			name: 'status',
 			url: () =>
@@ -155,8 +281,6 @@ export class Hub {
 		});
 		this.streams = [statusStream, metricsStream, logsStream];
 		for (const stream of this.streams) stream.start();
-
-		this.housekeeper ??= setInterval(() => this.housekeep(), 10_000);
 	}
 
 	private stopStreams(): void {
@@ -180,7 +304,7 @@ export class Hub {
 	}
 
 	// -------------------------------------------------------------------------
-	// REST bootstrap (discovery + capabilities)
+	// REST bootstrap (layered probes: auth → REST discovery, HTTP-classified)
 	// -------------------------------------------------------------------------
 
 	private async bootstrapRest(): Promise<void> {
@@ -190,20 +314,22 @@ export class Hub {
 			const authStatus = await client.authStatus().catch(() => null);
 			if (authStatus) {
 				const mode = authStatus.enabled ? (authStatus.mode ?? 'local') : 'none';
-				this.setConnection({
-					authMode: (mode as ConnectionSnapshot['authMode']) ?? 'unknown'
-				});
+				this.tracker.setAuthMode((mode as ConnectionSnapshot['authMode']) ?? 'unknown');
+				this.tracker.probe('auth', { ok: true });
 				if (authStatus.enabled && !getDumbCredentials()) {
-					this.setConnection({
-						state: 'credentials-invalid',
-						streams: emptyStreams('unconfigured'),
-						lastError: 'DUMB requires authentication but no credentials are stored'
-					});
+					this.tracker.noteCredentialsInvalid(
+						'DUMB requires authentication but no credentials are stored'
+					);
+					this.publishConnection();
 					return;
 				}
 			}
 
 			await client.ensureAuthenticated();
+			// An authenticated round trip proves the HTTP layer is up too — the
+			// HTTP probe would otherwise stay 'unknown' on healthy stacks (it is
+			// otherwise only recorded when a failure needs classifying).
+			this.tracker.probe('http', { ok: true });
 			const [processes, capabilities] = await Promise.all([
 				client.processes(),
 				client.capabilities().catch(() => ({}))
@@ -212,24 +338,53 @@ export class Hub {
 			this.capabilities = parseCapabilities(capabilities);
 			this.applyDiscovered(processes);
 			this.discoveryReady = true;
-			this.setConnection({ streams: { ...this.connection.streams, rest: 'live' } });
+			this.tracker.probe('rest', { ok: true });
+			this.tracker.setLastError(null);
+			this.maybeBounceStreams();
 		} catch (err) {
 			if (err instanceof DumbAuthError) {
-				this.setConnection({
-					state: 'credentials-invalid',
-					lastError: err.message,
-					streams: emptyStreams('offline')
-				});
+				this.tracker.probe('auth', { ok: false, code: 'auth-rejected', detail: err.message });
+				this.tracker.noteCredentialsInvalid(err.message);
 			} else {
-				const message = err instanceof DumbError ? err.message : 'Could not reach DUMB';
-				this.setConnection({
-					state: 'offline',
-					lastError: message,
-					streams: emptyStreams('offline')
-				});
+				// Classify where the chain broke: if plain HTTP still answers, the
+				// failure sits in the auth/REST layer; otherwise the gateway is
+				// not reachable at all (refused / DNS / timeout — brief §6).
+				const failure = classifyProbeError(err);
+				const health = await client.health().then(
+					() => ({ up: true, failure: null }),
+					(healthErr: unknown) => ({ up: false, failure: classifyProbeError(healthErr) })
+				);
+				if (health.up) {
+					this.tracker.probe('http', { ok: true });
+					this.tracker.probe('rest', { ok: false, ...failure });
+				} else {
+					this.tracker.probe('http', { ok: false, ...health.failure });
+					this.tracker.probe('auth', { ok: false, ...health.failure });
+					this.tracker.probe('rest', { ok: false, ...health.failure });
+				}
+				this.tracker.setLastError(failure.detail);
 			}
 			// Keep retrying REST in the background via the housekeeper.
 		}
+		this.publishConnection();
+	}
+
+	/**
+	 * Recovery acceleration (brief §8): when REST proves the gateway is back
+	 * while the streams are stuck waiting out their reconnect backoff, restart
+	 * them immediately so they reconnect with fresh credentials instead of
+	 * grinding through up to a minute of exponential backoff. Streams that are
+	 * mid-first-connect are left alone.
+	 */
+	private maybeBounceStreams(): void {
+		const waitingInBackoff = this.streams.some((s) => s.connectionState === 'reconnecting');
+		if (!waitingInBackoff) return;
+		const now = Date.now();
+		if (now - this.lastStreamsBounceAt < 15_000) return;
+		this.lastStreamsBounceAt = now;
+		const settings = getSettings();
+		this.stopStreams();
+		this.startStreams(settings);
 	}
 
 	private applyDiscovered(response: DumbProcessesResponse): void {
@@ -356,9 +511,10 @@ export class Hub {
 			}
 		}
 
-		this.setConnection({ lastUpdateAt: now });
+		this.tracker.dataReceived(now);
 		this.engine.onStatus(previous, new Map(this.services));
 		this.emitServices(now);
+		this.publishConnection();
 	}
 
 	private handleMetricsMessage(data: string): void {
@@ -397,6 +553,11 @@ export class Hub {
 		this.engine.onMetrics(snapshot);
 		this.broadcast('metrics', snapshot);
 		this.emitServices();
+		// FASE C: per-process RSS samples for anomaly detection. Failure-
+		// isolated inside the tracker — never disturbs the metrics pipeline.
+		this.memoryTracker.onSnapshot(snapshot);
+		this.tracker.dataReceived(snapshot.receivedAt);
+		this.publishConnection();
 	}
 
 	private handleLogMessage(data: string): void {
@@ -417,58 +578,55 @@ export class Hub {
 		state: ConnectionState,
 		error?: string
 	): void {
-		const streams = { ...this.connection.streams, [stream]: state };
-		let overall: ConnectionState = this.connection.state;
-		if (state === 'live') {
-			overall = 'live';
-		} else if (state === 'reconnecting' && this.connection.state === 'live') {
-			// One stream flapping does not take the whole dashboard down.
-			overall = 'live';
-		} else if (this.connection.state === 'live' && state === 'stale') {
-			overall = 'stale';
-		}
-
-		if (state === 'reconnecting' || state === 'connecting') {
-			overall = overall === 'live' ? 'live' : 'reconnecting';
-		}
-		if (
-			streams.status === 'offline' &&
-			streams.metrics === 'offline' &&
-			streams.logs === 'offline' &&
-			streams.rest !== 'live'
-		) {
-			overall = 'offline';
-		}
-
-		this.setConnection({
-			streams,
-			state: overall === 'unconfigured' ? 'offline' : overall,
-			lastError: error ?? this.connection.lastError,
-			reconnectAttempts: Math.max(
+		this.tracker.streamState(stream, state);
+		this.tracker.setReconnectAttempts(
+			Math.max(
 				this.streams[0]?.reconnectAttempts ?? 0,
 				this.streams[1]?.reconnectAttempts ?? 0,
 				this.streams[2]?.reconnectAttempts ?? 0
 			)
-		});
+		);
+		if (error && this.streams.every((s) => s.connectionState !== 'live')) {
+			this.tracker.setLastError(error);
+		}
 		if (state === 'offline') {
 			void this.bootstrapRest();
 		}
+		this.publishConnection();
 	}
 
 	// -------------------------------------------------------------------------
 	// Housekeeping
 	// -------------------------------------------------------------------------
 
-	private housekeep(): void {
+	/** Periodic maintenance: telemetry freshness, incident evaluation, token
+	 *  refresh, discovery refresh and stale-stream recovery. Public so tests
+	 *  can drive ticks deterministically. */
+	housekeep(): void {
 		if (this.stopped) return;
 		const now = Date.now();
-		const statusLive = this.connection.streams.status === 'live';
+		const connection = this.tracker.snapshot();
+		const statusLive = connection.streams.status === 'live';
 		this.engine.onTick(this.metricsLatest?.receivedAt ?? null, statusLive);
 		this.engine.correlate(this.topology());
-		this.engine.onConnection(this.connection);
+		this.engine.onConnection(connection);
+		this.runReliabilityChecks();
 
-		// REST recovery when the bootstrap failed at startup.
-		if (this.connection.streams.rest !== 'live' && this.configured) {
+		// REST recovery: probe while the bootstrap never succeeded this session,
+		// while the connection is not delivering (mid-run outage), and once more
+		// after a recovery that rode in on the streams' own backoff (their
+		// success proves the gateway is back but leaves the REST probe verdicts
+		// stale until one successful round trip reconciles them).
+		const connectionDelivering =
+			connection.state === 'live' ||
+			connection.state === 'degraded' ||
+			connection.state === 'starting';
+		if (
+			this.configured &&
+			(connection.probes.rest.okAt === null ||
+				connection.probes.rest.status === 'failed' ||
+				!connectionDelivering)
+		) {
 			void this.bootstrapRest();
 		}
 		// Keep the rate limiter's per-key map bounded.
@@ -494,20 +652,12 @@ export class Hub {
 			this.lastDiscoveryRefreshAt = now;
 			void this.bootstrapRest();
 		}
-		// Freshness: connected but nothing new for a long time → stale.
-		if (
-			this.connection.state === 'live' &&
-			this.connection.lastUpdateAt !== null &&
-			now - this.connection.lastUpdateAt > STATUS_INTERVAL_FRESH_MS * 6
-		) {
-			this.setConnection({ state: 'stale' });
-		}
 		// A stale stream whose socket quietly died (gateway restart, dropped
 		// NAT table) never fires onclose, so the backoff loop never kicks in.
 		// Bounce the streams periodically while telemetry stays frozen; each
 		// bounce reconnects with freshly authenticated credentials.
 		if (
-			this.connection.state === 'stale' &&
+			connection.state === 'stale' &&
 			this.configured &&
 			now - this.lastStreamsBounceAt > STREAMS_BOUNCE_THROTTLE_MS
 		) {
@@ -515,6 +665,200 @@ export class Hub {
 			console.log('[dumbscope] telemetry stale — restarting DUMB streams');
 			this.reload();
 		}
+		this.publishConnection();
+	}
+
+	/**
+	 * FASE B/C reliability passes, driven by the same 10s housekeeping tick.
+	 * Both monitors are strictly read-only and failure-isolated (brief §45):
+	 * a hung mount probe or a bad memory series can never affect the DUMB
+	 * connection, the service registry or this poller. The mount tick is
+	 * awaited only by its own promise chain — the housekeeper returns
+	 * immediately; results land in the engine when the probes finish.
+	 */
+	private runReliabilityChecks(): void {
+		const runningProcesses = new Set(
+			[...this.services.values()].filter((s) => s.runState === 'running').map((s) => s.processName)
+		);
+		void this.mountMonitor
+			.tick({ runningProcesses })
+			.then(() => {
+				if (!this.mountMonitor.dirty) return;
+				this.mountMonitor.dirty = false;
+				this.engine.onMountHealth(this.mountMonitor.getReports());
+				this.publishReliability();
+			})
+			.catch(() => {
+				// Mount observability must never break the hub.
+			});
+		const hostMemPercent = this.metricsLatest?.memory?.percent ?? null;
+		this.memoryTracker.evaluate(hostMemPercent);
+
+		// DEEL 2: media-state correlation (throttled internally to its own
+		// cycle) + remediation verification passes. Both failure-isolated and
+		// strictly observation-first: the correlator never mutates anything.
+		const mountReports = this.mountMonitor.getReports();
+		const mountUnhealthy = mountReports.some(
+			(r) => r.state === 'unresponsive' || r.state === 'read-error'
+		);
+		const mountLabel =
+			mountReports.find((r) => r.state === 'unresponsive' || r.state === 'read-error')?.target
+				.label ?? null;
+		void this.mediaFlow
+			.tick({ mountUnhealthy, mountLabel })
+			.then(() => this.publishMediaFlow())
+			.catch(() => {});
+		this.remediation.verifyPending();
+
+		this.publishReliability();
+	}
+
+	/**
+	 * Bind the remediation executor to live telemetry: DUMB's official
+	 * single-service restart route plus the current process/memory picture
+	 * for preflight and verification.
+	 */
+	private bindRemediation(): void {
+		const client = this.client;
+		// eslint-disable-next-line @typescript-eslint/no-this-alias -- building the executor closure over this hub
+		const hub = this;
+		this.remediation.bindExecutor({
+			execute: async (target) => {
+				if (!client) return false;
+				return client.restartService(target);
+			},
+			targetStatus: (target) => {
+				const status = hub
+					.getServices()
+					.find((s) => s.processName === target || s.key === target || s.name === target);
+				return {
+					managed: Boolean(status) || hub.getDiscovered().some((d) => d.processName === target),
+					running: status?.runState === 'running',
+					restartPending: status?.restart?.pending === true,
+					pid: status?.pid ?? null
+				};
+			},
+			targetMemoryRss: (target) =>
+				hub.getMetrics()?.processes.find((p) => p.name === target)?.memoryBytes ?? null,
+			activeWorkReliablyVisible: () => true, // arr queue pollers run when connected
+			activeWorkDetected: (target) => {
+				// Restarting a *storage* service risks in-flight mount work; the
+				// hint stays conservative and never blocks manual action.
+				void target;
+				return false;
+			}
+		});
+	}
+
+	/** Current media-flow picture for the API/SSE/UI (read-only). */
+	getMediaFlow() {
+		return {
+			...this.mediaFlow.snapshot(),
+			recommendations: this.mediaRecommendations(),
+			actions: this.remediation.recent()
+		};
+	}
+
+	/**
+	 * Recommendation-only remediation proposals (brief §41): a sustained
+	 * memory anomaly on a managed, running process proposes a single-service
+	 * restart. No automatic execution exists in this phase.
+	 */
+	private mediaRecommendations() {
+		const out: {
+			id: string;
+			kind: 'restart-managed-service';
+			target: string;
+			reason: string | null;
+			evidence: string[];
+			state: 'requested';
+			requestedAt: null;
+			executedAt: null;
+			verifiedAt: null;
+			verification: null;
+			cooldownRemainingMs: number;
+			attempts24h: number;
+			attemptLimit: number;
+			suspended: boolean;
+			findingFingerprint: null;
+		}[] = [];
+		for (const view of this.memoryTracker
+			.getViews()
+			.filter((v) => v.level === 'critical' || v.level === 'warning')
+			.slice(0, 3)) {
+			const target = view.process;
+			const status = this.getServices().find((s) => s.processName === target);
+			if (!status || status.runState !== 'running') continue;
+			if (this.remediation.cooldownRemainingMs(target) > 0) continue;
+			const attempts = this.remediation.attempts24h(target);
+			if (attempts >= 2) continue;
+			out.push({
+				id: `recommendation:${target}`,
+				kind: 'restart-managed-service',
+				target,
+				reason:
+					view.level === 'critical'
+						? 'Memory usage is unusually high and critical'
+						: 'Memory usage is unusually high and has grown continuously',
+				evidence: [
+					`Current ${((view.currentBytes ?? 0) / 1024 ** 3).toFixed(1)} GB`,
+					view.baselineBytes !== null
+						? `Typical ${(view.baselineBytes / 1024 ** 3).toFixed(1)} GB`
+						: null,
+					view.delta6hBytes !== null
+						? `${view.delta6hBytes >= 0 ? '+' : '−'}${(Math.abs(view.delta6hBytes) / 1024 ** 3).toFixed(1)} GB over 6h`
+						: null
+				].filter((e): e is string => e !== null),
+				state: 'requested',
+				requestedAt: null,
+				executedAt: null,
+				verifiedAt: null,
+				verification: null,
+				cooldownRemainingMs: 0,
+				attempts24h: attempts,
+				attemptLimit: 2,
+				suspended: attempts >= 2,
+				findingFingerprint: null
+			});
+		}
+		return out;
+	}
+
+	/** Fan media-flow state out when something visible changed. */
+	private publishMediaFlow(): void {
+		const media = this.getMediaFlow();
+		const signature = JSON.stringify([media.items, media.metrics, media.actions]);
+		if (signature === this.lastMediaSignature) return;
+		this.lastMediaSignature = signature;
+		this.broadcast('mediaFlow', media);
+	}
+
+	/** Current reliability picture for the API/SSE/UI (read-only). */
+	getReliability(): ReliabilitySnapshot {
+		const mountStats = this.mountMonitor.stats();
+		return {
+			mounts: this.mountMonitor.getReports(),
+			memory: this.memoryTracker.getViews(),
+			stats: {
+				mountRounds: mountStats.mountRounds,
+				fsCalls: fsProbeCallCount(),
+				lastRoundMs: mountStats.lastRoundMs,
+				memoryTracked: this.memoryTracker.trackedCount
+			}
+		};
+	}
+
+	/** Fan reliability state out only when something visible changed. */
+	private publishReliability(): void {
+		const snapshot = this.getReliability();
+		const signature = JSON.stringify([
+			snapshot.mounts,
+			snapshot.memory,
+			snapshot.stats.memoryTracked
+		]);
+		if (signature === this.lastReliabilitySignature) return;
+		this.lastReliabilitySignature = signature;
+		this.broadcast('reliability', snapshot);
 	}
 
 	// -------------------------------------------------------------------------
@@ -536,7 +880,7 @@ export class Hub {
 	}
 
 	getConnection(): ConnectionSnapshot {
-		return this.connection;
+		return this.tracker.snapshot();
 	}
 
 	getServices(): ServiceStatus[] {
@@ -591,10 +935,31 @@ export class Hub {
 		const unhealthy = statuses.filter((s) => s.health === 'unhealthy').length;
 		const stopped = statuses.filter((s) => s.runState === 'stopped').length;
 		const critical = active.filter((i) => i.severity === 'critical').length;
+		const connectionState = this.tracker.snapshot().state;
 		let health: StackOverview['health'] = 'healthy';
 		if (!this.configured) health = 'unknown';
-		else if (this.connection.state === 'offline' || critical > 0) health = 'incident';
-		else if (unhealthy > 0 || degraded > 0 || active.length > 0) health = 'degraded';
+		else if (
+			connectionState === 'offline' ||
+			connectionState === 'credentials-invalid' ||
+			critical > 0
+		)
+			health = 'incident';
+		else if (
+			connectionState === 'starting' ||
+			connectionState === 'connecting' ||
+			connectionState === 'reconnecting'
+		) {
+			// Amber connectivity states are never a red headline (brief §12):
+			// while nothing is known yet, stay neutral instead of claiming health.
+			health = statuses.length === 0 ? 'unknown' : 'degraded';
+		} else if (
+			unhealthy > 0 ||
+			degraded > 0 ||
+			active.length > 0 ||
+			connectionState === 'degraded' ||
+			connectionState === 'stale'
+		)
+			health = 'degraded';
 		return {
 			health,
 			servicesOnline: online,
@@ -669,17 +1034,25 @@ export class Hub {
 	// Internal helpers
 	// -------------------------------------------------------------------------
 
-	private setConnection(patch: Partial<ConnectionSnapshot>): void {
-		const next = { ...this.connection, ...patch };
-		// Only broadcast meaningful changes; lastUpdateAt ticks would spam SSE.
-		const meaningful =
-			next.state !== this.connection.state ||
-			next.authMode !== this.connection.authMode ||
-			next.lastError !== this.connection.lastError ||
-			next.reconnectAttempts !== this.connection.reconnectAttempts ||
-			JSON.stringify(next.streams) !== JSON.stringify(this.connection.streams);
-		this.connection = next;
-		if (meaningful) this.broadcast('connection', this.connection);
+	/**
+	 * Refresh the derived connection snapshot and fan it out when anything
+	 * meaningful changed. Derived twice per tick at most; the signature
+	 * comparison keeps SSE free of lastUpdateAt spam.
+	 */
+	private publishConnection(): void {
+		const snapshot = this.tracker.snapshot();
+		const signature = JSON.stringify([
+			snapshot.state,
+			snapshot.streams,
+			snapshot.probes,
+			snapshot.lastError,
+			snapshot.reconnectAttempts,
+			snapshot.authMode,
+			snapshot.lastUpdateAt
+		]);
+		if (signature === this.lastConnectionSignature) return;
+		this.lastConnectionSignature = signature;
+		this.broadcast('connection', snapshot);
 	}
 
 	private pushHistoryPoint(snapshot: MetricsSnapshot): void {
@@ -693,12 +1066,6 @@ export class Hub {
 			this.metricsHistory = this.metricsHistory.slice(-METRICS_RING_SIZE);
 		}
 	}
-}
-
-function emptyStreams(
-	state: ConnectionState
-): Record<'rest' | 'status' | 'metrics' | 'logs', ConnectionState> {
-	return { rest: state, status: state, metrics: state, logs: state };
 }
 
 // -----------------------------------------------------------------------------

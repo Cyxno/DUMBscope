@@ -28,6 +28,7 @@ import {
 	isMovieMissing
 } from '../src/lib/server/library/browse-filter';
 import type { BrowseMovie, BrowseSeries } from '../src/lib/server/library/browse-models';
+import { filterByAgeBucket, qualityDistribution } from '../src/lib/server/library/aggregate';
 import { ArrBaseClient } from '../src/lib/server/integrations/arr/base';
 import { BazarrClient } from '../src/lib/server/integrations/bazarr';
 
@@ -644,6 +645,24 @@ describe('series filters and sorts (§28/§156)', () => {
 		const withNetwork = [...items, makeSeries({ id: 4, title: 'Zebra', network: 'HBO Max' })];
 		expect(filterSortSeries(withNetwork, 'all', 'name', 'hbo').map((s) => s.id)).toEqual([4]);
 	});
+
+	it('filters upgrades and sorts by oldest missing (§20/§47/§50)', () => {
+		const withUpgrades = [
+			...items.map((s, i) => ({
+				...s,
+				upgradeCount: i === 1 ? 3 : 0,
+				oldestMissingAt:
+					i === 0 ? Date.now() - 40 * 86_400_000 : i === 1 ? Date.now() - 2 * 86_400_000 : null
+			})),
+			makeSeries({ id: 4, title: 'Delta', missingCount: 0 })
+		];
+		// Only series with cutoff-unmet episodes survive the upgrades filter.
+		expect(filterSortSeries(withUpgrades, 'upgrades', 'name', '').map((s) => s.id)).toEqual([2]);
+		// Oldest-missing sorts by age with nulls last, name as tiebreaker.
+		expect(filterSortSeries(withUpgrades, 'all', 'missing-oldest', '').map((s) => s.id)).toEqual([
+			1, 2, 3, 4
+		]);
+	});
 });
 
 describe('movie filters and sorts (§36/§156)', () => {
@@ -731,6 +750,31 @@ describe('pagination boundaries (§157/§158)', () => {
 		expect(pageOf(items, 1, 119).items).toHaveLength(1);
 		expect(pageOf(items, 100, 100).items).toHaveLength(20);
 		expect(pageOf(items, 50, 120).items).toHaveLength(0);
+	});
+});
+
+describe('quality distribution and age chips (§7/§8/§17/§18)', () => {
+	it('derives neutral resolution distribution from file data only', () => {
+		expect(qualityDistribution([2160, 1080, 1080, 2160, 720, null, null])).toEqual([
+			{ label: '2160p', count: 2 },
+			{ label: '1080p', count: 2 },
+			{ label: '720p', count: 1 }
+		]);
+		// No file data → no distribution (never fabricate numbers).
+		expect(qualityDistribution([null, null])).toEqual([]);
+		expect(qualityDistribution([])).toEqual([]);
+	});
+
+	it('filters missing backlog by age bucket (§7/§8)', () => {
+		const backlog = [
+			{ id: 'a', ageBucket: 'new' as const },
+			{ id: 'b', ageBucket: '30d+' as const },
+			{ id: 'c', ageBucket: null }
+		];
+		expect(filterByAgeBucket(backlog, 'new').map((i) => i.id)).toEqual(['a']);
+		expect(filterByAgeBucket(backlog, '30d+').map((i) => i.id)).toEqual(['b']);
+		// No chip selected → everything.
+		expect(filterByAgeBucket(backlog, null)).toHaveLength(3);
 	});
 });
 

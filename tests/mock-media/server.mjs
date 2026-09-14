@@ -25,6 +25,11 @@ const json = (res, body, code = 200) => {
 	res.end(JSON.stringify(body));
 };
 
+// Media-flow rehearsal control (DEEL 2): controllable grab history + missing
+// override so an e2e run can walk acquisition/repeat journeys read-only.
+const flowEvents = [];
+let missingOverride = null;
+
 const series = [
 	...(BIG ? [{ id: 14, title: 'Mega Volume', epCount: 1000, fileCount: 995, missing: 5 }] : []),
 	{ id: 1, title: 'Anne of Avonlea', epCount: 40, fileCount: 40, missing: 0 },
@@ -191,6 +196,44 @@ function authorize(req, res) {
 }
 
 const sonarrHandler = (req, res, url) => {
+	if (url.pathname === '/__control/media-flow' && req.method === 'POST') {
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			try {
+				const parsed = JSON.parse(body);
+				if (Array.isArray(parsed.grabs)) flowEvents.length = 0;
+				for (const grab of parsed.grabs ?? []) {
+					flowEvents.push({
+						eventType: grab.event ?? 'grabbed',
+						date: new Date(Date.now() - (grab.ageMin ?? 5) * 60000).toISOString(),
+						seriesId: grab.seriesId ?? 4,
+						episodeId: grab.episodeId ?? 101,
+						downloadId: grab.downloadId,
+						sourceTitle: grab.title ?? 'Mock.Series.S02E07.2160p.MOCK',
+						data: { downloadClient: grab.client ?? 'SABnzbd' }
+					});
+				}
+				if ('missingIds' in parsed)
+					missingOverride = parsed.missingIds.map((id) => {
+						const seriesId = Math.floor(id / 1000);
+						const owner = series.find((x) => x.id === seriesId);
+						return {
+							id,
+							seriesId,
+							seriesTitle: owner ? owner.title : 'Unknown',
+							season: 1,
+							episode: id % 1000,
+							ageDays: 6
+						};
+					});
+				json(res, { ok: true });
+			} catch (err) {
+				json(res, { detail: String(err) }, 400);
+			}
+		});
+		return;
+	}
 	if (!authorize(req, res)) return;
 	if (url.pathname === '/api/v3/system/status')
 		return json(res, { version: '4.0.0.1100', appName: 'Sonarr' });
@@ -247,7 +290,8 @@ const sonarrHandler = (req, res, url) => {
 		const page = Number(url.searchParams.get('page') ?? 1);
 		const pageSize = Number(url.searchParams.get('pageSize') ?? 100);
 		const start = (page - 1) * pageSize;
-		const slice = (COMPLETE ? [] : missingEpisodes).slice(start, start + pageSize).map((e) => ({
+		const base = missingOverride !== null ? missingOverride : missingEpisodes;
+		const slice = (COMPLETE ? [] : base).slice(start, start + pageSize).map((e) => ({
 			id: e.id,
 			seriesId: e.seriesId,
 			series: includeSeries ? { id: e.seriesId, title: e.seriesTitle } : undefined,
@@ -262,12 +306,46 @@ const sonarrHandler = (req, res, url) => {
 		return json(res, {
 			page,
 			pageSize,
-			totalRecords: scale(missingEpisodes.length),
+			totalRecords: scale(missingOverride !== null ? base.length : missingEpisodes.length),
 			records: slice
 		});
 	}
-	if (url.pathname === '/api/v3/wanted/cutoff')
-		return json(res, { page: 1, totalRecords: scale(21), records: [] });
+	if (url.pathname === '/api/v3/wanted/cutoff') {
+		// Cutoff-unmet episodes: files exist but the quality profile cutoff is
+		// not met (brief §20). Complete series carry the upgrades so the TV
+		// upgrade browser has real per-series counts to aggregate.
+		const cutoffEpisodes = [
+			{ id: 201, seriesId: 2, seriesTitle: 'Blue Harbor', season: 1, episode: 3, ageDays: 20 },
+			{ id: 202, seriesId: 2, seriesTitle: 'Blue Harbor', season: 1, episode: 7, ageDays: 18 },
+			{ id: 203, seriesId: 2, seriesTitle: 'Blue Harbor', season: 1, episode: 12, ageDays: 15 },
+			{ id: 204, seriesId: 8, seriesTitle: 'Hollow Ridge', season: 3, episode: 4, ageDays: 60 },
+			{ id: 205, seriesId: 8, seriesTitle: 'Hollow Ridge', season: 3, episode: 9, ageDays: 55 },
+			{ id: 206, seriesId: 5, seriesTitle: 'Ember Lane', season: 2, episode: 2, ageDays: 9 }
+		];
+		const includeSeries = url.searchParams.get('includeSeries') === 'true';
+		const page = Number(url.searchParams.get('page') ?? 1);
+		const pageSize = Number(url.searchParams.get('pageSize') ?? 100);
+		const start = (page - 1) * pageSize;
+		const slice = cutoffEpisodes.slice(start, start + pageSize).map((e) => ({
+			id: e.id,
+			seriesId: e.seriesId,
+			series: includeSeries ? { id: e.seriesId, title: e.seriesTitle } : undefined,
+			seasonNumber: e.season,
+			episodeNumber: e.episode,
+			title: `${e.seriesTitle} S${String(e.season).padStart(2, '0')}E${String(e.episode).padStart(2, '0')}`,
+			airDateUtc: new Date(Date.now() - e.ageDays * 86_400_000).toISOString(),
+			monitored: true,
+			hasFile: true
+		}));
+		return json(res, {
+			page,
+			pageSize,
+			// Header total stays the upstream count (21) — the records below are
+			// the per-series detail sample the upgrade browser aggregates.
+			totalRecords: scale(21),
+			records: slice
+		});
+	}
 	if (url.pathname === '/api/v3/queue')
 		return json(res, {
 			page: 1,
@@ -309,14 +387,17 @@ const sonarrHandler = (req, res, url) => {
 		const pageSize = Number(url.searchParams.get('pageSize') ?? 10);
 		// One event per series; the Sonarr history endpoint ignores seriesId
 		// filters (audited), so the caller must filter server-side.
-		const records = series.map((s) => ({
-			eventType: 'grabbed',
-			date: new Date(Date.now() - 3_600_000).toISOString(),
-			seriesId: s.id,
-			episodeId: s.id * 1000 + 1,
-			sourceTitle: 'Mock.Series.S01E01.1080p.MOCK',
-			quality: { quality: { name: 'WEBDL-1080p', resolution: 1080 } }
-		}));
+		const records = [
+			...flowEvents,
+			...series.map((s) => ({
+				eventType: 'grabbed',
+				date: new Date(Date.now() - 3_600_000).toISOString(),
+				seriesId: s.id,
+				episodeId: s.id * 1000 + 1,
+				sourceTitle: 'Mock.Series.S01E01.1080p.MOCK',
+				quality: { quality: { name: 'WEBDL-1080p', resolution: 1080 } }
+			}))
+		];
 		return json(res, {
 			page: 1,
 			pageSize,

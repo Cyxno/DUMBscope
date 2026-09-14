@@ -71,6 +71,7 @@ export const GET: RequestHandler = ({ locals }) => {
 			sendEvent('logs', { lines: hub.getLogs(undefined, 300) });
 			sendEvent('incidents', { active: hub.getActiveIncidents() });
 			sendEvent('topology', hub.topology());
+			sendEvent('reliability', hub.getReliability());
 
 			unsubscribe = hub.addSubscriber(
 				({ event, data }) => sendEvent(event, data),

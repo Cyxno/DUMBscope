@@ -20,6 +20,7 @@ import type {
 } from './models';
 import { countBacklogAges, rankAttention } from './aggregate';
 import { getDb } from '../database/db';
+import { listActivity } from '../integrations/activity';
 
 interface ArrLibraryCache {
 	tv?: TvLibrary;
@@ -55,6 +56,17 @@ export interface Availability {
 	subtitles: 'available' | 'unconfigured' | 'unavailable' | 'stale';
 }
 
+/** Compact "recently changed" entries for the Library home (brief §70). */
+export interface RecentItem {
+	id: string;
+	kind: 'added' | 'missing' | 'imported';
+	title: string;
+	detail: string | null;
+	at: number;
+	/** Deep link into the right browser/detail view (§66/§172). */
+	href: string;
+}
+
 export interface LibraryView {
 	availability: Availability;
 	tv: TvLibrary | null;
@@ -63,6 +75,7 @@ export interface LibraryView {
 	queue: { groups: QueueGroup[]; issues: QueueIssue[]; total: number };
 	healthWarnings: { integrationId: string; type: string; message: string }[];
 	attention: AttentionItem[];
+	recent: { added: RecentItem[]; missing: RecentItem[]; imported: RecentItem[] };
 	fetchedAt: number | null;
 }
 
@@ -272,7 +285,93 @@ export function getLibraryView(): LibraryView {
 		queue: { groups, issues: queueIssuesList, total: queueTotal },
 		healthWarnings,
 		attention,
+		recent: buildRecent(tv, movies, missing),
 		fetchedAt: lastFetched
+	};
+}
+
+const RECENT_LIMIT = 5;
+
+/**
+ * "Recently changed" (brief §70): three compact lists over EXISTING data
+ * stores — browse-cache addedAt, the merged missing backlog and the activity
+ * event store. No second event system (§28). Newly-added = added in the last
+ * 14 days; recently-missing = released in the last 7 days and still missing.
+ */
+function buildRecent(
+	tv: TvLibrary | null,
+	movies: MoviesLibrary | null,
+	missing: MissingItem[]
+): LibraryView['recent'] {
+	const cutoff = Date.now() - 14 * 86_400_000;
+	const added: RecentItem[] = [];
+	for (const info of integrationsOfType('sonarr')) {
+		const cache = getIntegrationCacheStaleAware(info.id) as {
+			browse?: { series?: { key: string; title: string; addedAt: number | null }[] };
+		};
+		for (const s of cache.browse?.series ?? []) {
+			if (s.addedAt !== null && s.addedAt >= cutoff) {
+				added.push({
+					id: s.key,
+					kind: 'added',
+					title: s.title,
+					detail: 'TV',
+					at: s.addedAt,
+					href: `/library?view=tv&item=${s.key}`
+				});
+			}
+		}
+	}
+	for (const info of integrationsOfType('radarr')) {
+		const cache = getIntegrationCacheStaleAware(info.id) as {
+			browse?: { movies?: { key: string; title: string; addedAt: number | null }[] };
+		};
+		for (const m of cache.browse?.movies ?? []) {
+			if (m.addedAt !== null && m.addedAt >= cutoff) {
+				added.push({
+					id: m.key,
+					kind: 'added',
+					title: m.title,
+					detail: 'Movie',
+					at: m.addedAt,
+					href: `/library?view=movies&item=${m.key}`
+				});
+			}
+		}
+	}
+	added.sort((a, b) => b.at - a.at);
+
+	const missingOut: RecentItem[] = missing
+		.filter((m) => m.status === 'missing' && (m.ageBucket === 'new' || m.ageBucket === '1-7d'))
+		.sort((a, b) => (b.releasedAt ?? 0) - (a.releasedAt ?? 0))
+		.slice(0, RECENT_LIMIT)
+		.map((m) => ({
+			id: m.id,
+			kind: 'missing' as const,
+			title: m.title,
+			detail: m.detail,
+			at: m.releasedAt ?? 0,
+			href:
+				m.kind === 'episode'
+					? '/library?view=tv&filter=incomplete'
+					: '/library?view=movies&filter=missing'
+		}));
+
+	const imported: RecentItem[] = listActivity({ category: 'import', limit: RECENT_LIMIT }).map(
+		(event) => ({
+			id: event.id,
+			kind: 'imported' as const,
+			title: event.title ?? 'Import',
+			detail: null,
+			at: event.at,
+			href: '/library?view=activity'
+		})
+	);
+
+	return {
+		added: added.slice(0, RECENT_LIMIT),
+		missing: missingOut,
+		imported
 	};
 }
 

@@ -11,6 +11,31 @@
 	import { Siren, CircleCheck, ArrowRight, Boxes, WifiOff } from '@lucide/svelte';
 	import { goto } from '$app/navigation';
 	import { relativeTime } from '$lib/utils/format';
+	import { prefs } from '$lib/stores/prefs.svelte';
+	import OverviewReliability from '$lib/components/OverviewReliability.svelte';
+
+	// Dashboard customization (DEEL 3): visibility + order from browser-local
+	// preferences; the Balanced preset reproduces the stock layout (§100).
+	const widgetOrder = $derived(prefs.dashboardOrder);
+	const widgetHidden = $derived(new Set(prefs.dashboardHidden));
+	const orderOf = (id: string) => {
+		const idx = widgetOrder.indexOf(id);
+		return idx === -1 ? 99 : idx;
+	};
+	const visible = (id: string) => !widgetHidden.has(id);
+	const bentoVisible = $derived(
+		visible('stackHealth') || visible('resources') || visible('incidents') || visible('history')
+	);
+
+	// Landing page (§19/§20): first root navigation in a session opens the
+	// configured landing page; Overview stays reachable afterwards.
+	$effect(() => {
+		if (typeof window === 'undefined') return;
+		if (prefs.landingPage !== '/' && !sessionStorage.getItem('dumbscope.landed')) {
+			sessionStorage.setItem('dumbscope.landed', '1');
+			void goto(prefs.landingPage, { replaceState: true });
+		}
+	});
 
 	const overview = $derived(live.overview);
 	const healthyHeadline = $derived.by(() => {
@@ -22,9 +47,9 @@
 			case 'incident':
 				return 'Your stack needs attention';
 			default:
-				return live.connection.state === 'offline'
-					? 'DUMB is unreachable'
-					: 'Connecting to your stack…';
+				return live.connection.state === 'unconfigured'
+					? 'DUMBscope is not configured yet'
+					: 'Waiting for the DUMB connection…';
 		}
 	});
 	const healthySubline = $derived.by(() => {
@@ -63,6 +88,31 @@
 	const offline = $derived(
 		live.connection.state === 'offline' || live.connection.state === 'credentials-invalid'
 	);
+	/** Honest amber connectivity states — never styled as a red outage. */
+	const recovering = $derived(
+		['starting', 'connecting', 'reconnecting', 'degraded', 'stale'].includes(
+			live.connection.state
+		) && live.connection.state !== 'connecting'
+	);
+
+	const recoverBanner = $derived.by(() => {
+		const c = live.connection;
+		const lastSeen = c.lastSuccessAt
+			? ` · last successful contact ${relativeTime(c.lastSuccessAt)}`
+			: '';
+		switch (c.state) {
+			case 'starting':
+				return `DUMB may still be starting after a restart — waiting for it to come online${lastSeen}`;
+			case 'reconnecting':
+				return `Reconnecting to DUMB${lastSeen}`;
+			case 'degraded':
+				return 'Partial connection to DUMB — some layers are still unavailable';
+			case 'stale':
+				return 'DUMB connection is quiet — restarting telemetry automatically';
+			default:
+				return `Connecting to DUMB${lastSeen}`;
+		}
+	});
 </script>
 
 <div class="mx-auto max-w-[1400px] space-y-5 px-4 py-6 md:px-8">
@@ -131,173 +181,238 @@
 						: 'DUMB is currently unreachable'}
 				</p>
 				<p class="text-text-muted">
-					{#if live.connection.lastUpdateAt}
-						Last connected {relativeTime(live.connection.lastUpdateAt)} ·
+					{#if live.connection.lastSuccessAt}
+						Last successful contact {relativeTime(live.connection.lastSuccessAt)} ·
 					{/if}
 					Retrying automatically…
 				</p>
 			</div>
 		</div>
+	{:else if recovering}
+		<div
+			class="flex items-center gap-3 rounded-[14px] border px-4 py-3"
+			style="border-color: color-mix(in srgb, var(--degraded) 30%, transparent); background: var(--degraded-soft)"
+		>
+			<span class="relative flex h-2 w-2 shrink-0">
+				<span
+					class="absolute inline-flex h-full w-full animate-ping rounded-full opacity-60"
+					style="background: var(--degraded)"
+				></span>
+				<span class="relative inline-flex h-2 w-2 rounded-full" style="background: var(--degraded)"
+				></span>
+			</span>
+			<p class="min-w-0 text-xs text-text-secondary">{recoverBanner}</p>
+		</div>
 	{/if}
 
-	<!-- Pipeline summary -->
-	<Card title="Media pipeline" subtitle="Stage health at a glance — open the full view for detail">
-		{#snippet actions()}
-			<a
-				href="/pipeline"
-				class="flex items-center gap-1 text-xs font-medium text-text-muted transition-colors hover:text-text-primary"
+	{#if visible('pipeline')}
+		<div style="order:{orderOf('pipeline')}">
+			<!-- Pipeline summary -->
+			<Card
+				title="Media pipeline"
+				subtitle="Stage health at a glance — open the full view for detail"
 			>
-				Full view <ArrowRight size={12} aria-hidden="true" />
-			</a>
-		{/snippet}
-		<PipelineSummary />
-	</Card>
+				{#snippet actions()}
+					<a
+						href="/pipeline"
+						class="flex items-center gap-1 text-xs font-medium text-text-muted transition-colors hover:text-text-primary"
+					>
+						Full view <ArrowRight size={12} aria-hidden="true" />
+					</a>
+				{/snippet}
+				<PipelineSummary />
+			</Card>
+		</div>
+	{/if}
 
-	<OverviewIntegrations />
+	{#if visible('integrations')}
+		<div style="order:{orderOf('integrations')}">
+			<OverviewIntegrations />
+		</div>
+	{/if}
 
-	<OverviewLibrary />
+	{#if visible('library')}
+		<div style="order:{orderOf('library')}">
+			<OverviewLibrary />
+		</div>
+	{/if}
+
+	{#if visible('reliability')}
+		<div style="order:{orderOf('reliability')}">
+			<OverviewReliability />
+		</div>
+	{/if}
 
 	<!-- Bento grid -->
-	<section
-		class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"
-		in:fade={{ duration: 200, delay: 100 }}
-	>
-		<!-- Stack health (2 cols on xl) -->
-		<div class="xl:col-span-2">
-			<Card
-				title="Stack health"
-				subtitle={overview.health === 'healthy'
-					? 'All monitored services operating normally'
-					: 'Based on current incidents and service health'}
-			>
-				<div class="flex items-start justify-between gap-4">
-					<div>
-						<p class="text-3xl font-semibold tracking-tight capitalize" style="color: {heroColor}">
-							{overview.health}
-						</p>
-						<p class="mt-1 text-xs text-text-muted">
-							{overview.servicesOnline}/{overview.servicesTotal} running
-							{#if overview.servicesDegraded > 0}· {overview.servicesDegraded} degraded{/if}
-							{#if overview.servicesStopped > 0}· {overview.servicesStopped} stopped{/if}
-						</p>
-					</div>
-					<div class="w-40">
-						<Sparkline data={cpuPoints.map((p) => p.v ?? 0)} height={40} color="var(--accent)" />
-						<p class="mt-1 text-right text-[10px] text-text-faint">CPU last ~12 min</p>
-					</div>
-				</div>
-			</Card>
-		</div>
-
-		<!-- Resource usage -->
-		<Card title="Resource usage" subtitle="Host metrics from DUMB">
-			<div class="space-y-2.5">
-				<div>
-					<div class="flex justify-between text-xs">
-						<span class="text-text-muted">CPU</span>
-						<span class="tnum font-medium">{cpuNow === null ? '—' : `${cpuNow.toFixed(1)}%`}</span>
-					</div>
-					<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3">
-						<div
-							class="h-full rounded-full bg-accent transition-[width] duration-500"
-							style="width: {cpuNow ?? 0}%"
-						></div>
-					</div>
-				</div>
-				<div>
-					<div class="flex justify-between text-xs">
-						<span class="text-text-muted">Memory</span>
-						<span class="tnum font-medium">{memNow === null ? '—' : `${memNow.toFixed(1)}%`}</span>
-					</div>
-					<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3">
-						<div
-							class="h-full rounded-full bg-accent transition-[width] duration-500"
-							style="width: {memNow ?? 0}%"
-						></div>
-					</div>
-				</div>
-				{#if disk}
-					<div>
-						<div class="flex justify-between text-xs">
-							<span class="text-text-muted">Disk {disk.path}</span>
-							<span class="tnum font-medium">{disk.percent.toFixed(1)}%</span>
+	{#if bentoVisible}
+		<section
+			class="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4"
+			in:fade={{ duration: 200, delay: 100 }}
+		>
+			<!-- Stack health (2 cols on xl) -->
+			{#if visible('stackHealth')}
+				<div class="xl:col-span-2" style="order:{orderOf('stackHealth')}">
+					<Card
+						title="Stack health"
+						subtitle={overview.health === 'healthy'
+							? 'All monitored services operating normally'
+							: 'Based on current incidents and service health'}
+					>
+						<div class="flex items-start justify-between gap-4">
+							<div>
+								<p
+									class="text-3xl font-semibold tracking-tight capitalize"
+									style="color: {heroColor}"
+								>
+									{overview.health}
+								</p>
+								<p class="mt-1 text-xs text-text-muted">
+									{overview.servicesOnline}/{overview.servicesTotal} running
+									{#if overview.servicesDegraded > 0}· {overview.servicesDegraded} degraded{/if}
+									{#if overview.servicesStopped > 0}· {overview.servicesStopped} stopped{/if}
+								</p>
+							</div>
+							<div class="w-40">
+								<Sparkline
+									data={cpuPoints.map((p) => p.v ?? 0)}
+									height={40}
+									color="var(--accent)"
+								/>
+								<p class="mt-1 text-right text-[10px] text-text-faint">CPU last ~12 min</p>
+							</div>
 						</div>
-						<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3">
-							<div
-								class="h-full rounded-full transition-[width] duration-500 {disk.percent > 90
-									? 'bg-critical'
-									: disk.percent > 75
-										? 'bg-degraded'
-										: 'bg-accent'}"
-								style="width: {disk.percent}%"
-							></div>
-						</div>
-					</div>
-				{/if}
-			</div>
-		</Card>
-
-		<!-- Incidents / activity -->
-		<Card title="Recent incidents" subtitle="Latest detected problems">
-			{#if activeIncidentList.length === 0}
-				<div class="flex flex-col items-center gap-1.5 py-5 text-center">
-					<CircleCheck size={20} class="text-healthy" strokeWidth={1.5} aria-hidden="true" />
-					<p class="text-xs font-medium text-text-secondary">All clear</p>
-					<p class="text-[11px] text-text-muted">No incidents detected.</p>
+					</Card>
 				</div>
-			{:else}
-				<ul class="space-y-2">
-					{#each activeIncidentList.slice(0, 3) as incident (incident.id)}
-						<li>
-							<button
-								type="button"
-								class="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-left transition-colors hover:border-border-strong"
-								onclick={() => goto(`/incidents?incident=${incident.id}`)}
-							>
-								<div class="flex items-center gap-2">
-									<span
-										class="h-1.5 w-1.5 shrink-0 rounded-full {incident.severity === 'critical'
-											? 'bg-critical'
-											: incident.severity === 'warning'
-												? 'bg-degraded'
-												: 'bg-unknown'}"
-									></span>
-									<span class="truncate text-xs font-medium text-text-primary"
-										>{incident.title}</span
-									>
-									<span class="tnum ml-auto shrink-0 text-[10px] text-text-faint"
-										>{relativeTime(incident.firstSeen)}</span
+			{/if}
+
+			<!-- Resource usage -->
+			{#if visible('resources')}
+				<div style="order:{orderOf('resources')}">
+					<Card title="Resource usage" subtitle="Host metrics from DUMB">
+						<div class="space-y-2.5">
+							<div>
+								<div class="flex justify-between text-xs">
+									<span class="text-text-muted">CPU</span>
+									<span class="tnum font-medium"
+										>{cpuNow === null ? '—' : `${cpuNow.toFixed(1)}%`}</span
 									>
 								</div>
-								{#if incident.rootCauseService}
-									<p class="mt-1 pl-3.5 text-[10px] text-text-muted">
-										Root cause: {incident.rootCauseService}
-									</p>
-								{/if}
-							</button>
-						</li>
-					{/each}
-				</ul>
+								<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3">
+									<div
+										class="h-full rounded-full bg-accent transition-[width] duration-500"
+										style="width: {cpuNow ?? 0}%"
+									></div>
+								</div>
+							</div>
+							<div>
+								<div class="flex justify-between text-xs">
+									<span class="text-text-muted">Memory</span>
+									<span class="tnum font-medium"
+										>{memNow === null ? '—' : `${memNow.toFixed(1)}%`}</span
+									>
+								</div>
+								<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3">
+									<div
+										class="h-full rounded-full bg-accent transition-[width] duration-500"
+										style="width: {memNow ?? 0}%"
+									></div>
+								</div>
+							</div>
+							{#if disk}
+								<div>
+									<div class="flex justify-between text-xs">
+										<span class="text-text-muted">Disk {disk.path}</span>
+										<span class="tnum font-medium">{disk.percent.toFixed(1)}%</span>
+									</div>
+									<div class="mt-1 h-1.5 overflow-hidden rounded-full bg-surface-3">
+										<div
+											class="h-full rounded-full transition-[width] duration-500 {disk.percent > 90
+												? 'bg-critical'
+												: disk.percent > 75
+													? 'bg-degraded'
+													: 'bg-accent'}"
+											style="width: {disk.percent}%"
+										></div>
+									</div>
+								</div>
+							{/if}
+						</div>
+					</Card>
+				</div>
 			{/if}
-		</Card>
 
-		<!-- CPU/Mem chart (wide) -->
-		<div class="xl:col-span-3">
-			<Card title="Resource history" subtitle="CPU and memory over the recent window" flat={false}>
-				{#if cpuPoints.length > 2}
-					<AreaChart
-						series={[
-							{ name: 'CPU', color: 'var(--accent)', points: cpuPoints },
-							{ name: 'Memory', color: 'var(--healthy)', points: memPoints }
-						]}
-						height={150}
-					/>
-				{:else}
-					<div class="flex h-[150px] items-center justify-center text-xs text-text-muted">
-						Collecting metrics… chart appears when enough data streams in.
-					</div>
-				{/if}
-			</Card>
-		</div>
-	</section>
+			<!-- Incidents / activity -->
+			{#if visible('incidents')}
+				<div style="order:{orderOf('incidents')}">
+					<Card title="Recent incidents" subtitle="Latest detected problems">
+						{#if activeIncidentList.length === 0}
+							<div class="flex flex-col items-center gap-1.5 py-5 text-center">
+								<CircleCheck size={20} class="text-healthy" strokeWidth={1.5} aria-hidden="true" />
+								<p class="text-xs font-medium text-text-secondary">All clear</p>
+								<p class="text-[11px] text-text-muted">No incidents detected.</p>
+							</div>
+						{:else}
+							<ul class="space-y-2">
+								{#each activeIncidentList.slice(0, 3) as incident (incident.id)}
+									<li>
+										<button
+											type="button"
+											class="w-full rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-left transition-colors hover:border-border-strong"
+											onclick={() => goto(`/incidents?incident=${incident.id}`)}
+										>
+											<div class="flex items-center gap-2">
+												<span
+													class="h-1.5 w-1.5 shrink-0 rounded-full {incident.severity === 'critical'
+														? 'bg-critical'
+														: incident.severity === 'warning'
+															? 'bg-degraded'
+															: 'bg-unknown'}"
+												></span>
+												<span class="truncate text-xs font-medium text-text-primary"
+													>{incident.title}</span
+												>
+												<span class="tnum ml-auto shrink-0 text-[10px] text-text-faint"
+													>{relativeTime(incident.firstSeen)}</span
+												>
+											</div>
+											{#if incident.rootCauseService}
+												<p class="mt-1 pl-3.5 text-[10px] text-text-muted">
+													Root cause: {incident.rootCauseService}
+												</p>
+											{/if}
+										</button>
+									</li>
+								{/each}
+							</ul>
+						{/if}
+					</Card>
+				</div>
+			{/if}
+
+			<!-- CPU/Mem chart (wide) -->
+			{#if visible('history')}
+				<div class="xl:col-span-3" style="order:{orderOf('history')}">
+					<Card
+						title="Resource history"
+						subtitle="CPU and memory over the recent window"
+						flat={false}
+					>
+						{#if cpuPoints.length > 2}
+							<AreaChart
+								series={[
+									{ name: 'CPU', color: 'var(--accent)', points: cpuPoints },
+									{ name: 'Memory', color: 'var(--healthy)', points: memPoints }
+								]}
+								height={150}
+							/>
+						{:else}
+							<div class="flex h-[150px] items-center justify-center text-xs text-text-muted">
+								Collecting metrics… chart appears when enough data streams in.
+							</div>
+						{/if}
+					</Card>
+				</div>
+			{/if}
+		</section>
+	{/if}
 </div>

@@ -196,6 +196,23 @@ function writeAuthState(login) {
 	);
 }
 
+/** Mount-health fixture (FASE B): a fake symlink root that starts fully
+ * VALID so the rest of the suite sees a healthy stack; the reliability spec
+ * breaks it (and repairs it again) to walk the finding lifecycle. The path is
+ * exported for the specs via a JSON file. */
+function createMountFixture() {
+	const root = fs.mkdtempSync(path.join(os.tmpdir(), 'dumbscope-e2e-mount-'));
+	for (let show = 0; show < 2; show++) {
+		const dir = path.join(root, `Show ${show}`, 'Season 1');
+		fs.mkdirSync(dir, { recursive: true });
+		for (let link = 0; link < 6; link++) {
+			fs.symlinkSync(path.join(root, 'real.txt'), path.join(dir, `ep.${show}.${link}.mkv`));
+		}
+	}
+	fs.writeFileSync(path.join(root, 'real.txt'), 'x');
+	return root;
+}
+
 function shutdown() {
 	for (const { child } of children) {
 		try {
@@ -211,10 +228,25 @@ function shutdown() {
 			// best effort
 		}
 	}
+	try {
+		const fixtureFile = path.join(root, 'tests/e2e/.reliability-fixture.json');
+		if (fs.existsSync(fixtureFile)) {
+			const { mountRoot } = JSON.parse(fs.readFileSync(fixtureFile, 'utf8'));
+			fs.rmSync(mountRoot, { recursive: true, force: true });
+			fs.rmSync(fixtureFile, { force: true });
+		}
+	} catch {
+		// best effort
+	}
 }
 
 try {
 	configDir = fs.mkdtempSync(path.join(os.tmpdir(), 'dumbscope-e2e-'));
+	const mountFixture = createMountFixture();
+	fs.writeFileSync(
+		path.join(root, 'tests/e2e/.reliability-fixture.json'),
+		JSON.stringify({ mountRoot: mountFixture, mockUrl: MOCK_URL })
+	);
 
 	start('mock-dumb', process.execPath, ['tests/mock-dumb/server.mjs'], {
 		MOCK_PORT: String(MOCK_PORT),
@@ -240,7 +272,18 @@ try {
 		DUMBSCOPE_CONFIG_DIR: configDir,
 		DUMBSCOPE_SETUP_CODE: SETUP_CODE,
 		DUMB_URL: MOCK_URL,
-		PUBLIC_QA_DEMOS: '1'
+		PUBLIC_QA_DEMOS: '1',
+		// Reliability fast-clock + mount fixture (FASE B/C journeys).
+		DUMBSCOPE_RELIABILITY_FAST: '1',
+		DUMBSCOPE_MOUNTS: JSON.stringify([
+			{
+				id: 'tv-links',
+				label: 'TV symlink root',
+				path: mountFixture,
+				kind: 'symlink-root',
+				consumers: ['Plex Media Server']
+			}
+		])
 	});
 	await waitFor(`${APP_URL}/api/health`);
 
@@ -250,11 +293,16 @@ try {
 	writeAuthState(login);
 	console.log('[e2e] environment ready — running Playwright');
 
-	const test = spawn(process.execPath, ['node_modules/@playwright/test/cli.js', 'test'], {
-		cwd: root,
-		stdio: 'inherit',
-		env: process.env
-	});
+	const grepArgs = process.env.E2E_GREP ? ['--grep', process.env.E2E_GREP] : [];
+	const test = spawn(
+		process.execPath,
+		['node_modules/@playwright/test/cli.js', 'test', ...grepArgs],
+		{
+			cwd: root,
+			stdio: 'inherit',
+			env: process.env
+		}
+	);
 	children.push({ name: 'playwright', child: test });
 	exitCode = await new Promise((resolve) => test.on('exit', resolve));
 } catch (err) {

@@ -14,6 +14,8 @@ export const GET: RequestHandler = async () => {
 		topology: hub.topology(),
 		capabilities: hub.getCapabilities().raw,
 		activeIncidents: hub.getActiveIncidents(),
-		recentIncidents: incidentRepository.recent(25)
+		recentIncidents: incidentRepository.recent(25),
+		reliability: hub.getReliability(),
+		mediaFlow: hub.getMediaFlow()
 	});
 };

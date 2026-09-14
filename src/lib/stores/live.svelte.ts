@@ -10,8 +10,11 @@ import type {
 	DiscoveredService,
 	Incident,
 	LogLine,
+	MediaFlowSnapshot,
 	MetricsHistoryPoint,
 	MetricsSnapshot,
+	RemediationActionView,
+	ReliabilitySnapshot,
 	ServiceStatus,
 	StackOverview,
 	TopologyGraph
@@ -31,10 +34,18 @@ function defaults(): ConnectionSnapshot {
 			logs: 'connecting'
 		},
 		lastUpdateAt: null,
+		lastSuccessAt: null,
+		connectedSince: null,
+		stateSince: Date.now(),
 		lastError: null,
 		reconnectAttempts: 0,
 		dumbVersion: null,
-		authMode: 'unknown'
+		authMode: 'unknown',
+		probes: {
+			http: { status: 'unknown', code: null, detail: null, at: null, okAt: null },
+			auth: { status: 'unknown', code: null, detail: null, at: null, okAt: null },
+			rest: { status: 'unknown', code: null, detail: null, at: null, okAt: null }
+		}
 	};
 }
 
@@ -59,6 +70,28 @@ class LiveStore {
 	logs = $state<LogLine[]>([]);
 	activeIncidents = $state<Incident[]>([]);
 	topology = $state<TopologyGraph>({ nodes: [], edges: [] });
+	reliability = $state<ReliabilitySnapshot>({
+		mounts: [],
+		memory: [],
+		stats: { mountRounds: 0, fsCalls: 0, lastRoundMs: null, memoryTracked: 0 }
+	});
+	mediaFlow = $state<
+		MediaFlowSnapshot & {
+			recommendations: RemediationActionView[];
+			actions: RemediationActionView[];
+		}
+	>({
+		generatedAt: 0,
+		items: [],
+		metrics: {
+			repeatedRequests24h: 0,
+			activeMediaMismatches: 0,
+			resolvedMediaMismatches: 0,
+			propagation: { samples: 0, medianMs: null, p95Ms: null }
+		},
+		recommendations: [],
+		actions: []
+	});
 	capabilities = $state<Record<string, unknown>>({});
 	version = $state<string | null>(null);
 	feed = $state<FeedState>('connecting');
@@ -182,6 +215,17 @@ class LiveStore {
 		});
 		on<TopologyGraph>('topology', (data) => {
 			this.topology = data;
+		});
+		on<ReliabilitySnapshot>('reliability', (data) => {
+			this.reliability = data;
+		});
+		on<
+			MediaFlowSnapshot & {
+				recommendations: RemediationActionView[];
+				actions: RemediationActionView[];
+			}
+		>('mediaFlow', (data) => {
+			this.mediaFlow = data;
 		});
 	}
 

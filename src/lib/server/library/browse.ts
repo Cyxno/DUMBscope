@@ -35,6 +35,7 @@ import {
 	pageOf,
 	seriesListParams
 } from './browse-filter';
+import { qualityDistribution, type QualityDistributionRow } from './aggregate';
 
 export type Availability = 'available' | 'unconfigured' | 'unavailable' | 'stale';
 
@@ -238,6 +239,7 @@ export interface SeriesSummary {
 	id: number;
 	integrationId: string;
 	title: string;
+	sortTitle: string;
 	year: number | null;
 	status: BrowseSeries['status'];
 	monitored: boolean;
@@ -250,14 +252,51 @@ export interface SeriesSummary {
 	qualityProfile: string | null;
 	posterVersion: string | null;
 	addedAt: number | null;
+	/**
+	 * Cutoff-unmet episode count for this series (brief §20/§47). Exact from
+	 * the Sonarr wanted/cutoff cache; 0 when the poll has no data yet.
+	 */
+	upgradeCount: number;
+	/** Epoch ms of the oldest released missing episode, when known (§50). */
+	oldestMissingAt: number | null;
 }
 
-export function seriesSummary(s: BrowseSeries): SeriesSummary {
+/** Per-integration aggregates the list views layer over the browse cache. */
+interface SonarrLibraryExtras {
+	upgradesBySeries: Map<string, number>;
+	oldestMissingBySeries: Map<string, number | null>;
+}
+
+function sonarrLibraryExtras(): SonarrLibraryExtras {
+	const upgradesBySeries = new Map<string, number>();
+	const oldestMissingBySeries = new Map<string, number | null>();
+	for (const info of enabledOf('sonarr')) {
+		const cache = getIntegrationCacheStaleAware(info.id) as {
+			library?: {
+				tv?: {
+					seriesUpgrades?: { id: number; count: number }[];
+					series?: { id: number; oldestMissingAt?: number | null }[];
+				};
+			};
+		};
+		const tv = cache.library?.tv;
+		for (const row of tv?.seriesUpgrades ?? []) {
+			upgradesBySeries.set(`${info.id}:${row.id}`, row.count);
+		}
+		for (const row of tv?.series ?? []) {
+			oldestMissingBySeries.set(`${info.id}:${row.id}`, row.oldestMissingAt ?? null);
+		}
+	}
+	return { upgradesBySeries, oldestMissingBySeries };
+}
+
+export function seriesSummary(s: BrowseSeries, extras?: SonarrLibraryExtras): SeriesSummary {
 	return {
 		key: s.key,
 		id: s.id,
 		integrationId: s.integrationId,
 		title: s.title,
+		sortTitle: s.sortTitle,
 		year: s.year,
 		status: s.status,
 		monitored: s.monitored,
@@ -266,10 +305,12 @@ export function seriesSummary(s: BrowseSeries): SeriesSummary {
 		hasSpecials: s.seasons.some((season) => season.seasonNumber === 0),
 		missingCount: s.missingCount,
 		episodeFutureCount: s.episodeFutureCount,
-		completionPct: s.completionPct,
+		completionPct: s.completionPct === null ? null : Math.round(s.completionPct * 10) / 10,
 		qualityProfile: s.qualityProfile,
 		posterVersion: s.posterVersion,
-		addedAt: s.addedAt
+		addedAt: s.addedAt,
+		upgradeCount: extras?.upgradesBySeries.get(`${s.integrationId}:${s.id}`) ?? 0,
+		oldestMissingAt: extras?.oldestMissingBySeries.get(`${s.integrationId}:${s.id}`) ?? null
 	};
 }
 
@@ -359,7 +400,9 @@ export function tvList(url: URL): TvListResponse {
 	const browse = getSonarrBrowse();
 	const items = allSeries();
 	const params = seriesListParams(url);
-	const filtered = filterSortSeries(items, params.filter, params.sort, params.q);
+	const extras = sonarrLibraryExtras();
+	const summaries = items.map((s) => seriesSummary(s, extras));
+	const filtered = filterSortSeries(summaries, params.filter, params.sort, params.q);
 	const page = pageOf(filtered, params.limit, params.offset);
 	const wanted = wantedTotals('sonarr');
 	return {
@@ -372,7 +415,7 @@ export function tvList(url: URL): TvListResponse {
 			missing: intelligenceValue('sonarr', 'monitoredMissing'),
 			upgrades: wanted.cutoffUnmet
 		},
-		items: page.items.map(seriesSummary),
+		items: page.items,
 		total: page.total,
 		limit: params.limit,
 		offset: params.offset,
@@ -432,6 +475,8 @@ export interface SeasonEpisodes {
 	fileCount: number;
 	airedCount: number;
 	totalCount: number;
+	/** Epoch ms of the oldest released missing episode in the season (§13). */
+	oldestMissingAt: number | null;
 	episodes: BrowseEpisode[];
 }
 
@@ -507,9 +552,16 @@ function episodesWithOverlays(
 				fileCount: upstream?.fileCount ?? 0,
 				airedCount: upstream?.airedCount ?? 0,
 				totalCount: upstream?.totalCount ?? 0,
+				oldestMissingAt: null,
 				episodes: []
 			};
 			bySeason.set(episode.seasonNumber, season);
+		}
+		if (episode.state === 'missing' && episode.airDateUtc !== null) {
+			season.oldestMissingAt =
+				season.oldestMissingAt === null
+					? episode.airDateUtc
+					: Math.min(season.oldestMissingAt, episode.airDateUtc);
 		}
 		season.episodes.push(episode);
 	}
@@ -662,6 +714,11 @@ export interface MoviesListResponse {
 		completionPct: number | null;
 		missing: number | null;
 		upgrades: number;
+		/**
+		 * Resolution distribution over items with a file (brief §18) —
+		 * derived from file data only; empty when no file data is known.
+		 */
+		qualityDistribution: QualityDistributionRow[];
 	};
 	items: MovieSummary[];
 	total: number;
@@ -684,7 +741,8 @@ export function moviesList(url: URL): MoviesListResponse {
 			monitored: items.filter((m) => m.monitored).length,
 			completionPct: intelligenceValue('radarr', 'completionPct'),
 			missing: intelligenceValue('radarr', 'monitoredMissing'),
-			upgrades: wanted.cutoffUnmet
+			upgrades: wanted.cutoffUnmet,
+			qualityDistribution: qualityDistribution(items.map((m) => m.qualityResolution))
 		},
 		items: page.items.map(movieSummary),
 		total: page.total,

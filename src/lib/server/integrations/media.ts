@@ -82,13 +82,60 @@ export async function fetchArrLibrary(
 		const sizeOnDisk = series.reduce((sum, s) => sum + (s.statistics?.sizeOnDisk ?? 0), 0);
 		// Ranked "most missing" list: episodes missing per series, exact from
 		// the missing fetch grouped by seriesId (bounded to 200 entries).
-		const bySeries = new Map<number, { title: string; missing: number }>();
+		const bySeries = new Map<
+			number,
+			{ title: string; missing: number; oldestMissingAt: number | null }
+		>();
 		for (const item of missing) {
 			const id = item.seriesId;
 			if (id === undefined || id === null) continue;
-			const entry = bySeries.get(id) ?? { title: item.title, missing: 0 };
+			const entry = bySeries.get(id) ?? { title: item.title, missing: 0, oldestMissingAt: null };
 			entry.missing += 1;
+			if (item.releasedAt !== null && item.releasedAt > 0) {
+				entry.oldestMissingAt =
+					entry.oldestMissingAt === null
+						? item.releasedAt
+						: Math.min(entry.oldestMissingAt, item.releasedAt);
+			}
 			bySeries.set(id, entry);
+		}
+		// Per-series cutoff-unmet counts (brief §20/§47): exact from the
+		// wanted/cutoff list, paged with the same hard cap as the missing list
+		// so a huge upgrade backlog never explodes the poll.
+		const upgradeCounts = new Map<number, number>();
+		try {
+			const firstCutoff = (await client.request('/api/v3/wanted/cutoff', {
+				page: '1',
+				pageSize: '100',
+				sortKey: 'airDateUtc',
+				sortDirection: 'ascending',
+				includeSeries: 'true'
+			})) as { totalRecords?: number; records?: Record<string, unknown>[] };
+			const cutoffTotal = firstCutoff.totalRecords ?? 0;
+			const cutoffRecords: Record<string, unknown>[] = [...(firstCutoff.records ?? [])];
+			const cutoffPages = Math.min(
+				Math.ceil(cutoffTotal / 100) || 1,
+				Math.ceil(MISSING_FETCH_CAP / 100)
+			);
+			for (let page = 2; page <= cutoffPages; page++) {
+				const next = (await client.request('/api/v3/wanted/cutoff', {
+					page: String(page),
+					pageSize: '100',
+					sortKey: 'airDateUtc',
+					sortDirection: 'ascending',
+					includeSeries: 'true'
+				})) as { records?: Record<string, unknown>[] };
+				cutoffRecords.push(...(next.records ?? []));
+			}
+			for (const record of cutoffRecords) {
+				const series = record.series as { id?: unknown } | undefined;
+				const id = typeof series?.id === 'number' ? series.id : null;
+				if (id === null) continue;
+				upgradeCounts.set(id, (upgradeCounts.get(id) ?? 0) + 1);
+			}
+		} catch {
+			// Upgrades are additive insight — the poll must survive their
+			// absence (missing/backlog data above is already complete).
 		}
 		const tv: TvLibrary = {
 			seriesTotal: series.length,
@@ -105,8 +152,18 @@ export async function fetchArrLibrary(
 			sizeOnDiskBytes: sizeOnDisk,
 			fetchedAt: Date.now(),
 			series: [...bySeries.entries()]
-				.map(([id, agg]) => ({ id, title: agg.title, missing: agg.missing, ended: null }))
+				.map(([id, agg]) => ({
+					id,
+					title: agg.title,
+					missing: agg.missing,
+					ended: null,
+					oldestMissingAt: agg.oldestMissingAt
+				}))
 				.sort((a, b) => b.missing - a.missing || a.title.localeCompare(b.title))
+				.slice(0, 200),
+			seriesUpgrades: [...upgradeCounts.entries()]
+				.map(([id, count]) => ({ id, count }))
+				.sort((a, b) => b.count - a.count)
 				.slice(0, 200)
 		};
 		return { tv, missing };

@@ -254,6 +254,28 @@ export class DumbClient {
 		return (await response.json()) as DumbProcessesResponse;
 	}
 
+	/**
+	 * Official DUMB single-service management route (DEEL 2 remediation):
+	 * POST /api/process/restart-service {process_name}. Single managed
+	 * service only — never a container restart. DUMB may defer the restart
+	 * itself (media protection); the caller must verify afterwards, an HTTP
+	 * 200 is acceptance, not success.
+	 */
+	async restartService(processName: string): Promise<boolean> {
+		const response = await this.request('/api/process/restart-service', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ process_name: processName })
+		});
+		if (response.status === 401 || response.status === 403) {
+			throw new DumbAuthError('DUMB rejected the restart request (auth)');
+		}
+		if (!response.ok) {
+			throw new DumbError(`restart-service returned HTTP ${response.status}`, response.status);
+		}
+		return true;
+	}
+
 	async startupStatus(): Promise<Record<string, unknown> | null> {
 		const response = await this.request('/api/process/startup-status');
 		if (response.status === 404) return null;

@@ -6,6 +6,7 @@
 	 * the URL so deep links and browser back work (§69/§70/§134/§136).
 	 */
 	import { page } from '$app/state';
+	import { prefs } from '$lib/stores/prefs.svelte';
 	import { pushState, replaceState } from '$app/navigation';
 	import AreaChart from '$lib/components/AreaChart.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
@@ -69,6 +70,11 @@
 		};
 		healthWarnings: { integrationId: string; type: string; message: string }[];
 		attention: { id: string; severity: string; title: string; detail: string; href: string }[];
+		recent: {
+			added: { id: string; title: string; detail: string | null; at: number; href: string }[];
+			missing: { id: string; title: string; detail: string | null; at: number; href: string }[];
+			imported: { id: string; title: string; detail: string | null; at: number; href: string }[];
+		};
 		trends: {
 			windowDays: number;
 			tv: { at: number; missing: number; upgrades: number }[];
@@ -93,6 +99,8 @@
 	/** URL params the browsers own (§136). Cleared on view switches. */
 
 	let view = $state<View>('overview');
+	// Default tab from browser-local preferences (DEEL 3); an explicit URL
+	// parameter still wins (§77).
 	let data = $state<LibraryPayload | null>(null);
 	let error = $state<string | null>(null);
 	let loading = $state(true);
@@ -125,12 +133,19 @@
 	/** Browsers react to this (back/forward) and echo changes via onparams. */
 	let urlState = $state<Record<string, string>>({});
 
+	/** Backlog age chip (§7/§8): URL-shared so chips are bookmarkable. */
+	const backlogAge = $derived(urlState.backlogAge ?? '');
+
 	$effect(() => {
 		// Track URL (incl. popstate/back — §135) and adopt into state.
 		const sp = page.url.searchParams;
 		const requestedView = sp.get('view');
 		if (requestedView && (VIEWS as readonly string[]).includes(requestedView)) {
 			view = requestedView as View;
+		} else if (!requestedView) {
+			// No explicit view: the configured default tab applies (§77).
+			const fallback = prefs.libraryTab as View;
+			if (view !== fallback) view = fallback;
 		}
 		urlState = parseUrlState();
 		const item = sp.get('item');
@@ -253,6 +268,23 @@
 		value === null
 			? ''
 			: ` · updated ${Math.max(0, Math.round((Date.now() - value) / 60_000))}m ago`;
+	/** Compact "how long ago" for recent lists (§70). */
+	const sinceLabel = (value: number) => {
+		const minutes = Math.max(1, Math.round((Date.now() - value) / 60_000));
+		if (minutes < 60) return `${minutes}m`;
+		const hours = Math.round(minutes / 60);
+		if (hours < 48) return `${hours}h`;
+		return `${Math.round(hours / 24)}d`;
+	};
+
+	function recentHas(d: NonNullable<LibraryPayload>): boolean {
+		return d.recent.added.length > 0 || d.recent.missing.length > 0 || d.recent.imported.length > 0;
+	}
+
+	/** Client-side age filter over the loaded backlog page (§7/§8). */
+	const filteredTvMissing = $derived(
+		!backlogAge ? (tvMissing ?? []) : (tvMissing ?? []).filter((m) => m.ageBucket === backlogAge)
+	);
 
 	function severityClass(severity: string): string {
 		return severity === 'issue'
@@ -325,10 +357,37 @@
 		{/if}
 
 		{#if view === 'overview'}
+			{#snippet countLink(
+				label: string,
+				count: number | null,
+				href: string,
+				tone: 'degraded' | 'muted' | 'faint' = 'muted'
+			)}
+				{#if count !== null}
+					<a
+						{href}
+						class="inline-flex items-baseline gap-1 transition-colors hover:text-text-primary {tone ===
+						'degraded'
+							? 'text-degraded hover:underline'
+							: tone === 'faint'
+								? 'text-text-faint hover:text-text-muted'
+								: 'text-text-muted hover:text-text-secondary'}"
+					>
+						<span class="tnum">{count}</span>
+						{label}
+					</a>
+				{/if}
+			{/snippet}
+
 			{#snippet completionCard(
 				label: string,
 				pct: number | null,
-				lines: string[],
+				lines: {
+					text: string;
+					href?: string;
+					count?: number | null;
+					tone?: 'degraded' | 'muted' | 'faint';
+				}[],
 				browseHref: string
 			)}
 				<div class="rounded-[14px] border border-border-subtle bg-surface-1 p-4">
@@ -337,8 +396,14 @@
 						{pct === null ? '—' : `${pct}%`}
 					</p>
 					<ul class="mt-2 space-y-0.5 text-xs text-text-muted">
-						{#each lines as line (line)}
-							<li>{line}</li>
+						{#each lines as line (line.text)}
+							<li>
+								{#if line.href && line.count !== undefined}
+									{@render countLink(line.text, line.count, line.href, line.tone ?? 'muted')}
+								{:else}
+									{line.text}
+								{/if}
+							</li>
 						{/each}
 					</ul>
 					<a
@@ -350,50 +415,7 @@
 				</div>
 			{/snippet}
 
-			<div class="grid grid-cols-1 gap-4 md:grid-cols-3">
-				{@render completionCard(
-					'TV',
-					data.summary.tv?.completionPct ?? null,
-					[
-						data.summary.tv
-							? `${data.summary.tv.missing} episodes missing`
-							: 'Sonarr not configured',
-						data.summary.tv ? `${data.summary.tv.upgrades} upgrades available` : '',
-						data.summary.tv ? `${data.summary.tv.series} series monitored` : ''
-					].filter(Boolean),
-					'/library?view=tv'
-				)}
-				{@render completionCard(
-					'Movies',
-					data.summary.movies?.completionPct ?? null,
-					[
-						data.summary.movies
-							? `${data.summary.movies.missing} movies missing`
-							: 'Radarr not configured',
-						data.summary.movies ? `${data.summary.movies.upgrades} upgrades available` : '',
-						data.summary.movies ? `${data.summary.movies.movies} movies in library` : ''
-					].filter(Boolean),
-					'/library?view=movies'
-				)}
-				{@render completionCard(
-					'Subtitles',
-					data.summary.subtitles?.coveragePct ?? null,
-					[
-						data.summary.subtitles
-							? `${data.summary.subtitles.gaps} subtitle gaps`
-							: 'Bazarr not configured',
-						data.summary.subtitles
-							? `${data.summary.subtitles.episodeGaps} episode · ${data.summary.subtitles.movieGaps} movie`
-							: '',
-						data.summary.subtitles?.topLanguages?.length
-							? `mostly ${data.summary.subtitles.topLanguages[0]!.name}`
-							: ''
-					].filter(Boolean),
-					'/library?view=subtitles'
-				)}
-			</div>
-
-			<!-- Attention (§31): above plain totals when present -->
+			<!-- Attention (§5/§31): operational problems rank first, always on top -->
 			{#if data.attention.length > 0}
 				<section aria-label="Needs attention">
 					<h3 class="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-degraded">
@@ -418,11 +440,169 @@
 					</ul>
 				</section>
 			{:else}
-				<EmptyState
-					title="Nothing needs attention"
-					description="Backlog, imports and integrations all look normal."
-					neutral
-				/>
+				<p class="text-[11.5px] text-text-faint">
+					✓ Nothing needs attention — backlog, imports and integrations all look normal.
+				</p>
+			{/if}
+
+			<div class="grid grid-cols-1 gap-4 md:grid-cols-3">
+				{@render completionCard(
+					'TV',
+					data.summary.tv?.completionPct ?? null,
+					[
+						data.summary.tv
+							? {
+									text: 'episodes missing',
+									count: data.summary.tv.missing,
+									href: '/library?view=tv&filter=incomplete&sort=missing-oldest',
+									tone: data.summary.tv.missing > 0 ? ('degraded' as const) : ('muted' as const)
+								}
+							: { text: 'Sonarr not configured' },
+						data.summary.tv
+							? {
+									text: 'upgrades available',
+									count: data.summary.tv.upgrades,
+									href: '/library?view=tv&filter=upgrades'
+								}
+							: { text: '' },
+						data.summary.tv ? { text: `${data.summary.tv.series} series monitored` } : { text: '' }
+					].filter((l) => l.text !== ''),
+					'/library?view=tv'
+				)}
+				{@render completionCard(
+					'Movies',
+					data.summary.movies?.completionPct ?? null,
+					[
+						data.summary.movies
+							? {
+									text: 'movies missing',
+									count: data.summary.movies.missing,
+									href: '/library?view=movies&filter=missing&sort=missing-oldest',
+									tone: data.summary.movies.missing > 0 ? ('degraded' as const) : ('muted' as const)
+								}
+							: { text: 'Radarr not configured' },
+						data.summary.movies
+							? {
+									text: 'upgrades available',
+									count: data.summary.movies.upgrades,
+									href: '/library?view=movies&filter=upgrades'
+								}
+							: { text: '' },
+						data.summary.movies
+							? { text: `${data.summary.movies.movies} movies in library` }
+							: { text: '' }
+					].filter((l) => l.text !== ''),
+					'/library?view=movies'
+				)}
+				{@render completionCard(
+					'Subtitles',
+					data.summary.subtitles?.coveragePct ?? null,
+					[
+						data.summary.subtitles
+							? {
+									text: 'subtitle gaps',
+									count: data.summary.subtitles.gaps,
+									href: '/library?view=subtitles',
+									tone: data.summary.subtitles.gaps > 0 ? ('degraded' as const) : ('muted' as const)
+								}
+							: { text: 'Bazarr not configured' },
+						data.summary.subtitles
+							? {
+									text: `${data.summary.subtitles.episodeGaps} episode · ${data.summary.subtitles.movieGaps} movie`
+								}
+							: { text: '' },
+						data.summary.subtitles?.topLanguages?.length
+							? { text: `mostly ${data.summary.subtitles.topLanguages[0]!.name}` }
+							: { text: '' }
+					].filter((l) => l.text !== ''),
+					'/library?view=subtitles'
+				)}
+			</div>
+
+			<!-- Aging backlog (§7/§80): age as first-class, clickable, never alarmist -->
+			{#if data.summary.tv?.backlogAges || data.summary.movies?.backlogAges}
+				<section aria-label="Backlog age" class="flex flex-wrap items-center gap-x-4 gap-y-1">
+					<h3 class="text-[11px] font-bold uppercase tracking-[0.1em] text-text-faint">
+						Backlog age
+					</h3>
+					<div class="flex flex-wrap gap-1.5">
+						{#each [['new', '≤24h'], ['1-7d', '1–7d'], ['7-30d', '7–30d'], ['30d+', '30d+']] as [bucket, chip] (bucket)}
+							{@const tvCount = data.summary.tv?.backlogAges?.[bucket as 'new'] ?? 0}
+							{@const movieCount = data.summary.movies?.backlogAges?.[bucket as 'new'] ?? 0}
+							{@const total = tvCount + movieCount}
+							<a
+								href={`/library?view=tv&filter=incomplete&sort=missing-oldest&backlogAge=${bucket}`}
+								class="rounded-full border border-border-subtle bg-surface-1 px-3 py-1 text-[11.5px] text-text-muted transition-colors hover:border-border-strong hover:text-text-secondary"
+							>
+								{chip}
+								<b class="tnum {total > 0 ? 'text-text-secondary' : 'text-text-faint'}">{total}</b>
+							</a>
+						{/each}
+					</div>
+				</section>
+			{/if}
+
+			<!-- Recently changed (§70/§71): compact, representative, deep-linked -->
+			{#if recentHas(data)}
+				<section aria-label="Recently changed">
+					<h3 class="mb-2 text-[11px] font-bold uppercase tracking-[0.1em] text-text-faint">
+						Recently changed
+					</h3>
+					<div class="grid grid-cols-1 gap-3 md:grid-cols-3">
+						{#snippet recentList(
+							title: string,
+							items: {
+								id: string;
+								title: string;
+								detail: string | null;
+								at: number;
+								href: string;
+							}[],
+							viewAllHref: string
+						)}
+							<div class="rounded-[14px] border border-border-subtle bg-surface-1 p-3">
+								<p class="text-[11px] font-semibold text-text-secondary">{title}</p>
+								{#if items.length === 0}
+									<p class="mt-1.5 text-[11.5px] text-text-faint">Nothing recent.</p>
+								{:else}
+									<ul class="mt-1 space-y-1">
+										{#each items.slice(0, 5) as item (item.id)}
+											<li class="flex items-baseline gap-2 text-[12px]">
+												<a
+													href={item.href}
+													class="min-w-0 flex-1 truncate text-text-secondary hover:text-text-primary hover:underline"
+													title={item.title}
+												>
+													{item.title}
+													{#if item.detail}<span class="text-text-faint">{item.detail}</span>{/if}
+												</a>
+												<span class="tnum shrink-0 text-[10.5px] text-text-faint"
+													>{sinceLabel(item.at)}</span
+												>
+											</li>
+										{/each}
+									</ul>
+									<a
+										href={viewAllHref}
+										class="mt-1.5 inline-block text-[11px] text-accent-text hover:underline"
+										>View all →</a
+									>
+								{/if}
+							</div>
+						{/snippet}
+						{@render recentList(
+							'Recently added',
+							data.recent.added,
+							'/library?view=movies&sort=added'
+						)}
+						{@render recentList(
+							'Recently missing',
+							data.recent.missing,
+							'/library?view=tv&filter=incomplete&sort=missing-oldest'
+						)}
+						{@render recentList('Recently imported', data.recent.imported, '/activity')}
+					</div>
+				</section>
 			{/if}
 
 			<!-- Trends (§60): compact, textual summary included for a11y (§92) -->
@@ -517,6 +697,21 @@
 						<h3 class="text-[11px] font-bold uppercase tracking-[0.1em] text-text-faint">
 							Missing episode backlog — {tvMissingTotal}
 						</h3>
+						<div class="flex flex-wrap gap-1" role="group" aria-label="Backlog age filter">
+							{#each [['', 'All'], ['new', '≤24h'], ['1-7d', '1–7d'], ['7-30d', '7–30d'], ['30d+', '30d+']] as [bucket, chip] (chip)}
+								<button
+									type="button"
+									class="rounded-full px-2.5 py-0.5 text-[11px] transition-colors {backlogAge ===
+									bucket
+										? 'bg-surface-3 font-semibold text-text-primary'
+										: 'text-text-muted hover:bg-surface-2 hover:text-text-secondary'}"
+									aria-pressed={backlogAge === bucket}
+									onclick={() => setParams({ backlogAge: bucket || null }, true)}
+								>
+									{chip}
+								</button>
+							{/each}
+						</div>
 						<div class="ml-auto flex gap-1">
 							{#each ['most', 'oldest', 'recent', 'name'] as sort (sort)}
 								<button
@@ -537,11 +732,17 @@
 							{/each}
 						</div>
 					</div>
-					{#if tvMissing && tvMissing.length > 0}
+					{#if filteredTvMissing.length === 0}
+						<p
+							class="rounded-[14px] border border-border-subtle bg-surface-1 px-4 py-3 text-[12px] text-text-muted"
+						>
+							No missing episodes in this age range.
+						</p>
+					{:else}
 						<ul
 							class="divide-y divide-border-subtle overflow-hidden rounded-[14px] border border-border-subtle bg-surface-1"
 						>
-							{#each tvMissing as item (item.id)}
+							{#each filteredTvMissing as item (item.id)}
 								<li class="flex items-center gap-3 px-4 py-2.5">
 									<span class="min-w-0 flex-1 truncate text-[13px] font-medium text-text-primary"
 										>{item.title}</span
@@ -556,6 +757,12 @@
 								</li>
 							{/each}
 						</ul>
+						{#if backlogAge && filteredTvMissing.length !== tvMissing?.length}
+							<p class="mt-1.5 text-[11px] text-text-faint">
+								Showing {filteredTvMissing.length} of {tvMissing?.length ?? 0} loaded entries — clear
+								the age filter to see everything.
+							</p>
+						{/if}
 					{/if}
 					{#if data.summary.tv?.backlogAges}
 						<p class="mt-3 text-[11px] text-text-faint">

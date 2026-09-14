@@ -9,6 +9,7 @@
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { formatDate, seriesStatusLabel, seriesStatusClass } from '$lib/utils/library-ui';
 	import { relativeTime } from '$lib/utils/format';
+	import { prefs } from '$lib/stores/prefs.svelte';
 
 	export interface TvHeader {
 		seriesTotal: number;
@@ -32,6 +33,9 @@
 		qualityProfile: string | null;
 		posterVersion: string | null;
 		addedAt: number | null;
+		/** Cutoff-unmet episodes (brief §20/§47); absent in older payloads. */
+		upgradeCount?: number;
+		oldestMissingAt?: number | null;
 	}
 	export interface UpcomingItem {
 		key: string;
@@ -58,6 +62,7 @@
 	const FILTERS = [
 		{ id: 'all', label: 'All' },
 		{ id: 'incomplete', label: 'Incomplete' },
+		{ id: 'upgrades', label: 'Upgrades' },
 		{ id: 'continuing', label: 'Continuing' },
 		{ id: 'ended', label: 'Ended' },
 		{ id: 'monitored', label: 'Monitored' },
@@ -67,6 +72,7 @@
 		{ id: 'name', label: 'Name' },
 		{ id: 'completion', label: 'Completion' },
 		{ id: 'missing', label: 'Most missing' },
+		{ id: 'missing-oldest', label: 'Oldest missing' },
 		{ id: 'added', label: 'Recently added' },
 		{ id: 'year', label: 'Year' }
 	] as const;
@@ -176,7 +182,16 @@
 	$effect(() => {
 		const stored = typeof localStorage !== 'undefined' ? localStorage.getItem(GRID_PREF_KEY) : null;
 		if (stored !== null) grid = stored === '1';
+		else grid = prefs.libraryView === 'list' ? false : true;
 	});
+	const posterCols = $derived(
+		'grid ' +
+			(prefs.posterSize === 'small'
+				? 'grid-cols-2 sm:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8'
+				: prefs.posterSize === 'large'
+					? 'grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
+					: 'grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6')
+	);
 	function toggleGrid(): void {
 		grid = !grid;
 		try {
@@ -207,7 +222,9 @@
 			completionPct: null,
 			qualityProfile: null,
 			posterVersion: null,
-			addedAt: null
+			addedAt: null,
+			upgradeCount: 0,
+			oldestMissingAt: null
 		};
 	}
 
@@ -358,7 +375,7 @@
 
 	<!-- Grid (§6/§9) -->
 	{#if loading && items.length === 0}
-		<div class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+		<div class={posterCols}>
 			{#each Array(12) as _, i (i)}
 				<div class="space-y-2" aria-hidden="true">
 					<div class="aspect-[2/3] animate-pulse rounded-lg bg-surface-2"></div>
@@ -379,10 +396,22 @@
 			description="The library fills in automatically once the inventory poll completes — usually within a minute."
 			neutral
 		/>
+	{:else if total === 0 && filter === 'upgrades'}
+		<EmptyState
+			title="No upgrades available"
+			description="Every series meets its quality profile cutoff."
+			neutral
+		/>
+	{:else if total === 0 && filter === 'incomplete'}
+		<EmptyState
+			title="No incomplete series"
+			description="Every monitored series has all of its released episodes."
+			neutral
+		/>
 	{:else if total === 0}
 		<EmptyState title="No series in this filter" description="Adjust the filters above." neutral />
 	{:else if grid}
-		<ul class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5 xl:grid-cols-6">
+		<ul class={posterCols}>
 			{#each items as series (series.key)}
 				<li>
 					<button
@@ -408,6 +437,9 @@
 								<span class="tnum">{series.completionPct}%</span> complete
 								{#if series.missingCount > 0}
 									· <span class="text-degraded tnum">{series.missingCount} missing</span>
+								{/if}
+								{#if (series.upgradeCount ?? 0) > 0}
+									· <span class="text-text-faint tnum">{series.upgradeCount} upg</span>
 								{/if}
 							</p>
 						{:else}
@@ -464,6 +496,14 @@
 								: 'text-text-faint'}"
 						>
 							{series.missingCount > 0 ? `${series.missingCount} missing` : 'complete'}
+						</span>
+						<span
+							class="tnum w-16 shrink-0 text-right text-[11px] {(series.upgradeCount ?? 0) > 0
+								? 'text-text-muted'
+								: 'text-text-faint'}"
+							title="{series.upgradeCount ?? 0} episodes could be upgraded"
+						>
+							{(series.upgradeCount ?? 0) > 0 ? `${series.upgradeCount} upg` : '—'}
 						</span>
 					</button>
 				</li>

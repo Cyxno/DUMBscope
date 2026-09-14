@@ -81,6 +81,12 @@ let tick = 0;
 let postgresDown = false;
 let sonarrCrashing = false;
 
+// Reliability-rehearsal control: per-process RSS overrides (GB) so an e2e run
+// can walk a memory-anomaly journey (raise → warning → restore → resolve).
+const rssOverrides = new Map();
+// Remediation rehearsal: when true, /api/process/restart-service rejects.
+let restartFails = false;
+
 const FORCE_POSTGRES_DOWN = process.env.MOCK_POSTGRES_DOWN === '1';
 
 function scenarioTick() {
@@ -216,7 +222,7 @@ function metricsSnapshot() {
 			pid: 100 + i,
 			name: s.name,
 			cpu_percent: Math.max(0.1, seed(i)),
-			rss: 134217728 + i * 52428800
+			rss: rssOverrides.has(s.name) ? rssOverrides.get(s.name) : 134217728 + i * 52428800
 		})),
 		external: [],
 		database_health: {
@@ -276,8 +282,84 @@ function processesPayload() {
 // HTTP server
 // ---------------------------------------------------------------------------
 
+// Connectivity-rehearsal control (brief §13/§143): simulate the gateway going
+// away for real — sockets are destroyed, new requests are refused — without
+// killing the process, so an e2e run can exercise reconnect semantics.
+let gatewayDown = false;
+
+function setGateway(down) {
+	if (gatewayDown === down) return;
+	gatewayDown = down;
+	if (down) {
+		for (const client of connections) {
+			try {
+				client.socket.destroy();
+			} catch {
+				/* already gone */
+			}
+		}
+		connections.clear();
+	}
+	console.log(`[mock-dumb] gateway ${down ? 'DOWN' : 'UP'}`);
+}
+
 const server = http.createServer((req, res) => {
 	const url = new URL(req.url, 'http://localhost');
+	if (url.pathname === '/__control/down') {
+		setGateway(true);
+		res.writeHead(200, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ gatewayDown: true }));
+		return;
+	}
+	if (url.pathname === '/__control/up') {
+		setGateway(false);
+		res.writeHead(200, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ gatewayDown: false }));
+		return;
+	}
+	if (url.pathname === '/__control/restart-fail' && req.method === 'POST') {
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			try {
+				const parsed = JSON.parse(body);
+				restartFails = parsed.fail === true;
+				res.writeHead(200, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ ok: true, restartFails }));
+			} catch {
+				res.writeHead(400, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ detail: 'Bad request' }));
+			}
+		});
+		return;
+	}
+	if (url.pathname === '/__control/rss' && req.method === 'POST') {
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			try {
+				const { name, bytes } = JSON.parse(body);
+				if (typeof name !== 'string' || !(bytes === null || typeof bytes === 'number')) {
+					res.writeHead(400, { 'content-type': 'application/json' });
+					res.end(JSON.stringify({ detail: 'name (string) and bytes (number|null) required' }));
+					return;
+				}
+				if (bytes === null) rssOverrides.delete(name);
+				else rssOverrides.set(name, bytes);
+				res.writeHead(200, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ ok: true, name, bytes: bytes ?? null }));
+			} catch {
+				res.writeHead(400, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ detail: 'Bad request' }));
+			}
+		});
+		return;
+	}
+	if (gatewayDown) {
+		// Behave like a host that vanished: tear the TCP connection down.
+		req.socket.destroy();
+		return;
+	}
 	const respond = (code, payload) => {
 		res.writeHead(code, { 'content-type': 'application/json' });
 		res.end(JSON.stringify(payload));
@@ -349,6 +431,23 @@ const server = http.createServer((req, res) => {
 		return;
 	}
 
+	if (url.pathname === '/api/process/restart-service' && req.method === 'POST') {
+		if (!claims && !wsAuth) return respond(401, { detail: 'Authentication required' });
+		if (restartFails) return respond(500, { detail: 'simulated restart failure' });
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			try {
+				const parsed = JSON.parse(body || '{}');
+				console.log('[mock-dumb] restart-service accepted:', parsed.process_name);
+				res.writeHead(200, { 'content-type': 'application/json' });
+				res.end(JSON.stringify({ status: 'accepted', process_name: parsed.process_name ?? null }));
+			} catch {
+				respond(400, { detail: 'Bad request' });
+			}
+		});
+		return;
+	}
 	if (!AUTH_ENABLED || claims || wsAuth) {
 		switch (url.pathname) {
 			case '/api/process/processes':
@@ -397,6 +496,10 @@ const server = http.createServer((req, res) => {
 const connections = new Set();
 
 server.on('upgrade', (req, socket) => {
+	if (gatewayDown) {
+		socket.destroy();
+		return;
+	}
 	const url = new URL(req.url, 'http://localhost');
 	const token = url.searchParams.get('token');
 	const claims = verify(token ?? '');

@@ -65,7 +65,19 @@ export interface TvLibrary extends LibraryTotals {
 	seriesTotal: number;
 	seriesMonitored: number;
 	/** Per-series missing aggregates for the ranked list (bounded). */
-	series: { id: number; title: string; missing: number; ended: boolean | null }[];
+	series: {
+		id: number;
+		title: string;
+		missing: number;
+		ended: boolean | null;
+		/** Epoch ms of the oldest released missing episode, when known. */
+		oldestMissingAt: number | null;
+	}[];
+	/**
+	 * Per-series cutoff-unmet counts (bounded, brief §20/§47): exact from the
+	 * Sonarr wanted/cutoff list — the TV upgrade browser's data source.
+	 */
+	seriesUpgrades: { id: number; count: number }[];
 }
 
 export interface MoviesLibrary extends LibraryTotals {

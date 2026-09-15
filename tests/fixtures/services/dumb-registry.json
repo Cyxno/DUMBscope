@@ -1,0 +1,244 @@
+{
+	"_comment": [
+		"Realistic DUMB process-registry shapes for catalog contract tests.",
+		"Derived from a live DUMB installation (v2.22.x) plus synthetic",
+		"multi-instance and disabled variants. Names/keys only — no hosts,",
+		"no credentials, no library data."
+	],
+	"services": [
+		{
+			"config_key": "dumb_api_service",
+			"name": "dumb api_service",
+			"process_name": "DUMB API",
+			"enabled": true
+		},
+		{
+			"config_key": "dumb_frontend",
+			"name": "dumb frontend",
+			"process_name": "DUMB Frontend",
+			"enabled": true
+		},
+		{
+			"config_key": "traefik",
+			"name": "traefik",
+			"process_name": "Traefik",
+			"enabled": false
+		},
+		{
+			"config_key": "traefik_proxy_admin",
+			"name": "traefik_proxy_admin",
+			"process_name": "Traefik Proxy Admin",
+			"enabled": false
+		},
+		{
+			"config_key": "authelia",
+			"name": "authelia",
+			"process_name": "Authelia",
+			"enabled": false
+		},
+		{
+			"config_key": "cloudflared",
+			"name": "cloudflared",
+			"process_name": "Cloudflared",
+			"enabled": false
+		},
+		{
+			"config_key": "cli_debrid",
+			"name": "cli_debrid",
+			"process_name": "CLI Debrid",
+			"enabled": false
+		},
+		{
+			"config_key": "cli_battery",
+			"name": "cli_battery",
+			"process_name": "CLI Battery",
+			"enabled": false
+		},
+		{
+			"config_key": "decypharr",
+			"name": "decypharr",
+			"process_name": "Decypharr",
+			"enabled": true
+		},
+		{
+			"config_key": "infinidysk",
+			"name": "infinidysk",
+			"process_name": "InfiniDysk",
+			"enabled": true
+		},
+		{
+			"config_key": "emby",
+			"name": "emby",
+			"process_name": "Emby Media Server",
+			"enabled": false
+		},
+		{
+			"config_key": "jellyfin",
+			"name": "jellyfin",
+			"process_name": "Jellyfin Media Server",
+			"enabled": false
+		},
+		{
+			"config_key": "lidarr",
+			"name": "lidarr instances Default",
+			"process_name": "Lidarr",
+			"enabled": false
+		},
+		{
+			"config_key": "phalanx_db",
+			"name": "phalanx_db",
+			"process_name": "Phalanx DB",
+			"enabled": false
+		},
+		{
+			"config_key": "plex",
+			"name": "plex",
+			"process_name": "Plex Media Server",
+			"enabled": true
+		},
+		{
+			"config_key": "tautulli",
+			"name": "tautulli",
+			"process_name": "Tautulli",
+			"enabled": true
+		},
+		{
+			"config_key": "bazarr",
+			"name": "bazarr",
+			"process_name": "Bazarr",
+			"enabled": true
+		},
+		{
+			"config_key": "pulsarr",
+			"name": "pulsarr",
+			"process_name": "Pulsarr",
+			"enabled": false
+		},
+		{
+			"config_key": "maintainerr",
+			"name": "maintainerr",
+			"process_name": "Maintainerr",
+			"enabled": false
+		},
+		{
+			"config_key": "aiostreams",
+			"name": "aiostreams",
+			"process_name": "AIOStreams",
+			"enabled": false
+		},
+		{
+			"config_key": "mediastorm",
+			"name": "mediastorm",
+			"process_name": "mediastorm",
+			"enabled": false
+		},
+		{
+			"config_key": "altmount",
+			"name": "altmount",
+			"process_name": "AltMount",
+			"enabled": false
+		},
+		{
+			"config_key": "neutarr",
+			"name": "neutarr instances Default",
+			"process_name": "NeutArr",
+			"enabled": false
+		},
+		{
+			"config_key": "profilarr",
+			"name": "profilarr instances Default",
+			"process_name": "Profilarr",
+			"enabled": false
+		},
+		{
+			"config_key": "seerr",
+			"name": "seerr instances Default",
+			"process_name": "Seerr",
+			"enabled": true
+		},
+		{
+			"config_key": "postgres",
+			"name": "postgres",
+			"process_name": "PostgreSQL",
+			"enabled": false
+		},
+		{
+			"config_key": "pgadmin",
+			"name": "pgadmin",
+			"process_name": "pgAdmin4",
+			"enabled": false
+		},
+		{
+			"config_key": "prowlarr",
+			"name": "prowlarr instances Default",
+			"process_name": "Prowlarr",
+			"enabled": true
+		},
+		{
+			"config_key": "rclone",
+			"name": "rclone instances RealDebrid",
+			"process_name": "rclone w/ RealDebrid",
+			"enabled": false
+		},
+		{
+			"config_key": "riven_backend",
+			"name": "riven_backend",
+			"process_name": "Riven Backend",
+			"enabled": false
+		},
+		{
+			"config_key": "riven_frontend",
+			"name": "riven_frontend",
+			"process_name": "Riven Frontend",
+			"enabled": false
+		},
+		{
+			"config_key": "radarr",
+			"name": "radarr instances Default",
+			"process_name": "Radarr",
+			"enabled": true
+		},
+		{
+			"config_key": "sonarr",
+			"name": "sonarr instances Default",
+			"process_name": "Sonarr",
+			"enabled": true
+		},
+		{
+			"config_key": "whisparr",
+			"name": "whisparr instances Default",
+			"process_name": "Whisparr",
+			"enabled": false
+		},
+		{
+			"config_key": "zilean",
+			"name": "zilean",
+			"process_name": "Zilean",
+			"enabled": false
+		},
+		{
+			"config_key": "zurg",
+			"name": "zurg instances RealDebrid",
+			"process_name": "Zurg w/ RealDebrid",
+			"enabled": false
+		},
+		{
+			"config_key": "sonarr instances Anime",
+			"name": "sonarr instances Anime",
+			"process_name": "Sonarr Anime",
+			"enabled": true
+		},
+		{
+			"config_key": "radarr instances 4K",
+			"name": "radarr instances 4K",
+			"process_name": "Radarr 4K",
+			"enabled": false
+		},
+		{
+			"config_key": "seerr_sync",
+			"name": "seerr_sync",
+			"process_name": "Seerr Sync",
+			"enabled": false
+		}
+	]
+}

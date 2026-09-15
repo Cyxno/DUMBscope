@@ -27,7 +27,15 @@
 		ArrowDownUp,
 		Bell,
 		HardDriveDownload,
-		Download
+		Download,
+		Shuffle,
+		BatteryCharging,
+		CloudCog,
+		Lock,
+		Gauge,
+		DatabaseZap,
+		Wrench,
+		ListChecks
 	} from '@lucide/svelte';
 	import type { Component } from 'svelte';
 	import type { DiscoveredService } from '$lib/types';
@@ -58,6 +66,7 @@
 		jellyfin: MonitorPlay,
 		emby: MonitorPlay,
 		seerr: Ticket,
+		'seerr-sync': Ticket,
 		pulsarr: Bell,
 		tautulli: Activity,
 		kometa: Sparkles,
@@ -66,7 +75,17 @@
 		profilarr: SlidersHorizontal,
 		zilean: Radar,
 		'cli-debrid': Terminal,
+		'cli-battery': BatteryCharging,
 		symlink: Link2,
+		maintainerr: Wrench,
+		aiostreams: ListChecks,
+		mediastorm: Shuffle,
+		'traefik-proxy-admin': Gauge,
+		traefik: ArrowDownUp,
+		authelia: Lock,
+		cloudflared: CloudCog,
+		pgadmin: DatabaseZap,
+		'phalanx-db': DatabaseZap,
 		generic: Box
 	};
 

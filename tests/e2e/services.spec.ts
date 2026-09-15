@@ -60,3 +60,20 @@ test('drawer CTA: monitoring copy links to Settings', async ({ page }) => {
 	const cta = dialog.getByRole('link', { name: /Configure in Settings/ });
 	await expect(cta).toHaveAttribute('href', '/settings');
 });
+
+test('compatibility audit: unique rendering, stages and honest states (§23)', async ({ page }) => {
+	await page.goto('/services');
+	// Every managed service renders exactly once — no duplicates anywhere.
+	const body = page.locator('body');
+	for (const name of MANAGED) {
+		await expect(body.getByRole('button', { name: new RegExp(`^${name}:`) })).toHaveCount(1);
+	}
+
+	// Pipeline renders known services by their canonical names (labels may
+	// truncate long ones) and never leaks raw registry keys.
+	await page.goto('/pipeline');
+	for (const short of ['Sonarr', 'Radarr', 'Prowlarr', 'Seerr', 'InfiniDysk']) {
+		await expect(page.getByText(short).first()).toBeVisible({ timeout: 20_000 });
+	}
+	await expect(page.getByText(/dumb_api_service/)).toHaveCount(0);
+});

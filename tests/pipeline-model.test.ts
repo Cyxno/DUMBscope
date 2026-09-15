@@ -55,8 +55,8 @@ describe('pipeline stage mapping', () => {
 			node({ key: 'dumb_frontend', name: 'dumb frontend', category: 'core' }),
 			node({ key: 'postgres', name: 'PostgreSQL 16', category: 'database' }),
 			node({
-				key: 'traefik',
-				name: 'traefik',
+				key: 'unknown-helper',
+				name: 'unknown-helper',
 				category: 'auxiliary',
 				known: false,
 				runState: 'unknown',
@@ -67,7 +67,7 @@ describe('pipeline stage mapping', () => {
 		expect(model.stages.map((s) => s.id)).toEqual(['media']);
 		expect(model.infrastructure.map((s) => s.key)).toContain('dumb_frontend');
 		expect(model.infrastructure.map((s) => s.key)).toContain('postgres');
-		expect(model.infrastructure.map((s) => s.key)).toContain('traefik');
+		expect(model.infrastructure.map((s) => s.key)).toContain('unknown-helper');
 	});
 
 	it('keeps running unknown-category services in supporting', () => {
@@ -80,8 +80,8 @@ describe('pipeline stage mapping', () => {
 	it('moves never-reported unmanaged entries out of supporting into infrastructure', () => {
 		const model = build([
 			node({
-				key: 'cli_battery',
-				name: 'cli_battery',
+				key: 'totally-unknown-helper',
+				name: 'totally-unknown-helper',
 				category: 'auxiliary',
 				known: false,
 				runState: 'unknown',
@@ -89,7 +89,24 @@ describe('pipeline stage mapping', () => {
 			})
 		]);
 		expect(model.supporting).toBeNull();
-		expect(model.infrastructure.map((s) => s.key)).toEqual(['cli_battery']);
+		expect(model.infrastructure.map((s) => s.key)).toEqual(['totally-unknown-helper']);
+	});
+
+	it('catalog-known never-reported services stay listed as not running (compat audit)', () => {
+		// v0.6.0 catalog audit: recognised services (traefik, cli_battery) are
+		// never invisible infra noise — they surface as configured-not-running.
+		const model = build([
+			node({
+				key: 'traefik',
+				name: 'traefik',
+				category: 'auxiliary',
+				known: true,
+				runState: 'unknown',
+				health: 'unknown'
+			})
+		]);
+		const notRunning = (model.supporting?.notRunning ?? []).map((s) => s.key);
+		expect(notRunning).toEqual(['traefik']);
 	});
 
 	it('omits empty stages from the flow', () => {

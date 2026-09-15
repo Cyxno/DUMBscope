@@ -221,6 +221,16 @@ export const CATALOG: CatalogEntry[] = [
 		dependsOnCategory: ['mount', 'bridge', 'storage']
 	},
 
+	// Seerr Sync must precede the generic Seerr entry: its name contains
+	// "seerr" and would otherwise be labelled as Jellyseerr/Overseerr.
+	{
+		id: 'seerr-sync',
+		match: /seerr[\s_-]?sync/i,
+		displayName: 'Seerr Sync',
+		category: 'request',
+		descriptor: 'Request sync helper',
+		dependsOnCategory: ['request']
+	},
 	{
 		id: 'seerr',
 		match: /(jelly|over)?seerr/i,
@@ -296,6 +306,82 @@ export const CATALOG: CatalogEntry[] = [
 		dependsOnCategory: ['bridge', 'mount']
 	},
 	{
+		id: 'cli-battery',
+		match: /cli ?battery/i,
+		displayName: 'CLI Battery',
+		category: 'bridge',
+		descriptor: 'CLI Debrid companion',
+		dependsOn: ['cli-debrid']
+	},
+	{
+		id: 'maintainerr',
+		match: /maintainerr/i,
+		displayName: 'Maintainerr',
+		category: 'analytics',
+		descriptor: 'Library maintenance',
+		dependsOnCategory: ['media-server']
+	},
+	{
+		id: 'aiostreams',
+		match: /aiostreams/i,
+		displayName: 'AIOStreams',
+		category: 'discovery',
+		descriptor: 'Streaming addon',
+		dependsOnCategory: ['debrid']
+	},
+	{
+		id: 'mediastorm',
+		match: /mediastorm/i,
+		displayName: 'MediaStorm',
+		category: 'discovery',
+		descriptor: 'Debrid discovery',
+		dependsOnCategory: ['debrid']
+	},
+
+	// Network/auth infrastructure DUMB can manage.
+	{
+		id: 'traefik-proxy-admin',
+		match: /traefik[\s_-]?proxy[\s_-]?admin/i,
+		displayName: 'Traefik Proxy Admin',
+		category: 'auxiliary',
+		descriptor: 'Proxy admin UI'
+	},
+	{
+		id: 'traefik',
+		match: /^traefik/i,
+		displayName: 'Traefik',
+		category: 'auxiliary',
+		descriptor: 'Reverse proxy'
+	},
+	{
+		id: 'authelia',
+		match: /authelia/i,
+		displayName: 'Authelia',
+		category: 'auxiliary',
+		descriptor: 'Authentication'
+	},
+	{
+		id: 'cloudflared',
+		match: /cloudflared/i,
+		displayName: 'Cloudflared',
+		category: 'auxiliary',
+		descriptor: 'Cloudflare tunnel'
+	},
+	{
+		id: 'pgadmin',
+		match: /pgadmin/i,
+		displayName: 'pgAdmin',
+		category: 'database',
+		descriptor: 'Database admin UI'
+	},
+	{
+		id: 'phalanx-db',
+		match: /phalanx[\s_-]?db/i,
+		displayName: 'Phalanx DB',
+		category: 'database',
+		descriptor: 'Phalanx database'
+	},
+	{
 		id: 'symlink',
 		match: /symlink/i,
 		displayName: 'Symlink Manager',
@@ -321,8 +407,15 @@ export const INTEGRATION_CAPABLE_IDS = new Set([
 
 /** Find catalog metadata for a DUMB service name/key. */
 export function matchCatalog(name: string, key: string): CatalogEntry | null {
+	// DUMB registry names/keys mix spaces, underscores and dashes
+	// ("CLI Debrid", "cli_debrid"); match on a normalized form so separator
+	// style can never drop a service into the generic fallback.
+	const normalize = (value: string | null | undefined) => (value ?? '').replace(/[_-]+/g, ' ');
+	const candidates = [normalize(name), normalize(key)];
 	for (const entry of CATALOG) {
-		if (entry.match.test(name) || entry.match.test(key)) return entry;
+		for (const candidate of candidates) {
+			if (entry.match.test(candidate)) return entry;
+		}
 	}
 	return null;
 }

@@ -18,6 +18,8 @@
 	import Logo from './Logo.svelte';
 	import ConnectionIndicator from './ConnectionIndicator.svelte';
 	import CommandPalette from './CommandPalette.svelte';
+	import { getNavigationSections, NAV_ITEMS, type NavItemDef } from '$lib/utils/navigation';
+
 	import { prefs, updatePreference } from '$lib/stores/prefs.svelte';
 	import type { Snippet } from 'svelte';
 
@@ -56,63 +58,47 @@
 		mobileNavOpen = false;
 	});
 
-	const NAV = [
-		{
-			group: 'Monitor',
-			items: [
-				{ href: '/', label: 'Overview', icon: House },
-				{ href: '/pipeline', label: 'Pipeline', icon: Workflow },
-				{ href: '/services', label: 'Services', icon: Boxes },
-				{ href: '/library', label: 'Library', icon: Library }
-			]
-		},
-		{
-			group: 'Operate',
-			items: [
-				{ href: '/incidents', label: 'Incidents', icon: Siren },
-				{ href: '/logs', label: 'Logs', icon: ScrollText },
-				{ href: '/activity', label: 'Activity', icon: History },
-				{ href: '/system', label: 'System', icon: Activity }
-			]
-		},
-		{ group: '', items: [{ href: '/settings', label: 'Settings', icon: Settings }] }
-	];
+	// Canonical nav (href/label/section) lives in $lib/utils/navigation — the
+	// single source of truth shared with preferences validation and the
+	// settings editor. Only the icons are view concerns.
+	const NAV_ICONS: Record<string, typeof House> = {
+		'/': House,
+		'/pipeline': Workflow,
+		'/services': Boxes,
+		'/library': Library,
+		'/incidents': Siren,
+		'/logs': ScrollText,
+		'/activity': History,
+		'/system': Activity,
+		'/settings': Settings
+	};
 
 	const currentPath = $derived(page.url.pathname);
 	function isActive(href: string): boolean {
 		return href === '/' ? currentPath === '/' : currentPath.startsWith(href);
 	}
 
-	/** Ordered, visibility-filtered nav (brief §21-§23); Settings stays. */
-	const NAV_SECTIONS = $derived.by(() => {
-		const order = prefs.navOrder.length > 0 ? prefs.navOrder : ['/'];
-		const hidden = new Set(prefs.navHidden);
-		const byHref = new Map(
-			NAV.flatMap((section) =>
-				section.items.map((item) => [item.href, { item, group: section.group }])
-			)
-		);
-		const monitor = order
-			.map((href) => byHref.get(href))
-			.filter(
-				(entry): entry is { item: (typeof NAV)[0]['items'][0]; group: string } =>
-					Boolean(entry) && !hidden.has(entry!.item.href)
-			)
-			.map((entry) => entry!.item);
-		const operateOrder = ['/incidents', '/logs', '/activity', '/system'];
-		const operate = operateOrder
-			.filter((href) => !hidden.has(href))
-			.map((href) => byHref.get(href))
-			.filter((entry): entry is { item: (typeof NAV)[0]['items'][0]; group: string } =>
-				Boolean(entry)
-			)
-			.map((entry) => entry!.item);
-		const sections: { group: string; items: (typeof NAV)[0]['items'] }[] = [];
-		if (monitor.length > 0) sections.push({ group: 'Monitor', items: monitor });
-		if (operate.length > 0) sections.push({ group: 'Operate', items: operate });
-		sections.push({ group: '', items: [{ href: '/settings', label: 'Settings', icon: Settings }] });
-		return sections;
-	});
+	/**
+	 * Ordered, visibility-filtered nav sections. Section membership comes from
+	 * the canonical config — preferences may only reorder within a section and
+	 * hide items, so every visible route renders exactly once (v0.5.1 fix:
+	 * the Monitor section used to render the full ordered list).
+	 */
+	type SidebarItem = NavItemDef & { icon: typeof House };
+	const NAV_SECTIONS = $derived.by(() =>
+		getNavigationSections(prefs.navOrder, prefs.navHidden).map((section) => ({
+			group: section.group,
+			items: section.items.map((item): SidebarItem => ({
+				...item,
+				icon: NAV_ICONS[item.href] ?? House
+			}))
+		}))
+	);
+
+	const pageTitle = $derived(
+		NAV_ITEMS.find((item) => isActive(item.href))?.label ??
+			(isActive('/settings') ? 'Settings' : '')
+	);
 </script>
 
 <div class="flex h-dvh overflow-hidden bg-bg">
@@ -258,9 +244,7 @@
 			</button>
 
 			<h1 class="min-w-0 truncate text-sm font-semibold tracking-tight text-text-primary">
-				{#each NAV.flatMap((s) => s.items) as item (item.href)}
-					{#if isActive(item.href)}{item.label}{/if}
-				{/each}
+				{pageTitle}
 			</h1>
 
 			<div class="ml-auto flex items-center gap-2.5">

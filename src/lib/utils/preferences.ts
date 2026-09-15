@@ -74,16 +74,9 @@ export const PREFERENCES_KEY = 'dumbscope.prefs.v1';
 export const PREFERENCES_VERSION = 1;
 
 /** Canonical nav item ids (AppShell consumes these). */
-export const NAV_IDS = [
-	'/',
-	'/pipeline',
-	'/services',
-	'/library',
-	'/incidents',
-	'/logs',
-	'/activity',
-	'/system'
-] as const;
+import { NAV_IDS, normalizeNavOrder } from './navigation';
+
+export { NAV_IDS };
 
 export const LANDING_OPTIONS: { value: LandingPage; label: string }[] = [
 	{ value: '/', label: 'Overview' },
@@ -246,10 +239,8 @@ function coerce(raw: unknown, defaults: Preferences): Preferences {
 	out.navHidden = out.navHidden.filter(
 		(id) => id !== '/settings' && (NAV_IDS as readonly string[]).includes(id)
 	);
-	out.navOrder = [
-		...out.navOrder.filter((id) => (NAV_IDS as readonly string[]).includes(id)),
-		...NAV_IDS.filter((id) => !out.navOrder.includes(id))
-	];
+	// Drop unknown ids, dedupe repeats, append never-mentioned canonical ids.
+	out.navOrder = normalizeNavOrder(out.navOrder);
 	out.dashboardHidden = out.dashboardHidden.filter((id) =>
 		(DASHBOARD_WIDGETS as readonly string[]).includes(id)
 	);

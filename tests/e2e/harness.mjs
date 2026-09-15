@@ -266,6 +266,11 @@ try {
 		await waitFor(`http://127.0.0.1:${port}${statusPath}`);
 	}
 
+	start('mock-notifications', process.execPath, ['tests/mock-notifications/server.mjs'], {
+		MOCK_NOTIF_PORT: '4214'
+	});
+	await waitFor('http://127.0.0.1:4214/health');
+
 	start('app', process.execPath, ['build/index.js'], {
 		PORT: String(APP_PORT),
 		HOST: '127.0.0.1',

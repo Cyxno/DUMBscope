@@ -1,5 +1,6 @@
 <script lang="ts">
 	import Card from '$lib/components/Card.svelte';
+	import NotificationsSettings from '$lib/components/NotificationsSettings.svelte';
 	import IntegrationsCard from '$lib/components/IntegrationsCard.svelte';
 	import Logo from '$lib/components/Logo.svelte';
 	import { live } from '$lib/stores/live.svelte';
@@ -27,6 +28,7 @@
 		{ id: 'navigation', label: 'Navigation' },
 		{ id: 'library', label: 'Library' },
 		{ id: 'reliability', label: 'Reliability' },
+		{ id: 'notifications', label: 'Notifications' },
 		{ id: 'display', label: 'Data display' },
 		{ id: 'accessibility', label: 'Accessibility' },
 		{ id: 'integrations', label: 'Integrations' },
@@ -1071,7 +1073,9 @@
 		<IntegrationsCard />
 	{/if}
 
-	{#if section === 'about'}
+	{#if section === 'notifications'}
+		<NotificationsSettings />
+	{:else if section === 'about'}
 		<Card title="Diagnostics">
 			<div class="space-y-3 text-xs">
 				<dl class="grid grid-cols-2 gap-x-6 gap-y-1.5">

@@ -803,6 +803,9 @@ export class IncidentEngine {
 							: `De-escalated from ${previous} to warning`
 				});
 				this.trim(existing);
+				// Severity changes are meaningful to consumers (notifications
+				// escalate on them): emit so SSE fan-out and hooks see it.
+				this.events.onIncidentChange?.(existing, 'updated');
 			}
 			existing.lastSeen = now;
 			incidentRepository.update(existing);

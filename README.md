@@ -4,13 +4,18 @@
 
 # DUMBscope
 
-**Observe your entire DUMB media stack.**
+**Observability, library intelligence and reliability tooling for DUMB.**
 
-A self-hosted control center for DUMB (Distributed Unlimited Media Bridge):
-realtime service health, dependency topology, correlated incidents, live logs
-and system metrics — in one calm, dark interface.
+Monitor every service DUMB manages, understand your media pipeline,
+troubleshoot with correlated incidents and logs, browse your library, and
+recover safely — from one calm, dark dashboard.
 
-One container. One `/config`. No Docker socket. No external database. No telemetry.
+One container · One `/config` · No Docker socket · No external database · No telemetry
+
+[![Latest release](https://img.shields.io/github/v/tag/Cyxno/DUMBscope?sort=semver&label=release)](https://github.com/Cyxno/DUMBscope/releases)
+[![CI](https://github.com/Cyxno/DUMBscope/actions/workflows/ci.yml/badge.svg)](https://github.com/Cyxno/DUMBscope/actions/workflows/ci.yml)
+[![GHCR](https://img.shields.io/badge/image-ghcr.io%2Fcyxno%2Fdumbscope-blue)](https://github.com/Cyxno/DUMBscope/pkgs/container/dumbscope)
+[![License](https://img.shields.io/github/license/Cyxno/DUMBscope)](LICENSE)
 
 </div>
 
@@ -18,99 +23,153 @@ One container. One `/config`. No Docker socket. No external database. No telemet
 
 ## What is DUMBscope?
 
-DUMBscope answers, at a glance:
+DUMBscope connects to the published **DUMB gateway on port 3005** (REST +
+WebSockets), mirrors what DUMB reports into a normalized, correlated view, and
+adds an incident engine with fingerprints, deduplication, dependency-aware
+root-cause analysis — plus a read-only library browser that talks to Sonarr,
+Radarr and Bazarr directly.
 
-- Is my DUMB stack healthy?
-- Which service is degraded or unhealthy — and **why**?
-- Which other services are affected (root-cause correlation)?
-- What is happening right now (realtime status, metrics, logs)?
-- What happened around a past incident?
+It answers, at a glance:
 
-It connects to the published **DUMB gateway on port 3005** (REST + WebSockets),
-mirrors what DUMB reports into a normalized, correlated view, and adds an
-incident engine with fingerprints, deduplication and dependency-aware root-cause
-analysis. It is a companion to DUMB — not a replacement for its configuration
-UI, and strictly read-only towards your stack in v0.1.
+- Is my DUMB stack healthy — and which service is degraded, and **why**?
+- What does my media pipeline look like right now?
+- What is in my library, what is missing, what can be upgraded?
+- What happened around a past incident, and did it recover?
+
+DUMBscope is a companion to DUMB, not a replacement for its configuration UI.
+Towards your stack it is **read-only by default**; the single write action is
+an explicit, confirmed restart through DUMB's own management route.
 
 ## Screenshots
 
-See [docs/screenshots](docs/) (added in the release notes) for the overview,
-pipeline, incidents, logs and mobile views.
+All screenshots use fictional mock data.
+
+| Overview                                            | Pipeline                                                           |
+| --------------------------------------------------- | ------------------------------------------------------------------ |
+| ![Overview](docs/screenshots/overview-1920.png)     | ![Pipeline](docs/screenshots/pipeline-1920.png)                    |
+| **Library — TV**                                    | **Notifications**                                                  |
+| ![Library TV](docs/screenshots/library-tv-1920.png) | ![Notifications](docs/screenshots/settings-notifications-1920.png) |
+
+More in [docs/screenshots](docs/screenshots) (services, incidents, activity,
+logs, system, movies, subtitles, mobile).
 
 ## Features
 
-- **Overview** — stack health headline, live media-pipeline topology, bento
-  cards (health, resources, incidents, resource history).
-- **Pipeline** — automatic dependency graph of _your_ stack: requests →
-  managers → indexers → debrid/bridge → mount → media server. Unknown services
-  appear as generic nodes; nothing is hardcoded to one layout.
-- **Services** — auto-discovered from DUMB; health, run state, CPU/RAM,
-  restart statistics, drawer with details; card & compact list views, instant
-  search and filters.
+- **Overview** — stack-health headline, stage-chip pipeline summary, library
+  intelligence, reliability status, resource usage and history.
+- **Pipeline** — the dependency graph of _your_ stack, grouped by stage
+  (requests → managers → indexers → debrid/bridge → mount → media server).
+  Unknown services appear as generic nodes; nothing is hardcoded to one layout.
+- **Services** — auto-discovered from DUMB: health, run state, CPU/RAM,
+  restart statistics, deep-dive drawer, card & compact views, search.
+- **Library** — unified read-only browser: Sonarr TV, Radarr movies, Bazarr
+  subtitles; missing/upgrades/queue intelligence; per-item drawers (seasons,
+  episodes, quality, subtitle coverage); media-flow correlation
+  (grab → download → import → library).
 - **Incidents** — sustained-failure detection with grace periods and
   hysteresis (no flapping), fingerprint-based deduplication with occurrence
   counts, dependency correlation ("root cause: PostgreSQL"), timeline,
-  evidence, one-click log context.
-- **Logs** — realtime stream from all DUMB services, level/service filters,
-  search, pause/resume, autoscroll, copy, incident deep-links, capped ring
-  buffers server- and client-side. DUMB's log redaction is preserved.
-- **System** — CPU/memory/disk/network streamed from DUMB, short-range live
-  ring plus DUMB's own history series (1h/6h/24h), per-process metrics,
-  database health observations.
-- **Activity** — an append-only feed of observed facts (health transitions,
-  restarts, connection changes). Nothing invented.
-- **Command palette** (⌘/Ctrl+K), collapsible sidebar, three themes (dark,
-  OLED, light), four accents, responsive mobile layout.
-- **Security** — setup-code first run (code printed to the container log),
-  admin accounts (scrypt), server-side sessions, encrypted DUMB credentials at
-  rest (AES-256-GCM), CSP and hardening headers, rate limiting, same-origin
-  checks. See [SECURITY.md](SECURITY.md).
+  evidence, log context.
+- **Logs** — realtime stream from all DUMB services: level/service filters,
+  search, pause/resume, incident deep-links, capped ring buffers.
+- **System** — CPU/memory/disk/network from DUMB, per-process metrics,
+  database-health observations; mount/symlink health and memory-anomaly
+  findings under Reliability.
+- **Notifications** — forward findings and recoveries to Discord, Telegram
+  and the browser, with rules, filters, dedupe, quiet hours, rate caps and a
+  30-day history.
+- **Activity** — an append-only feed of observed facts. Nothing invented.
+- **Customization** — themes (dark, OLED, light, system), accents, density,
+  sidebar modes, dashboard presets, library preferences, landing page — per
+  browser, applied live.
+- **Command palette** (⌘/Ctrl+K) and a responsive mobile layout.
 
-## Architecture
+## Compatibility
 
-One SvelteKit (Node, adapter-node) process holds a single server-side
-connection to DUMB and fans out to browsers via SSE:
+DUMBscope renders **every service DUMB's process registry reports**. Known
+services get their canonical name, icon, category and pipeline stage; anything
+unknown falls back to honest generic monitoring. A running process without a
+health report is shown as **Running (unverified)** — never as healthy.
 
-```
-Browser ──SSE──► DUMBscope (hub: normalize · correlate · cache · incidents)
-                     │ REST + 3× WebSocket (Bearer JWT, server-side only)
-                     ▼
-              DUMB gateway :3005
-```
+Compact matrix (full table with per-service support levels and evidence in
+[docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)):
 
-Details in [docs/architecture.md](docs/architecture.md) and
-[docs/adr.md](docs/adr.md); design tokens in
-[docs/design-system.md](docs/design-system.md).
+| Service                                                                                                     | Monitoring                   | Deep integration                        | Verified        |
+| ----------------------------------------------------------------------------------------------------------- | ---------------------------- | --------------------------------------- | --------------- |
+| DUMB Frontend / DUMB API                                                                                    | Full                         | —                                       | Real tested     |
+| Sonarr · Radarr · Bazarr                                                                                    | Full                         | Library browsers, subtitles, media flow | Real tested     |
+| Prowlarr · Plex · Seerr · Tautulli                                                                          | Full + deep health poller    | —                                       | Real tested     |
+| Decypharr · InfiniDysk                                                                                      | Full + mount/memory findings | —                                       | Real tested     |
+| Jellyfin · Emby · Lidarr · Whisparr · AltMount · CLI Debrid · Zurg · rclone · Traefik · Authelia · and more | Full generic monitoring      | Not yet implemented                     | Contract tested |
 
-### Supported DUMB capabilities
+Multi-instance services (Sonarr Default + "Sonarr Anime", Radarr 4K, …) are
+rendered per instance with a qualifier and never collide. Deep integration
+means a native adapter with API/domain data exists today — everything else is
+reported honestly as basic monitoring rather than claimed.
 
-DUMBscope feature-detects everything through `GET /process/capabilities` and
-degrades gracefully: missing metrics history, missing startup lifecycle or
-missing database-health support disables the relevant UI path instead of
-breaking the dashboard. Any DUMB-managed service is monitored generically the
-moment it appears.
+## Reliability
 
-## Installation (Unraid)
+- **Honest DUMB connectivity** — one derived state machine: amber states
+  (starting/connecting/reconnecting/degraded/stale) never page you, proven
+  outages open a critical incident, recovery is automatic.
+- **Mount & symlink health** — read-only stat probes and bounded symlink
+  sampling for your debrid mounts and symlink roots; findings require
+  sustained evidence and recover with hysteresis.
+- **Memory anomaly detection** — rolling-median baselines per process;
+  warnings need absolute AND relative evidence, recovery must be sustained.
+- **Media-flow correlation** — repeated acquisition requests, download/state
+  mismatches and failing imports surface as findings in the same incident
+  model.
+- **Safe remediation** — exactly one action: `restart-managed-service` via
+  DUMB's own management route, guarded by explicit confirmation, cooldowns,
+  attempt caps and verification.
 
-1. Add the container from the template (`unraid/dumbscope.xml`) or run it
-   directly:
+## Library
 
-```bash
-docker run -d \
-  --name dumbscope \
-  --restart unless-stopped \
-  -p 8091:8091 \
-  -e PUID=99 -e PGID=100 -e UMASK=022 \
-  -v /mnt/user/appdata/dumbscope:/config \
-  ghcr.io/cyxno/dumbscope:latest
-```
+- **Sonarr TV browser** — series grid with search, filters (incomplete,
+  upgrades, monitored, …), sorting and pagination; season/episode drawer with
+  quality and subtitle chips.
+- **Radarr movies** — movie grid with quality distribution, missing and
+  upgrade views, per-movie drawer.
+- **Bazarr subtitles** — language profiles, configured languages, movie and
+  episode gap lists with drill-down.
+- **Queue & backlog intelligence** — download queue with issue flags, missing
+  backlogs by age bucket, upgrade counts — every count deep-links into the
+  filtered browser.
+- **Media flow** — per-title acquisition trail across Sonarr/Radarr, the
+  acquisition path and storage, with repeated-request and state-mismatch
+  findings.
 
-2. Open `http://HOST:8091`.
-3. Copy the **setup code** from the container log (`docker logs dumbscope`).
-4. Follow the wizard: DUMB URL (e.g. `http://192.168.1.100:3005`) → test →
-   DUMB credentials (if enabled) → create your admin account.
+## Notifications
 
-### Docker Compose
+- **Destinations**: Discord (rich embeds), Telegram (compact messages,
+  optional self-hosted Bot API), and in-app browser notifications — desktop
+  notifications only after you explicitly grant permission, click-through
+  opens the relevant page.
+- **Rules**: presets — Critical only, Warnings + Critical, Operations,
+  Everything, Custom — with severity, category (connectivity, mount, memory,
+  media-state, service, storage, incident), service-allowlist and event
+  filters (`opened`, `escalated`, `resolved`, `reopened`).
+- **Dedupe & cooldown**: first open notifies; repeats suppress; severity
+  increases escalate; resolutions optionally notify; reopens after cooldown
+  notify (inside cooldown they suppress).
+- **Quiet hours** per rule (start/end/timezone, midnight-crossing windows):
+  critical always delivers, warnings defer by default, attention/info defer or
+  suppress.
+- **Bounded delivery**: per-destination rate cap, retry with exponential
+  backoff only on transient errors, hard attempt cap, no infinite retry.
+- **History**: 30 days of every decision — sent, suppressed, deferred,
+  rate-limited or failed.
+- **Secrets stay server-side**: Discord webhook URLs and Telegram bot tokens
+  are encrypted at rest and never returned to the browser; the test button
+  runs server-side against the stored configuration.
+
+## Installation
+
+The container listens on **8091**, stores all state in **/config**, and prints
+a one-time setup code to its log on first start.
+
+Docker Compose:
 
 ```yaml
 services:
@@ -125,38 +184,60 @@ services:
       - PGID=100
       - UMASK=022
       # - DUMB_URL=http://192.168.1.100:3005   # optional pre-set for the wizard
-      # - DUMBSCOPE_TRUST_PROXY=true         # only behind an HTTPS reverse proxy
+      # - DUMBSCOPE_TRUST_PROXY=true           # only behind an HTTPS reverse proxy
     volumes:
       - /mnt/user/appdata/dumbscope:/config
 ```
+
+Docker run:
+
+```bash
+docker run -d \
+  --name dumbscope \
+  --restart unless-stopped \
+  -p 8091:8091 \
+  -e PUID=99 -e PGID=100 -e UMASK=022 \
+  -v /mnt/user/appdata/dumbscope:/config \
+  ghcr.io/cyxno/dumbscope:latest
+```
+
+Unraid: install through CA or add the template
+(`unraid/dumbscope.xml`, served from this repository).
+
+First start: open `http://HOST:8091`, copy the **setup code** from
+`docker logs dumbscope`, follow the wizard (DUMB URL → credentials → admin
+account).
 
 ## Configuration
 
 Runtime state lives under `/config`:
 
-| File           | Purpose                                                 |
-| -------------- | ------------------------------------------------------- |
-| `dumbscope.db` | settings, users, sessions, incident history, activity   |
-| `secret.key`   | local key that encrypts DUMB credentials at rest (0600) |
+| File           | Purpose                                                                     |
+| -------------- | --------------------------------------------------------------------------- |
+| `dumbscope.db` | settings, users, sessions, incidents, activity, notification rules/history  |
+| `secret.key`   | local key that encrypts credentials and notification secrets at rest (0600) |
 
 Environment variables:
 
 | Variable                  | Default              | Purpose                                                                |
 | ------------------------- | -------------------- | ---------------------------------------------------------------------- |
-| `PORT`                    | `8091`               | web UI port                                                            |
+| `PORT`                    | `8091`               | web UI + API port                                                      |
 | `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | runtime identity for `/config`                                         |
 | `DUMB_URL`                | —                    | optional seed for the wizard's DUMB URL                                |
 | `DUMBSCOPE_TRUST_PROXY`   | `false`              | trust `X-Forwarded-Proto` for Secure cookies (behind HTTPS proxy only) |
-| `DUMBSCOPE_HTTPS`         | `false`              | force the Secure flag on cookies when serving real HTTPS directly      |
+| `DUMBSCOPE_HTTPS`         | `false`              | force Secure cookies when serving real HTTPS directly                  |
 | `DUMBSCOPE_CONFIG_DIR`    | `/config`            | config location                                                        |
 | `DUMBSCOPE_SETUP_CODE`    | —                    | pre-set setup code instead of the random one                           |
+| `DUMBSCOPE_MOUNTS`        | —                    | optional JSON list of mount targets for Reliability monitoring         |
+
+Reliability mount monitoring is **opt-in and configurable** — define the mount
+roots and symlink roots you care about and toggle mount/memory monitoring in
+Settings → Reliability. No user-specific paths are hardcoded.
 
 ### Reverse proxy
 
 Terminate HTTPS at your proxy and set `DUMBSCOPE_TRUST_PROXY=true` so session
-cookies get the `Secure` flag. Without it, forwarded headers are ignored —
-direct HTTP installs stay safe by default (cookies lose the Secure flag, which
-keeps the wizard and login working over plain HTTP). Example Nginx location:
+cookies get the `Secure` flag. Example Nginx location:
 
 ```nginx
 location / {
@@ -168,7 +249,7 @@ location / {
 }
 ```
 
-## Updating
+### Updating
 
 ```bash
 docker pull ghcr.io/cyxno/dumbscope:latest
@@ -180,20 +261,23 @@ on startup. DUMBscope never auto-updates itself.
 
 ## Security
 
-See [SECURITY.md](SECURITY.md) for the full model: what is stored, how
-credentials are encrypted, session handling, and how to report an issue.
-Highlights: no Docker socket, no telemetry, no external calls, DUMB
-credentials never leave the server process, read-only towards DUMB.
+See [SECURITY.md](SECURITY.md). Highlights: no Docker socket, non-privileged
+container, no telemetry and no third-party calls; server-side credentials with
+AES-256-GCM encryption at rest; HttpOnly session cookies, rate limiting and
+same-origin enforcement; read-only monitoring by default with a single
+explicit-confirmation remediation action; automatic recovery is off by
+default.
 
 ## Troubleshooting
 
-| Symptom                         | What to do                                                                                                                       |
-| ------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| Setup code rejected             | It expires after 30 minutes; restart the container for a new one (also printed again in the log).                                |
-| “DUMB is currently unreachable” | Check the gateway URL (port **3005**), network, and that DUMB is up. DUMBscope keeps retrying; history and settings stay usable. |
-| “DUMB credentials rejected”     | Update username/password in Settings → DUMB connection. Credentials are verified before being saved.                             |
-| Metrics/chart empty             | DUMB may not expose the metrics capability; check Settings → Diagnostics and DUMB's own dashboard.                               |
-| No logs appearing               | The log stream reconnects automatically after DUMB restarts; check Settings → Diagnostics for stream states.                     |
+| Symptom                         | What to do                                                                                                                                                                           |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Setup code rejected             | It expires after 30 minutes; restart the container for a new one.                                                                                                                    |
+| "DUMB is currently unreachable" | Check the gateway URL (port **3005**), network, and that DUMB is up. DUMBscope keeps retrying; history and settings stay usable.                                                     |
+| "DUMB credentials rejected"     | Update username/password in Settings → DUMB connection. Credentials are verified before being saved.                                                                                 |
+| Metrics/chart empty             | DUMB may not expose the metrics capability; check Settings → Diagnostics.                                                                                                            |
+| No logs appearing               | The log stream reconnects automatically; check Settings → Diagnostics for stream states.                                                                                             |
+| Not receiving notifications     | Check Settings → Notifications: destination enabled/configured, rule events include the event, quiet hours and the per-destination rate cap. The History table shows every decision. |
 
 Diagnostics → **Copy diagnostics** produces a redacted bundle (no credentials,
 no URLs beyond host:port, no log contents) for bug reports.
@@ -205,16 +289,21 @@ pnpm install
 pnpm dev                 # dev server (set DUMBSCOPE_CONFIG_DIR, e.g. ./data)
 pnpm mock:dumb           # mock DUMB gateway on :3105 (scenarios, see file)
 pnpm test                # unit + integration tests (uses the mock)
-pnpm check               # typecheck
+pnpm check               # svelte-check
 pnpm lint                # prettier + eslint
+pnpm e2e                 # full e2e harness (ephemeral mock stack)
 pnpm build               # production build
 ```
 
-The mock gateway (`tests/mock-dumb/server.mjs`) implements the documented DUMB
-API and supports scenarios: `healthy`, `degraded`, `crash-loop`,
-`dependency-failure`, `log-burst`, `disk-full`, plus `MOCK_AUTH=off` and
-`MOCK_POSTGRES_DOWN=1`. CI runs the whole suite plus a Docker smoke test on
-every PR.
+The e2e harness boots its own ephemeral stack — mock DUMB gateway, mock
+Sonarr/Radarr/Bazarr, mock notification endpoints, throwaway config — and tears
+everything down afterwards. No running QA containers or production data are
+required. CI runs lint, typecheck, unit and e2e plus a Docker smoke test.
+
+Deeper docs: [architecture](docs/architecture.md) ·
+[reliability](docs/RELIABILITY.md) · [media correlation](docs/MEDIA-CORRELATION.md) ·
+[remediation](docs/REMEDIATION.md) · [customization](docs/CUSTOMIZATION.md) ·
+[compatibility](docs/COMPATIBILITY.md) · [ADR log](docs/adr.md)
 
 ## Contributing
 
@@ -225,11 +314,3 @@ dependencies, and keep the one-container constraint.
 ## License
 
 [MIT](LICENSE)
-
-### Reliability & operations (0.5)
-
-- Honest DUMB connectivity states with automatic reconnect
-- Read-only mount health + symlink sampling, memory anomaly detection
-- Cross-service media flow correlation with repeated-request detection
-- Safe, confirmed single-service restart actions (verification + cooldown)
-- Customization: themes/OLED, accents, density, dashboard widgets, navigation, accessibility

@@ -221,6 +221,97 @@ const MIGRATIONS: Migration[] = [
 			);
 			CREATE INDEX IF NOT EXISTS idx_remediation_target_at ON remediation_actions(target, requested_at);
 		`
+	},
+	{
+		version: 7,
+		name: 'alerts & notifications: destinations, rules, history, dedupe',
+		sql: `
+			-- Outbound alert destinations. Secrets (Discord webhook URL, Telegram
+			-- bot token) live encrypted in config_enc — never returned to the
+			-- browser (masked representation only).
+			CREATE TABLE IF NOT EXISTS notification_destinations (
+				id TEXT PRIMARY KEY,
+				kind TEXT NOT NULL,
+				label TEXT NOT NULL,
+				enabled INTEGER NOT NULL DEFAULT 1,
+				config_enc TEXT,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			);
+
+			-- Notification rules: filters (severity/category/service/event),
+			-- target destinations, dedupe cooldown and quiet hours. Section
+			-- membership of a rule's filters is copied from its preset; 'custom'
+			-- is user-edited.
+			CREATE TABLE IF NOT EXISTS notification_rules (
+				id TEXT PRIMARY KEY,
+				label TEXT NOT NULL,
+				enabled INTEGER NOT NULL DEFAULT 1,
+				preset TEXT NOT NULL DEFAULT 'custom',
+				severities TEXT NOT NULL,
+				categories TEXT NOT NULL,
+				services TEXT NOT NULL,
+				events TEXT NOT NULL,
+				destination_ids TEXT NOT NULL,
+				cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+				quiet_enabled INTEGER NOT NULL DEFAULT 0,
+				quiet_start TEXT,
+				quiet_end TEXT,
+				quiet_timezone TEXT,
+				quiet_behavior TEXT NOT NULL DEFAULT 'defer',
+				rate_per_minute INTEGER,
+				created_at INTEGER NOT NULL,
+				updated_at INTEGER NOT NULL
+			);
+
+			-- Bounded delivery history (30 days, pruned opportunistically):
+			-- one row per event x destination decision, including suppressed
+			-- and rate-limited decisions so the history explains itself.
+			CREATE TABLE IF NOT EXISTS notification_history (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				at INTEGER NOT NULL,
+				event TEXT NOT NULL,
+				destination_id TEXT,
+				destination_kind TEXT,
+				rule_id TEXT,
+				rule_label TEXT,
+				severity TEXT NOT NULL,
+				category TEXT NOT NULL,
+				service TEXT,
+				title TEXT NOT NULL,
+				summary TEXT,
+				result TEXT NOT NULL,
+				error TEXT,
+				deep_link TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_notif_history_at ON notification_history(at);
+			CREATE INDEX IF NOT EXISTS idx_notif_history_dest ON notification_history(destination_id, at);
+
+			-- Per rule x finding dedupe state: last notified severity, open/
+			-- resolved state and timestamps drive first-open / suppress /
+			-- escalate / resolved / reopen-after-cooldown semantics.
+			CREATE TABLE IF NOT EXISTS notification_dedupe (
+				dedupe_key TEXT PRIMARY KEY,
+				last_severity TEXT NOT NULL,
+				last_event TEXT NOT NULL,
+				last_notified_at INTEGER,
+				resolved_at INTEGER,
+				updated_at INTEGER NOT NULL
+			);
+			CREATE INDEX IF NOT EXISTS idx_notif_dedupe_updated ON notification_dedupe(updated_at);
+
+			-- Deliveries for the in-app browser destination, picked up by the
+			-- open client through polling. Bounded by retention pruning.
+			CREATE TABLE IF NOT EXISTS notification_browser_deliveries (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				at INTEGER NOT NULL,
+				severity TEXT NOT NULL,
+				title TEXT NOT NULL,
+				summary TEXT,
+				deep_link TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_notif_browser_at ON notification_browser_deliveries(at);
+		`
 	}
 ];
 export function currentVersion(db: DatabaseSync): number {

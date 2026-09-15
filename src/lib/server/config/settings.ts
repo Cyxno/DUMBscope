@@ -29,6 +29,8 @@ export interface AppSettings {
 	/** Per-process RSS thresholds in GiB for memory anomaly detection. */
 	memoryWarningGb: number;
 	memoryCriticalGb: number;
+	/** Optional public origin for deep links in outbound notifications. */
+	notificationPublicBaseUrl: string | null;
 }
 
 function getSetting(key: string): string | null {
@@ -64,7 +66,8 @@ export function getSettings(): AppSettings {
 		mountMonitoring: getSetting('reliability.mountMonitoring') !== 'false',
 		memoryMonitoring: getSetting('reliability.memoryMonitoring') !== 'false',
 		memoryWarningGb: clampGb(getSetting('reliability.memoryWarningGb'), 3.5),
-		memoryCriticalGb: clampGb(getSetting('reliability.memoryCriticalGb'), 4.5)
+		memoryCriticalGb: clampGb(getSetting('reliability.memoryCriticalGb'), 4.5),
+		notificationPublicBaseUrl: normalizeBaseUrl(getSetting('notifications.publicBaseUrl'))
 	};
 }
 
@@ -158,6 +161,11 @@ export function setMemoryThresholds(warningGb: number, criticalGb: number): void
 	setSetting('reliability.memoryCriticalGb', String(crit));
 }
 
+function normalizeBaseUrl(raw: string | null): string | null {
+	if (!raw) return null;
+	return /^https?:\/\//.test(raw) ? raw.replace(/\/+$/, '') : null;
+}
+
 /** Monitored mount targets: a JSON list of MountTarget. */
 export function getMountTargetsJson(): string | null {
 	return getSetting('reliability.mounts');
@@ -165,4 +173,13 @@ export function getMountTargetsJson(): string | null {
 
 export function setMountTargetsJson(json: string): void {
 	setSetting('reliability.mounts', json);
+}
+
+export function setNotificationPublicBaseUrl(url: string | null): void {
+	if (url === null || url === '') {
+		deleteSetting('notifications.publicBaseUrl');
+		return;
+	}
+	const normalized = normalizeBaseUrl(url);
+	if (normalized) setSetting('notifications.publicBaseUrl', normalized);
 }

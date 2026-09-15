@@ -1,6 +1,7 @@
 <script lang="ts">
 	import '../../app.css';
 	import AppShell from '$lib/components/AppShell.svelte';
+	import BrowserNotifications from '$lib/components/BrowserNotifications.svelte';
 	import { live } from '$lib/stores/live.svelte';
 	import { initPreferences } from '$lib/stores/prefs.svelte';
 	import type { Snippet } from 'svelte';
@@ -16,6 +17,7 @@
 	});
 </script>
 
+<BrowserNotifications />
 <AppShell>
 	{@render children()}
 </AppShell>

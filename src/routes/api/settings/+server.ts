@@ -13,6 +13,7 @@ import {
 	setDumbUrl,
 	setDumbCredentials,
 	setReliabilityEnabled,
+	setNotificationPublicBaseUrl,
 	setMemoryThresholds
 } from '$lib/server/config/settings';
 import { getHub } from '$lib/server/telemetry/hub';
@@ -46,7 +47,8 @@ const patchSchema = z.object({
 	mountMonitoring: z.boolean().optional(),
 	memoryMonitoring: z.boolean().optional(),
 	memoryWarningGb: z.number().min(0.5).max(64).optional(),
-	memoryCriticalGb: z.number().min(0.5).max(64).optional()
+	memoryCriticalGb: z.number().min(0.5).max(64).optional(),
+	notificationPublicBaseUrl: z.union([z.literal(''), z.string().trim().url().max(256)]).optional()
 });
 
 /** Settings view: never includes secrets, only presence flags. */
@@ -82,6 +84,11 @@ export const PATCH: RequestHandler = async ({ request }) => {
 			patch.memoryWarningGb ?? current.memoryWarningGb,
 			patch.memoryCriticalGb ?? current.memoryCriticalGb
 		);
+	}
+
+	// Notifications: optional public origin used for outbound deep links.
+	if (patch.notificationPublicBaseUrl !== undefined) {
+		setNotificationPublicBaseUrl(patch.notificationPublicBaseUrl || null);
 	}
 
 	// Connection changes: validate, then test credentials when provided.

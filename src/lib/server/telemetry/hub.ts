@@ -30,6 +30,7 @@ import { appInfo } from '$lib/shared/app-info';
 import { configDir } from '../database/db';
 import { splitLines, parseLogLine } from '../logs/parse';
 import { IncidentEngine } from '../incidents/engine';
+import { handleIncidentChange, setPublicBaseUrl } from '../notifications/engine';
 import { buildTopology } from '../topology/graph';
 import { onActivity, recordActivity, recentActivity, type ActivityEntry } from './activity';
 import { onIntegrationStateChange } from '../integrations/manager';
@@ -178,7 +179,14 @@ export class Hub {
 	constructor(private readonly options: { testClock?: () => number } = {}) {
 		this.tracker = new ConnectivityTracker({ now: options.testClock });
 		this.engine = new IncidentEngine(
-			{ onIncidentChange: (incident) => this.broadcast('incident', incident) },
+			{
+				onIncidentChange: (incident, action) => {
+					this.broadcast('incident', incident);
+					// Alerts & Notifications consume the same lifecycle —
+					// fire-and-forget; delivery failures never affect monitoring.
+					handleIncidentChange(incident, action);
+				}
+			},
 			options.testClock
 		);
 		const clock = options.testClock ?? (() => Date.now());
@@ -605,6 +613,8 @@ export class Hub {
 	housekeep(): void {
 		if (this.stopped) return;
 		const now = Date.now();
+		// Keep the notification engine's outbound deep links in sync with settings.
+		setPublicBaseUrl(getSettings().notificationPublicBaseUrl);
 		const connection = this.tracker.snapshot();
 		const statusLive = connection.streams.status === 'live';
 		this.engine.onTick(this.metricsLatest?.receivedAt ?? null, statusLive);

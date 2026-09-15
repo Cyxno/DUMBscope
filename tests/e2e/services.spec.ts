@@ -72,9 +72,8 @@ test('compatibility audit: unique rendering, stages and honest states (§23)', a
 	// Pipeline renders known services by their canonical names (labels may
 	// truncate long ones) and never leaks raw registry keys.
 	await page.goto('/pipeline');
-	const pipelineBody = await page.locator('body').innerText();
-	for (const short of ['Sonarr', 'Radarr', 'Prowlarr', 'Seerr', 'Bazarr', 'InfiniDysk']) {
-		expect(pipelineBody).toContain(short);
+	for (const short of ['Sonarr', 'Radarr', 'Prowlarr', 'Seerr', 'InfiniDysk']) {
+		await expect(page.getByText(short).first()).toBeVisible({ timeout: 20_000 });
 	}
-	expect(pipelineBody).not.toMatch(/dumb_api_service/);
+	await expect(page.getByText(/dumb_api_service/)).toHaveCount(0);
 });

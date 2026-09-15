@@ -7,7 +7,7 @@
 	 */
 	import { page } from '$app/state';
 	import { prefs } from '$lib/stores/prefs.svelte';
-	import { pushState, replaceState } from '$app/navigation';
+	import { pushState, replaceState, goto } from '$app/navigation';
 	import AreaChart from '$lib/components/AreaChart.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
 	import Drawer from '$lib/components/Drawer.svelte';
@@ -173,18 +173,25 @@
 		for (const [key, value] of sp.entries()) next[key] = value;
 		const qs = sp.toString();
 		const url = `/library${qs ? `?${qs}` : ''}`;
-		// SvelteKit shallow routing: these update page.url and make
-		// browser back/forward fire popstate into our adoption effect (§62).
+		// Shallow routing: this syncs the address bar/history entry only —
+		// page.url is NOT updated, hence the urlState mirror above. Back/forward
+		// still lands on real navigations, which do update page.url (§62).
 		if (push) void pushState(url, {});
 		else void replaceState(url, {});
 		urlState = next;
 	}
 
 	function switchView(next: View): void {
-		void replaceState(`/library?view=${next}`, {});
+		// Adopt the view immediately so the tab and panel react at once (§22),
+		// then navigate so the URL becomes real router state: shallow
+		// replaceState() never updates page.url, so the adoption effect would
+		// never run and the panel would stay on the old view. goto() gives the
+		// tab a history entry (back/forward, §62) and survives refresh (§77).
+		view = next;
 		seriesKey = null;
 		movieKey = null;
 		urlState = { view: next };
+		void goto(`/library?view=${next}`, { keepFocus: true, noScroll: true });
 		void loadView();
 	}
 
@@ -828,7 +835,7 @@
 						Queue issues
 					</h3>
 					<ul class="space-y-1.5">
-						{#each data.queue.issues as issue (issue.integrationId + issue.title)}
+						{#each data.queue.issues as issue, i (issue.integrationId + issue.title + i)}
 							<li class="rounded-xl border border-degraded/40 bg-surface-1 px-3.5 py-2.5">
 								<p class="text-[13px] font-semibold text-degraded">{issue.title} — {issue.type}</p>
 								<p class="text-[11.5px] text-text-muted">{issue.reason}</p>

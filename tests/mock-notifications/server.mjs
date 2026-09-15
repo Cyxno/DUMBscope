@@ -13,6 +13,7 @@
 import http from 'node:http';
 
 const PORT = Number(process.env.MOCK_NOTIF_PORT || 4214);
+const HOST = process.env.MOCK_NOTIF_HOST || '127.0.0.1';
 const received = [];
 let mode = 'ok';
 
@@ -61,6 +62,6 @@ const server = http.createServer((req, res) => {
 	});
 });
 
-server.listen(PORT, '127.0.0.1', () => {
+server.listen(PORT, HOST, () => {
 	console.log(`[mock-notifications] listening on http://127.0.0.1:${PORT}`);
 });

@@ -385,6 +385,11 @@ describe('production selftest fixtures', () => {
 		expect(broken.findings.map((f) => f.fingerprint)).toContain(
 			'recon:broken-symlink:recon-selftest:broken-symlink'
 		);
+		const bf = broken.findings.find((f) => f.fingerprint.startsWith('recon:broken-symlink'));
+		// Evidence must carry both the symlink path AND its target:
+		const ev = bf?.evidence.join(' | ') ?? '';
+		expect(ev).toContain('/selftest/broken.mkv');
+		expect(ev).toContain('/selftest/targets/target.mkv');
 
 		// repaired: target now exists — same fingerprint must NOT re-open
 		files.set('/selftest/targets/target.mkv', { size: 10 });

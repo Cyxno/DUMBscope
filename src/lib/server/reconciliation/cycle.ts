@@ -241,7 +241,9 @@ export class ReconciliationRunner {
 					key: 'recon-selftest:broken-symlink',
 					label: 'Reconciliation selftest (broken symlink)',
 					path: settings.selftestBrokenPath,
-					addedAt: null
+					// Always within the plex-stale grace: the selftest fixture has
+					// no Plex counterpart by design and must not trip plex-stale.
+					addedAt: this.options.now?.() ?? Date.now()
 				});
 			}
 

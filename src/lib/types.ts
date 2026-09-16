@@ -491,6 +491,39 @@ export interface RemediationSnapshot {
 }
 
 // ---------------------------------------------------------------------------
+// Safe Actions / control plane (docs/ACTIONS.md)
+// ---------------------------------------------------------------------------
+
+export type IntegrationActionState =
+	| 'requested' // audit row created, upstream request in flight
+	| 'accepted' // upstream accepted the command (never "media found")
+	| 'completed' // upstream reported the command completed
+	| 'failed' // rejected upstream, or the command/transport failed
+	| 'unconfirmed' // accepted, no final upstream state within the follow window
+	| 'rejected'; // local rejection (allowlist, validation, cooldown, config)
+
+/** One executed Safe Action — audit trail entry and activity item. */
+export interface IntegrationActionView {
+	id: string;
+	/** Registry id, e.g. `sonarr.searchEpisode`. */
+	action: string;
+	/** Registry UI label, e.g. "Search again". */
+	label: string;
+	/** Exact integration instance the action ran against. */
+	integrationId: string | null;
+	/** Human-readable upstream target reference (ids only, no secrets). */
+	target: string;
+	actor: string;
+	state: IntegrationActionState;
+	message: string | null;
+	upstreamCommandId: number | null;
+	requestedAt: number;
+	finishedAt: number | null;
+	/** Remaining per-target cooldown for repeat actions. */
+	cooldownRemainingMs: number;
+}
+
+// ---------------------------------------------------------------------------
 // App metadata
 // ---------------------------------------------------------------------------
 

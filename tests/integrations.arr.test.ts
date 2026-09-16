@@ -145,6 +145,7 @@ describe('ArrBaseClient', () => {
 				url: `http://127.0.0.1:${port}`,
 				enabled: true,
 				hasApiKey: true,
+				publicUrl: null,
 				lastTestAt: null,
 				lastTestOk: null,
 				lastTestError: null
@@ -208,6 +209,7 @@ describe('Arr adapter (older API version)', () => {
 				url: `http://127.0.0.1:${port}`,
 				enabled: true,
 				hasApiKey: true,
+				publicUrl: null,
 				lastTestAt: null,
 				lastTestOk: null,
 				lastTestError: null

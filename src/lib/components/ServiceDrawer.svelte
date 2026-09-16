@@ -8,6 +8,13 @@
 	import { formatPercent, formatBytes, relativeTime, formatDateTime } from '$lib/utils/format';
 	import { integrationRegistrySafeSummary } from '$lib/utils/summary';
 	import { pipelineModelFromLive, pipelineMetaForKey } from '$lib/pipeline/from-live';
+	import {
+		loadIntegrations,
+		loadLinkSettings,
+		type IntegrationRef
+	} from '$lib/utils/actions-client';
+	import { resolveWebUrl } from '$lib/utils/service-links';
+	import { matchCatalog } from '$lib/shared/catalog';
 	import { ExternalLink, RotateCw } from '@lucide/svelte';
 
 	let { serviceKey, onclose }: { serviceKey: string | null; onclose: () => void } = $props();
@@ -34,6 +41,69 @@
 			? `since ${relativeTime(service.restart.lastRestartTime)}`
 			: 'no restarts observed';
 	});
+
+	// --- Safe Actions (docs/ACTIONS.md §2/§3): Open service + Restart service.
+	let integration = $state<IntegrationRef | null>(null);
+	let linkPreference = $state<'auto' | 'internal' | 'public'>('auto');
+
+	$effect(() => {
+		void serviceKey;
+		integration = null;
+		if (!serviceKey) return;
+		const entry = matchCatalog(serviceKey, serviceKey);
+		const catalogId = entry?.id ?? serviceKey;
+		void loadIntegrations().then((list) => {
+			integration =
+				list.find((i) => i.enabled && (i.type === catalogId || i.id.startsWith(catalogId))) ?? null;
+		});
+		void loadLinkSettings().then((s) => {
+			linkPreference = s.linkOpenPreference;
+		});
+	});
+
+	const openUrl = $derived.by(() => {
+		if (!integration) return null;
+		return resolveWebUrl(
+			{ url: integration.url, publicUrl: integration.publicUrl },
+			linkPreference,
+			typeof location !== 'undefined' ? location.host : ''
+		);
+	});
+
+	// Restart rides the existing remediation layer (allowlist, preflight, 6 h
+	// cooldown, audit, verification) — no second execution path (§3).
+	let confirmRestart = $state(false);
+	let restartBusy = $state(false);
+	let restartMessage = $state<{ kind: 'ok' | 'error'; text: string } | null>(null);
+	const displayName = $derived(pipelineMeta?.name ?? service?.name ?? serviceKey ?? 'Service');
+	const restartable = $derived(Boolean(discovered) && service?.runState === 'running');
+
+	async function requestRestart(): Promise<void> {
+		if (!service) return;
+		restartBusy = true;
+		restartMessage = null;
+		try {
+			const res = await fetch('/api/reliability/actions', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ target: service.processName })
+			});
+			const data = (await res.json()) as { error?: string };
+			if (res.ok) {
+				restartMessage = {
+					kind: 'ok',
+					text: `Restart accepted for ${displayName} — DUMBscope will verify recovery.`
+				};
+			} else {
+				restartMessage = { kind: 'error', text: data.error ?? 'Restart was rejected.' };
+			}
+		} catch {
+			restartMessage = { kind: 'error', text: 'Could not reach DUMBscope.' };
+		} finally {
+			restartBusy = false;
+			confirmRestart = false;
+		}
+	}
 </script>
 
 <Drawer
@@ -59,6 +129,56 @@
 					</p>
 				</div>
 			</div>
+
+			<!-- Safe Actions (§2/§3/§10): open the service's own web UI, or
+				     restart it through DUMB's official route. Capability-gated. -->
+			{#if openUrl || discovered}
+				<div class="flex flex-wrap items-center gap-2">
+					{#if openUrl}
+						<a
+							href={openUrl}
+							target="_blank"
+							rel="noreferrer noopener"
+							class="inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-2 px-3 py-1.5 text-[11.5px] font-medium text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+							aria-label="Open {displayName}"
+						>
+							<ExternalLink size={12} aria-hidden="true" />
+							Open {displayName}
+						</a>
+					{/if}
+					{#if discovered}
+						<button
+							type="button"
+							class="inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-2 px-3 py-1.5 text-[11.5px] font-medium text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-50"
+							disabled={!restartable}
+							title={restartable
+								? 'Restart this managed service via DUMB'
+								: service?.runState !== 'running'
+									? 'Service is not running — nothing to restart'
+									: undefined}
+							aria-label="Restart {displayName}"
+							onclick={() => {
+								restartMessage = null;
+								confirmRestart = true;
+							}}
+						>
+							<RotateCw size={12} aria-hidden="true" />
+							Restart service
+						</button>
+					{/if}
+				</div>
+				{#if restartMessage}
+					<p
+						class="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-[11.5px] {restartMessage.kind ===
+						'ok'
+							? 'text-healthy'
+							: 'text-degraded'}"
+						role="status"
+					>
+						{restartMessage.text}
+					</p>
+				{/if}
+			{/if}
 
 			{#if service.healthDetails}
 				<div class="rounded-xl border border-border-subtle bg-surface-2 p-3 text-xs">
@@ -198,6 +318,47 @@
 			{:else}
 				This service is no longer running.
 			{/if}
+		</div>
+	{/if}
+
+	{#if confirmRestart && service}
+		<div
+			class="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+			role="presentation"
+		>
+			<div
+				class="w-full max-w-md rounded-[16px] border border-border-subtle bg-surface-1 p-5 shadow-2xl"
+				role="dialog"
+				aria-modal="true"
+				aria-label="Confirm restart"
+			>
+				<h3 class="text-sm font-semibold text-text-primary">Restart {displayName}?</h3>
+				<p class="mt-1.5 text-xs text-text-secondary">
+					Only this managed service will be restarted, via DUMB's own management route. No other
+					services and no container are affected.
+				</p>
+				<p class="mt-2 text-[11px] text-text-faint">
+					Process: {service.processName} · Cooldown 6 h, max 2 attempts per 24 h. DUMBscope verifies recovery
+					afterwards.
+				</p>
+				<div class="mt-4 flex justify-end gap-2">
+					<button
+						type="button"
+						class="rounded-lg border border-border-subtle px-3.5 py-2 text-xs font-medium text-text-secondary hover:border-border-strong"
+						onclick={() => (confirmRestart = false)}
+					>
+						Cancel
+					</button>
+					<button
+						type="button"
+						disabled={restartBusy}
+						class="rounded-lg bg-accent px-3.5 py-2 text-xs font-semibold text-bg transition-opacity hover:opacity-90 disabled:opacity-50"
+						onclick={requestRestart}
+					>
+						{restartBusy ? 'Requesting…' : 'Restart service'}
+					</button>
+				</div>
+			</div>
 		</div>
 	{/if}
 </Drawer>

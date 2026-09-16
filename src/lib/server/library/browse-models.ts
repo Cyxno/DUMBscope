@@ -34,6 +34,8 @@ export interface BrowseSeries {
 	integrationId: string;
 	/** Sonarr series id. */
 	id: number;
+	/** Upstream URL slug — used only to build "Open in Sonarr" deep links. */
+	titleSlug: string | null;
 	title: string;
 	sortTitle: string;
 	year: number | null;

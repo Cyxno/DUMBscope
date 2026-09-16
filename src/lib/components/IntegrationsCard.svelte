@@ -2,15 +2,19 @@
 	/**
 	 * Settings → Integrations (v0.2): add, test, enable/disable and remove
 	 * deep-integration connections. API keys are replace-only and never
-	 * echoed back (brief §34).
+	 * echoed back (brief §34). Safe Actions (v0.7): per-integration optional
+	 * public web-UI URL for "Open service" links + the link preference.
 	 */
 	import { onMount } from 'svelte';
 	import Card from '$lib/components/Card.svelte';
+	import { invalidateActionCaches } from '$lib/utils/actions-client';
+	import { resolveWebUrl } from '$lib/utils/service-links';
 
 	interface IntegrationConfig {
 		id: string;
 		type: string;
 		url: string;
+		publicUrl: string | null;
 		hasApiKey: boolean;
 		enabled: boolean;
 		lastTestAt: number | null;
@@ -49,6 +53,7 @@
 	let statuses = $state<Record<string, IntegrationStatus | null>>({});
 	let message = $state<{ kind: 'ok' | 'error'; text: string } | null>(null);
 	let busy = $state(false);
+	let linkPreference = $state<'auto' | 'internal' | 'public'>('auto');
 
 	// add-form state
 	let newType = $state('sonarr');
@@ -58,6 +63,10 @@
 	// replace-key state per id
 	let keyEditId = $state<string | null>(null);
 	let keyDraft = $state('');
+
+	// public-URL edit state per id (docs/ACTIONS.md §25)
+	let urlEditId = $state<string | null>(null);
+	let urlDraft = $state('');
 
 	async function load() {
 		const response = await fetch('/api/integrations');
@@ -69,9 +78,63 @@
 		statuses = Object.fromEntries(data.integrations.map((i) => [i.config.id, i.status]));
 	}
 
+	async function loadLinkPreference() {
+		const response = await fetch('/api/settings');
+		if (!response.ok) return;
+		const data = (await response.json()) as { linkOpenPreference?: typeof linkPreference };
+		if (data.linkOpenPreference) linkPreference = data.linkOpenPreference;
+	}
+
+	function openLinkFor(config: IntegrationConfig): string | null {
+		return resolveWebUrl(
+			{ url: config.url, publicUrl: config.publicUrl },
+			linkPreference,
+			typeof location !== 'undefined' ? location.host : ''
+		);
+	}
+
 	onMount(() => {
 		void load();
+		void loadLinkPreference();
 	});
+
+	async function savePublicUrl(config: IntegrationConfig) {
+		busy = true;
+		message = null;
+		try {
+			const response = await fetch(`/api/integrations/${config.id}`, {
+				method: 'PUT',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({
+					url: config.url,
+					enabled: config.enabled,
+					publicUrl: urlDraft.trim()
+				})
+			});
+			const data = (await response.json()) as { error?: string };
+			if (!response.ok) {
+				message = { kind: 'error', text: data.error ?? 'Could not save the public URL' };
+				return;
+			}
+			urlEditId = null;
+			urlDraft = '';
+			invalidateActionCaches();
+			message = { kind: 'ok', text: 'Web URL saved.' };
+			await load();
+		} finally {
+			busy = false;
+		}
+	}
+
+	async function setLinkPreference(value: typeof linkPreference) {
+		linkPreference = value;
+		const response = await fetch('/api/settings', {
+			method: 'PATCH',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ linkOpenPreference: value })
+		});
+		if (response.ok) invalidateActionCaches();
+	}
 
 	async function add(event: SubmitEvent) {
 		event.preventDefault();
@@ -166,9 +229,40 @@
 <Card title="Integrations">
 	<div class="space-y-3 text-xs">
 		<p class="text-text-muted">
-			Deep monitoring connections. Read-only: DUMBscope never sends commands to your services. The
-			underlying service health comes from DUMB regardless.
+			Deep monitoring connections. Monitoring is read-only; the only commands DUMBscope ever sends
+			are the explicit, allowlisted Safe Actions (search/refresh from the Library). The underlying
+			service health comes from DUMB regardless.
 		</p>
+
+		{#if configs.length > 0}
+			<fieldset class="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2">
+				<legend class="px-1 text-[10px] font-bold uppercase tracking-[0.1em] text-text-faint">
+					Open links using
+				</legend>
+				<div class="flex gap-3">
+					{#each ['auto', 'internal', 'public'] as pref (pref)}
+						<label
+							class="flex items-center gap-1.5 text-[11.5px] text-text-secondary {linkPreference ===
+							pref
+								? 'font-medium text-text-primary'
+								: ''}"
+						>
+							<input
+								type="radio"
+								name="linkOpenPreference"
+								value={pref}
+								checked={linkPreference === pref}
+								onchange={() => void setLinkPreference(pref as typeof linkPreference)}
+							/>
+							{pref === 'auto' ? 'Auto' : pref === 'internal' ? 'Internal URL' : 'Public URL'}
+						</label>
+					{/each}
+				</div>
+				<p class="mt-1 text-[10px] text-text-faint">
+					Auto uses the public URL when the browser is not on the internal host.
+				</p>
+			</fieldset>
+		{/if}
 
 		{#if configs.length === 0}
 			<p class="rounded-lg border border-border-subtle bg-surface-2 px-3 py-2 text-text-muted">
@@ -258,6 +352,24 @@
 							class="rounded-md border border-border-subtle px-2 py-1 text-[11px] text-text-muted"
 							onclick={() => (keyEditId = null)}>Cancel</button
 						>
+					{:else if urlEditId === config.id}
+						<input
+							type="url"
+							bind:value={urlDraft}
+							placeholder="http://<public-host>:<port> (browser-facing web UI)"
+							class="h-7 flex-1 rounded-md border border-border-subtle bg-surface-1 px-2 text-[11px] outline-none focus:border-border-focus"
+						/>
+						<button
+							type="button"
+							disabled={busy}
+							class="rounded-md bg-accent px-2 py-1 text-[11px] font-semibold text-bg"
+							onclick={() => void savePublicUrl(config)}>Save</button
+						>
+						<button
+							type="button"
+							class="rounded-md border border-border-subtle px-2 py-1 text-[11px] text-text-muted"
+							onclick={() => (urlEditId = null)}>Cancel</button
+						>
 					{:else}
 						<button
 							type="button"
@@ -269,6 +381,27 @@
 						>
 							{config.hasApiKey ? 'Replace API key' : 'Add API key'}
 						</button>
+						<span class="text-text-faint">·</span>
+						<button
+							type="button"
+							class="text-[11px] text-text-muted hover:text-text-primary"
+							onclick={() => {
+								urlEditId = config.id;
+								urlDraft = config.publicUrl ?? '';
+							}}
+						>
+							{config.publicUrl ? 'Edit public URL' : 'Add public URL'}
+						</button>
+						{#if openLinkFor(config)}
+							<span class="text-text-faint">·</span>
+							<a
+								href={openLinkFor(config) ?? '#'}
+								target="_blank"
+								rel="noreferrer noopener"
+								class="text-accent-text hover:underline"
+								aria-label="Open {config.id} web UI">Open ↗</a
+							>
+						{/if}
 					{/if}
 				</div>
 			</div>

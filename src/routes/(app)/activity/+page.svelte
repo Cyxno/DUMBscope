@@ -6,8 +6,9 @@
 	 */
 	import Card from '$lib/components/Card.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
-	import { formatTime } from '$lib/utils/format';
+	import { formatTime, relativeTime } from '$lib/utils/format';
 	import { History, Search } from '@lucide/svelte';
+	import type { IntegrationActionView } from '$lib/types';
 
 	interface FeedEntry {
 		id: string | number;
@@ -35,6 +36,7 @@
 	];
 
 	let entries = $state<FeedEntry[]>([]);
+	let actions = $state<IntegrationActionView[]>([]);
 	let loading = $state(true);
 	let category = $state('all');
 	let serviceFilter = $state('all');
@@ -48,6 +50,11 @@
 			if (response.ok) {
 				const data = (await response.json()) as { entries: FeedEntry[] };
 				entries = data.entries;
+			}
+			const actionsResponse = await fetch('/api/actions');
+			if (actionsResponse.ok) {
+				const data = (await actionsResponse.json()) as { recent: IntegrationActionView[] };
+				actions = data.recent;
 			}
 		} finally {
 			loading = false;
@@ -203,6 +210,44 @@
 			</ol>
 		{/if}
 	</Card>
+
+	<!-- Safe Actions audit (docs/ACTIONS.md §16): every user-initiated action. -->
+	{#if actions.length > 0}
+		<Card title="Recent actions">
+			<ol class="divide-y divide-border-subtle text-[12.5px]">
+				{#each actions as action (action.id)}
+					{@const stateColor =
+						action.state === 'completed'
+							? 'text-healthy'
+							: action.state === 'failed' || action.state === 'rejected'
+								? 'text-critical'
+								: 'text-degraded'}
+					<li class="flex items-start gap-3 px-4 py-2.5">
+						<span class="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-accent"></span>
+						<p class="min-w-0 flex-1">
+							<span class="tnum mr-2.5 text-[11px] text-text-faint"
+								>{formatTime(action.requestedAt)}</span
+							>
+							<span class="font-medium text-text-secondary">{action.label}</span>
+							{#if action.integrationId}
+								<span class="text-text-faint">· {action.integrationId}</span>
+							{/if}
+							<span class="tnum block pl-0.5 text-[11px] text-text-faint">
+								{action.target} · by {action.actor} ·
+								<span class={stateColor}>{action.state}</span>
+								{#if action.message}
+									— {action.message}
+								{/if}
+							</span>
+						</p>
+						<span class="shrink-0 text-[10.5px] text-text-faint"
+							>{relativeTime(action.requestedAt)}</span
+						>
+					</li>
+				{/each}
+			</ol>
+		</Card>
+	{/if}
 
 	<p class="text-[11px] text-text-faint">
 		Showing {filtered.length} of {entries.length} events · auto-refreshes every 15s · retention 14 days.

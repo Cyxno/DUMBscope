@@ -311,7 +311,40 @@ const MIGRATIONS: Migration[] = [
 				deep_link TEXT
 			);
 			CREATE INDEX IF NOT EXISTS idx_notif_browser_at ON notification_browser_deliveries(at);
-		`
+			`
+	},
+	{
+		version: 8,
+		name: 'safe actions: audit trail and integration public URLs',
+		sql: `
+				-- Safe Actions audit trail (docs/ACTIONS.md): one row per executed
+				-- control-plane action. Audit-first like remediation_actions; the row
+				-- exists before the upstream request goes out. Never stores API keys
+				-- or tokens — target/message are human-readable references only.
+				CREATE TABLE IF NOT EXISTS integration_actions (
+					id TEXT PRIMARY KEY,
+					action TEXT NOT NULL,
+					integration_id TEXT,
+					target TEXT NOT NULL,
+					target_key TEXT NOT NULL,
+					actor TEXT NOT NULL,
+					state TEXT NOT NULL,
+					message TEXT,
+					upstream_command_id INTEGER,
+					requested_at INTEGER NOT NULL,
+					finished_at INTEGER
+				);
+				CREATE INDEX IF NOT EXISTS idx_integration_actions_at
+					ON integration_actions(requested_at);
+				CREATE INDEX IF NOT EXISTS idx_integration_actions_target
+					ON integration_actions(target_key, requested_at);
+
+				-- Optional browser-facing web-UI URL per integration instance.
+				-- The API url stays the server-side polling target; public_url is
+				-- only used to build "Open service" links. http(s)-validated on
+				-- write (same rules as url).
+				ALTER TABLE integrations ADD COLUMN public_url TEXT;
+			`
 	}
 ];
 export function currentVersion(db: DatabaseSync): number {

@@ -3,11 +3,21 @@
 	 * Movie detail (§37-§44): status, quality/file info, queue correlation,
 	 * subtitle state and bounded normalized history. Missing movies show
 	 * release age + monitored state — never invented search failures (§40).
+	 * Safe Actions (docs/ACTIONS.md): targeted Radarr search/refresh on the
+	 * missing context block, capability-gated; "Open in Radarr" deep link.
 	 */
 	import PosterImage from './PosterImage.svelte';
 	import MediaFlowCard from './MediaFlowCard.svelte';
+	import ActionButton from '$lib/components/actions/ActionButton.svelte';
 	import { formatBytes, relativeTime } from '$lib/utils/format';
 	import { daysAgo, formatDate, qualityBadge } from '$lib/utils/library-ui';
+	import {
+		loadIntegrations,
+		loadLinkSettings,
+		type IntegrationRef
+	} from '$lib/utils/actions-client';
+	import { resolveWebUrl, radarrMovieUrl } from '$lib/utils/service-links';
+	import { ExternalLink } from '@lucide/svelte';
 
 	interface MovieFull {
 		key: string;
@@ -59,6 +69,33 @@
 	let data = $state<DetailPayload | null>(null);
 	let error = $state<string | null>(null);
 	let showTechnical = $state(false);
+	let integration = $state<IntegrationRef | null>(null);
+	let linkPreference = $state<'auto' | 'internal' | 'public'>('auto');
+
+	// Safe Actions wiring (§7/§8/§19): capability-gated commands + open link.
+	$effect(() => {
+		void data?.movie.integrationId;
+		integration = null;
+		const id = data?.movie.integrationId;
+		if (!id) return;
+		void loadIntegrations().then((list) => {
+			integration = list.find((i) => i.id === id) ?? null;
+		});
+		void loadLinkSettings().then((s) => {
+			linkPreference = s.linkOpenPreference;
+		});
+	});
+
+	const actions = $derived(integration?.actions ?? null);
+	const openUrl = $derived.by(() => {
+		if (!integration) return null;
+		const base = resolveWebUrl(
+			{ url: integration.url, publicUrl: integration.publicUrl },
+			linkPreference,
+			typeof location !== 'undefined' ? location.host : ''
+		);
+		return radarrMovieUrl(base, data?.movie.tmdbId ?? null);
+	});
 
 	$effect(() => {
 		void itemKey;
@@ -182,6 +219,40 @@
 								: 'Importing'}
 						{#if data.queue.progress !== null}· {data.queue.progress}%{/if}
 					</span>
+				</div>
+			{/if}
+
+			<!-- Safe Actions (§9): targeted movie commands, capability-gated. -->
+			{#if missingFlag && movie.integrationId && integration && actions}
+				<div class="mt-2.5 flex flex-wrap items-center gap-2 border-t border-border-subtle pt-2.5">
+					{#if actions.canSearchMovie}
+						<ActionButton
+							actionId="radarr.searchMovie"
+							integrationId={movie.integrationId}
+							target={{ movieId: movie.id }}
+							label="Search again"
+						/>
+					{/if}
+					{#if actions.canRefreshMovie}
+						<ActionButton
+							actionId="radarr.refreshMovie"
+							integrationId={movie.integrationId}
+							target={{ movieId: movie.id }}
+							label="Refresh"
+						/>
+					{/if}
+					{#if openUrl}
+						<a
+							href={openUrl}
+							target="_blank"
+							rel="noreferrer noopener"
+							class="inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-[11.5px] font-medium text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+							aria-label="Open in Radarr"
+						>
+							<ExternalLink size={12} aria-hidden="true" />
+							Open in Radarr
+						</a>
+					{/if}
 				</div>
 			{/if}
 		</div>

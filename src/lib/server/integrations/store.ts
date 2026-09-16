@@ -13,6 +13,7 @@ interface IntegrationRow {
 	id: string;
 	type: string;
 	url: string;
+	public_url: string | null;
 	api_key_enc: string | null;
 	enabled: number;
 	created_at: number;
@@ -27,6 +28,7 @@ function toConfig(row: IntegrationRow): IntegrationConfig {
 		id: row.id,
 		type: row.type as IntegrationConfig['type'],
 		url: row.url,
+		publicUrl: row.public_url,
 		hasApiKey: row.api_key_enc !== null,
 		enabled: row.enabled === 1,
 		lastTestAt: row.last_test_at,
@@ -63,6 +65,13 @@ export function upsertIntegration(input: {
 		   url = excluded.url, enabled = excluded.enabled, updated_at = excluded.updated_at`
 	).run(input.id, input.type, input.url, input.enabled ? 1 : 0, now, now);
 	return getIntegration(input.id)!;
+}
+
+/** Store (or replace) the browser-facing web-UI URL. Validated on write. */
+export function setPublicUrl(id: string, publicUrl: string | null): void {
+	getDb()
+		.prepare('UPDATE integrations SET public_url = ?, updated_at = ? WHERE id = ?')
+		.run(publicUrl, Date.now(), id);
 }
 
 /** Store (or replace) the API key. Read-back of the plaintext is impossible. */

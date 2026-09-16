@@ -6,7 +6,8 @@
  * Data is coherent (brief §99): TV ~97% complete with 14 missing episodes in
  * mixed backlog-age buckets and 1 failed import; Movies ~92% complete with
  * 3 released missing + 2 upcoming; Bazarr with 19 episode + 4 movie subtitle
- * gaps (Dutch-heavy). Read-only GET surface only; requires the API key.
+ * gaps (Dutch-heavy). Monitoring surface is read-only GET; the only POST is
+ * the allowlisted /api/v3/command surface (docs/ACTIONS.md). Requires the API key.
  */
 import http from 'node:http';
 
@@ -195,6 +196,88 @@ function authorize(req, res) {
 	return true;
 }
 
+// --- Safe Actions command surface (docs/ACTIONS.md) -------------------------
+// Only the six allowlisted command names are accepted; anything else is a 400.
+// Commands flip to 'completed' after ~2.5s so bounded follow-up polling can
+// observe queued → completed. Control endpoint: POST /__control/command-mode
+// with { mode: 'ok' | 'reject' | 'failed-command' | 'no-id' }.
+const COMMAND_NAMES = new Set([
+	'EpisodeSearch',
+	'SeasonSearch',
+	'SeriesSearch',
+	'RefreshSeries',
+	'MoviesSearch',
+	'RefreshMovie'
+]);
+const commands = new Map();
+let commandMode = 'ok';
+let commandSeq = 1000;
+
+const commandRoutes = (req, res, url) => {
+	if (url.pathname === '/__control/command-mode' && req.method === 'POST') {
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			try {
+				const parsed = JSON.parse(body);
+				if (typeof parsed.mode === 'string') commandMode = parsed.mode;
+				json(res, { ok: true, mode: commandMode });
+			} catch {
+				json(res, { detail: 'bad json' }, 400);
+			}
+		});
+		return true;
+	}
+	if (url.pathname === '/api/v3/command' && req.method === 'POST') {
+		let body = '';
+		req.on('data', (chunk) => (body += chunk));
+		req.on('end', () => {
+			if (commandMode === 'reject') return json(res, { error: 'command rejected by mock' }, 400);
+			let parsed = {};
+			try {
+				parsed = JSON.parse(body || '{}');
+			} catch {
+				return json(res, { error: 'bad json' }, 400);
+			}
+			if (!COMMAND_NAMES.has(parsed.name)) {
+				return json(res, { error: `command not allowlisted: ${parsed.name}` }, 400);
+			}
+			const id = commandMode === 'no-id' ? undefined : ++commandSeq;
+			commands.set(id, {
+				id,
+				name: parsed.name,
+				status: 'queued',
+				at: Date.now()
+			});
+			// Queued → started → completed, observed by bounded polling.
+			setTimeout(() => {
+				const cmd = commands.get(id);
+				if (cmd) cmd.status = 'started';
+			}, 1200);
+			setTimeout(() => {
+				const cmd = commands.get(id);
+				if (!cmd) return;
+				cmd.status = commandMode === 'failed-command' ? 'failed' : 'completed';
+			}, 2500);
+			return json(res, { id, status: 'queued', commandName: parsed.name }, 201);
+		});
+		return true;
+	}
+	if (url.pathname.startsWith('/api/v3/command/') && req.method === 'GET') {
+		const id = Number(url.pathname.split('/')[4]);
+		const cmd = commands.get(id);
+		// json() returns undefined — return true explicitly so the role handler
+		// stops here instead of falling through to its 404 (headers already sent).
+		if (!cmd) {
+			json(res, { error: 'unknown command' }, 404);
+			return true;
+		}
+		json(res, { id: cmd.id, status: cmd.status, commandName: cmd.name });
+		return true;
+	}
+	return false;
+};
+
 const sonarrHandler = (req, res, url) => {
 	if (url.pathname === '/__control/media-flow' && req.method === 'POST') {
 		let body = '';
@@ -235,6 +318,7 @@ const sonarrHandler = (req, res, url) => {
 		return;
 	}
 	if (!authorize(req, res)) return;
+	if (commandRoutes(req, res, url)) return;
 	if (url.pathname === '/api/v3/system/status')
 		return json(res, { version: '4.0.0.1100', appName: 'Sonarr' });
 	if (url.pathname === '/api/v3/series')
@@ -245,6 +329,7 @@ const sonarrHandler = (req, res, url) => {
 				return {
 					id: s.id,
 					title: s.title,
+					titleSlug: s.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
 					sortTitle: s.title.toLowerCase(),
 					monitored: true,
 					status: 'continuing',
@@ -414,6 +499,7 @@ const sonarrHandler = (req, res, url) => {
 
 const radarrHandler = (req, res, url) => {
 	if (!authorize(req, res)) return;
+	if (commandRoutes(req, res, url)) return;
 	if (url.pathname === '/api/v3/system/status')
 		return json(res, { version: '5.14.0', appName: 'Radarr' });
 	if (url.pathname === '/api/v3/movie') {
@@ -426,6 +512,7 @@ const radarrHandler = (req, res, url) => {
 				id: m.id,
 				title: m.title,
 				sortTitle: m.title.toLowerCase(),
+				tmdbId: 100000 + m.id,
 				year: m.year,
 				monitored: true,
 				status: 'released',

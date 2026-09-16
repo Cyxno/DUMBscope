@@ -170,7 +170,6 @@ export interface ReconciliationRunnerOptions {
 }
 
 export class ReconciliationRunner {
-	private activeFingerprints = new Set<string>();
 	private timer: NodeJS.Timeout | null = null;
 	private startupTimer: NodeJS.Timeout | null = null;
 	private running = false;
@@ -236,22 +235,20 @@ export class ReconciliationRunner {
 				now: this.options.now
 			});
 
-			// Seed from the incident store on the very first run of this
-			// process so findings opened by a previous incarnation resolve.
-			if (this.activeFingerprints.size === 0 && this.options.getActiveFingerprints) {
-				this.activeFingerprints = new Set(this.options.getActiveFingerprints());
-			}
+			// Stateless open/close against the incident store: the currently
+			// active recon fingerprints come from the engine every cycle, so
+			// findings opened by a previous incarnation resolve too.
+			const active = new Set(this.options.getActiveFingerprints?.() ?? []);
 			const seen = new Set<string>();
 			for (const finding of result.findings) {
 				seen.add(finding.fingerprint);
-				if (!this.activeFingerprints.has(finding.fingerprint)) {
+				if (!active.has(finding.fingerprint)) {
 					this.options.reportFinding(finding);
 				}
 			}
-			for (const fp of this.activeFingerprints) {
+			for (const fp of active) {
 				if (!seen.has(fp)) this.options.resolveFinding(fp);
 			}
-			this.activeFingerprints = seen;
 			this.options.onStats?.(result.stats);
 
 			// Opt-in remediation: when Plex shows ghosts or lags behind the

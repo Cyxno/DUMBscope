@@ -56,6 +56,8 @@ export function readPlexLibrarySnapshot(dbPath: string): PlexSnapshot {
 				       mp.size AS size
 				FROM media_parts mp
 				JOIN media_items mi ON mi.id = mp.media_item_id
+				JOIN section_locations sl ON sl.library_section_id = mi.library_section_id
+				     AND substr(mp.file, 1, length(sl.root_path)) = sl.root_path
 				WHERE mp.file IS NOT NULL AND mp.file != ''
 				  AND mp.deleted_at IS NULL
 			`;

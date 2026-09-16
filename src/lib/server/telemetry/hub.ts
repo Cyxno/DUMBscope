@@ -36,6 +36,14 @@ import { onActivity, recordActivity, recentActivity, type ActivityEntry } from '
 import { onIntegrationStateChange } from '../integrations/manager';
 import { sweepRateLimits } from '../security/rate-limit';
 import { MountMonitor } from '../reliability/mounts';
+import { ReconciliationRunner } from '../reconciliation/cycle';
+import {
+	getReconciliationAliasesJson,
+	getReconciliationPlexCredentials,
+	getReconciliationPlexDbPath,
+	reconciliationAutoRefreshEnabled,
+	reconciliationEnabled
+} from '../config/settings';
 import { MemoryAnomalyTracker, type MemoryTuningOverrides } from '../reliability/memory';
 import { fsProbeCallCount } from '../reliability/fsprobe';
 import { getRemediationManager, type RemediationManager } from '../reliability/remediation';
@@ -101,6 +109,28 @@ function loadMountTargets(): MountTarget[] {
 	}
 }
 
+/**
+ * Path alias pairs for reconciliation (`{from, to}`), mapping Arr root
+ * folders onto Plex library roots (e.g. `/media/` ↔ `/symlinks/TV Shows/`).
+ * Empty/invalid JSON degrades to the DUMB defaults inside the runner.
+ */
+function parseAliasesJson(raw: string | null): { from: string; to: string }[] {
+	if (!raw) return [];
+	try {
+		const parsed: unknown = JSON.parse(raw);
+		if (!Array.isArray(parsed)) return [];
+		const out: { from: string; to: string }[] = [];
+		for (const entry of parsed) {
+			const t = entry as Partial<{ from: string; to: string }>;
+			if (typeof t.from === 'string' && typeof t.to === 'string')
+				out.push({ from: t.from, to: t.to });
+		}
+		return out;
+	} catch {
+		return [];
+	}
+}
+
 const METRICS_RING_SIZE = 1800; // ~1h at the default 2s interval
 const LOG_RING_SIZE = 5000;
 /** How often the service registry is refreshed from DUMB's REST API. */
@@ -155,6 +185,7 @@ export class Hub {
 	private client: DumbClient | null = null;
 	private streams: DumbStream[] = [];
 	private engine: IncidentEngine;
+	private reconciliation: ReconciliationRunner;
 	private subscribers = new Map<number, Subscriber>();
 	private nextSubscriberId = 1;
 	private housekeeper: ReturnType<typeof setInterval> | null = null;
@@ -224,6 +255,31 @@ export class Hub {
 			onResolve: (fingerprint, message) => this.engine.resolveFinding(fingerprint, message)
 		});
 		this.remediation = getRemediationManager();
+		this.reconciliation = new ReconciliationRunner({
+			getSettings: () => {
+				const mounts = loadMountTargets().map((t) => ({ prefix: t.path, label: t.label }));
+				const aliases = parseAliasesJson(getReconciliationAliasesJson());
+				return {
+					enabled: reconciliationEnabled(),
+					mounts,
+					aliases,
+					plexDbPath: getReconciliationPlexDbPath(),
+					plexUrl: getReconciliationPlexCredentials()?.url ?? null,
+					plexToken: getReconciliationPlexCredentials()?.token ?? null,
+					plexAutoRefresh: reconciliationAutoRefreshEnabled()
+				};
+			},
+			reportFinding: (finding) =>
+				this.engine.reportFinding({
+					fingerprint: finding.fingerprint,
+					severity: finding.severity,
+					title: finding.title,
+					summary: finding.summary,
+					evidence: finding.evidence.join('\n')
+				}),
+			resolveFinding: (fingerprint) =>
+				this.engine.resolveFinding(fingerprint, 'Reconciled: filesystem, Arr and Plex agree again')
+		});
 	}
 
 	/**
@@ -253,6 +309,7 @@ export class Hub {
 
 		this.startStreams(settings);
 		this.housekeeper ??= setInterval(() => this.housekeep(), 10_000);
+		this.reconciliation.start();
 		this.publishConnection();
 	}
 
@@ -301,6 +358,7 @@ export class Hub {
 		this.activityUnsubscribe?.();
 		this.activityUnsubscribe = null;
 		this.stopStreams();
+		this.reconciliation.stop();
 		if (this.housekeeper) {
 			clearInterval(this.housekeeper);
 			this.housekeeper = null;

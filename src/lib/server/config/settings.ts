@@ -189,6 +189,63 @@ export function setMountTargetsJson(json: string): void {
 	setSetting('reliability.mounts', json);
 }
 
+// ---------------------------------------------------------------------------
+// Library reconciliation (FASE D) settings
+// ---------------------------------------------------------------------------
+
+/** JSON list of `{from, to}` path alias pairs (Arr root ↔ Plex library root). */
+export function getReconciliationAliasesJson(): string | null {
+	return getSetting('reconciliation.aliases');
+}
+
+export function getReconciliationPlexDbPath(): string | null {
+	return getSetting('reconciliation.plexDbPath');
+}
+
+export function getReconciliationPlexCredentials(): { url: string; token: string } | null {
+	const url = getSetting('reconciliation.plexUrl');
+	const token = getSetting('reconciliation.plexToken');
+	if (!url || !token) return null;
+	return { url, token };
+}
+
+export function reconciliationAutoRefreshEnabled(): boolean {
+	return getSetting('reconciliation.plexAutoRefresh') === 'true';
+}
+
+export function reconciliationEnabled(): boolean {
+	return getSetting('reconciliation.enabled') !== 'false';
+}
+
+export function setReconciliationSettings(values: {
+	aliasesJson?: string;
+	plexDbPath?: string | null;
+	plexUrl?: string | null;
+	plexToken?: string | null;
+	plexAutoRefresh?: boolean;
+	enabled?: boolean;
+}): void {
+	if (values.aliasesJson !== undefined) setSetting('reconciliation.aliases', values.aliasesJson);
+	if (values.plexDbPath !== undefined) {
+		if (values.plexDbPath) setSetting('reconciliation.plexDbPath', values.plexDbPath);
+		else deleteSetting('reconciliation.plexDbPath');
+	}
+	if (values.plexUrl !== undefined) {
+		if (values.plexUrl) setSetting('reconciliation.plexUrl', values.plexUrl);
+		else deleteSetting('reconciliation.plexUrl');
+	}
+	if (values.plexToken !== undefined) {
+		if (values.plexToken) setSetting('reconciliation.plexToken', values.plexToken);
+		else deleteSetting('reconciliation.plexToken');
+	}
+	if (values.plexAutoRefresh !== undefined) {
+		setSetting('reconciliation.plexAutoRefresh', values.plexAutoRefresh ? 'true' : 'false');
+	}
+	if (values.enabled !== undefined) {
+		setSetting('reconciliation.enabled', values.enabled ? 'true' : 'false');
+	}
+}
+
 export function setNotificationPublicBaseUrl(url: string | null): void {
 	if (url === null || url === '') {
 		deleteSetting('notifications.publicBaseUrl');

@@ -4,6 +4,7 @@ import {
 	getIntegrationStatuses,
 	reloadIntegration
 } from '$lib/server/integrations/manager';
+import { capabilitiesForType } from '$lib/server/actions/registry';
 import {
 	getIntegration,
 	listIntegrations,
@@ -15,14 +16,16 @@ import { isIntegrationType } from '$lib/server/integrations/types';
 import { ensureIntegrationsUp } from '$lib/server/integrations/register';
 import type { RequestHandler } from './$types';
 
-/** List integration connections + live status (no secrets). */
+/** List integration connections + live status + safe-action capabilities (no secrets). */
 export const GET: RequestHandler = async () => {
 	ensureIntegrationsUp();
 	const statuses = new Map(getIntegrationStatuses().map((s) => [s.id, s]));
 	return jsonOk({
 		integrations: listIntegrations().map((config) => ({
 			config,
-			status: statuses.get(config.id) ?? null
+			status: statuses.get(config.id) ?? null,
+			// The UI renders action buttons from capabilities, never names (§19).
+			actions: capabilitiesForType(config.type)
 		}))
 	});
 };

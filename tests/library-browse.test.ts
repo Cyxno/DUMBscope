@@ -494,6 +494,7 @@ function makeSeries(partial: Partial<BrowseSeries>): BrowseSeries {
 		source: 'sonarr',
 		integrationId: 'sonarr-main',
 		id: partial.id ?? 0,
+		titleSlug: null,
 		title: partial.title ?? 'Series',
 		sortTitle: partial.sortTitle ?? (partial.title ?? 'Series').toLowerCase(),
 		year: partial.year ?? null,

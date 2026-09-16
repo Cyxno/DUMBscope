@@ -116,6 +116,7 @@ export function normalizeSonarrSeries(
 		source: 'sonarr',
 		integrationId,
 		id,
+		titleSlug: str(raw.titleSlug),
 		title: str(raw.title) ?? `Series ${id}`,
 		sortTitle: str(raw.sortTitle) ?? str(raw.title) ?? `Series ${id}`,
 		year: num(raw.year),

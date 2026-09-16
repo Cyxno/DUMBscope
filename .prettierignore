@@ -1,2 +1,5 @@
+tests/e2e/.auth/
+tests/e2e/.reliability-fixture.json
+test-results/
 pnpm-lock.yaml
 docs/COMPATIBILITY.md

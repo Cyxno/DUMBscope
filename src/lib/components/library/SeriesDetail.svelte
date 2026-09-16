@@ -3,10 +3,13 @@
 	 * Series detail (§11-§26): header renders instantly from list data (§133),
 	 * seasons accordion collapses episodes out of the DOM (§15), episode rows
 	 * expand to file/queue/subtitle detail (§21/§26). Specials stay separate
-	 * from the main seasons (§16). Read-only throughout.
+	 * from the main seasons (§16). Safe Actions (docs/ACTIONS.md): targeted
+	 * search/refresh commands via the allowlisted registry, rendered on
+	 * capability — never name-hardcoded.
 	 */
 	import PosterImage from './PosterImage.svelte';
 	import MediaFlowCard from './MediaFlowCard.svelte';
+	import ActionButton from '$lib/components/actions/ActionButton.svelte';
 	import { relativeTime, formatBytes } from '$lib/utils/format';
 	import {
 		episodeStateClass,
@@ -15,11 +18,18 @@
 		qualityBadge,
 		seriesStatusLabel
 	} from '$lib/utils/library-ui';
-	import { ChevronDown } from '@lucide/svelte';
+	import {
+		loadIntegrations,
+		loadLinkSettings,
+		type IntegrationRef
+	} from '$lib/utils/actions-client';
+	import { resolveWebUrl, sonarrSeriesUrl } from '$lib/utils/service-links';
+	import { ChevronDown, ExternalLink } from '@lucide/svelte';
 
 	export interface SeriesFull {
 		key: string;
 		id: number;
+		titleSlug?: string | null;
 		title: string;
 		year: number | null;
 		status: string;
@@ -103,6 +113,8 @@
 	let series = $state<SeriesShape | null>(summary);
 	let seasons = $state<SeasonGroup[]>([]);
 	let integrationId = $state<string | null>(null);
+	let integration = $state<IntegrationRef | null>(null);
+	let linkPreference = $state<'auto' | 'internal' | 'public'>('auto');
 	let upgradeCount = $state<number | null>(null);
 	let episodesLoading = $state(true);
 	let episodesError = $state<string | null>(null);
@@ -173,6 +185,31 @@
 				: (series.seasonsCount ?? 0)
 			: 0
 	);
+
+	// Safe Actions wiring (§19): buttons render from the integration's
+	// published capabilities; the open link from its URL config (§2).
+	$effect(() => {
+		void integrationId;
+		integration = null;
+		if (!integrationId) return;
+		void loadIntegrations().then((list) => {
+			integration = list.find((i) => i.id === integrationId) ?? null;
+		});
+		void loadLinkSettings().then((s) => {
+			linkPreference = s.linkOpenPreference;
+		});
+	});
+
+	const actions = $derived(integration?.actions ?? null);
+	const openUrl = $derived.by(() => {
+		if (!integration) return null;
+		const base = resolveWebUrl(
+			{ url: integration.url, publicUrl: integration.publicUrl },
+			linkPreference,
+			typeof location !== 'undefined' ? location.host : ''
+		);
+		return sonarrSeriesUrl(base, series?.titleSlug ?? null);
+	});
 
 	function toggleSeason(n: number): void {
 		const next = new Set(expandedSeasons);
@@ -254,6 +291,32 @@
 					</span>
 				{/if}
 			</div>
+
+			<!-- Safe Actions (§9): header commands, capability-gated. -->
+			{#if integrationId && integration && actions}
+				<div class="mt-2.5 flex flex-wrap items-center gap-2">
+					{#if actions.canRefreshSeries}
+						<ActionButton
+							actionId="sonarr.refreshSeries"
+							{integrationId}
+							target={{ seriesId: series.id }}
+							label="Refresh series"
+						/>
+					{/if}
+					{#if openUrl}
+						<a
+							href={openUrl}
+							target="_blank"
+							rel="noreferrer noopener"
+							class="inline-flex items-center gap-1.5 rounded-lg border border-border-subtle bg-surface-2 px-2.5 py-1.5 text-[11.5px] font-medium text-text-secondary transition-colors hover:bg-surface-3 hover:text-text-primary"
+							aria-label="Open in Sonarr"
+						>
+							<ExternalLink size={12} aria-hidden="true" />
+							Open in Sonarr
+						</a>
+					{/if}
+				</div>
+			{/if}
 		</div>
 	</div>
 
@@ -329,57 +392,71 @@
 		{:else}
 			{#each mainSeasons as season (season.seasonNumber)}
 				<div class="overflow-hidden rounded-lg border border-border-subtle bg-surface-1">
-					<button
-						type="button"
-						class="flex w-full items-center gap-3 px-3.5 py-2.5 text-left transition-colors hover:bg-surface-2"
-						aria-expanded={expandedSeasons.has(season.seasonNumber)}
-						onclick={() => toggleSeason(season.seasonNumber)}
-					>
-						<ChevronDown
-							size={14}
-							class="shrink-0 text-text-faint transition-transform {expandedSeasons.has(
-								season.seasonNumber
-							)
-								? 'rotate-180'
-								: ''}"
-						/>
-						<span class="w-24 shrink-0 text-[12.5px] font-medium text-text-primary">
-							{seasonLabel(season.seasonNumber)}
-						</span>
-						<span class="tnum text-[11.5px] text-text-muted">
-							{season.fileCount} / {season.airedCount}
-						</span>
-						<div class="h-1 min-w-10 flex-1 overflow-hidden rounded-full bg-surface-3">
-							<div
-								class="h-full rounded-full {season.airedCount > 0 &&
-								season.fileCount >= season.airedCount
-									? 'bg-healthy/70'
-									: 'bg-accent/70'}"
-								style="width: {season.airedCount > 0
-									? Math.max(2, Math.min(100, (season.fileCount / season.airedCount) * 100))
-									: 2}%"
-							></div>
-						</div>
-						<span
-							class="w-16 shrink-0 text-right text-[11px] {season.airedCount - season.fileCount > 0
-								? 'text-degraded'
-								: 'text-healthy'}"
+					<div class="flex items-center gap-1 pr-2 transition-colors hover:bg-surface-2">
+						<button
+							type="button"
+							class="flex min-w-0 flex-1 items-center gap-3 px-3.5 py-2.5 text-left"
+							aria-expanded={expandedSeasons.has(season.seasonNumber)}
+							onclick={() => toggleSeason(season.seasonNumber)}
 						>
-							{season.airedCount - season.fileCount > 0
-								? `${season.airedCount - season.fileCount} missing`
-								: 'Complete'}
-						</span>
-						{#if season.airedCount - season.fileCount > 0 && season.oldestMissingAt}
-							<span
-								class="tnum w-14 shrink-0 text-right text-[11px] text-text-faint"
-								title="Oldest missing episode aired {new Date(
-									season.oldestMissingAt
-								).toLocaleDateString()}"
-							>
-								oldest {daysAgo(season.oldestMissingAt)}
+							<ChevronDown
+								size={14}
+								class="shrink-0 text-text-faint transition-transform {expandedSeasons.has(
+									season.seasonNumber
+								)
+									? 'rotate-180'
+									: ''}"
+							/>
+							<span class="w-24 shrink-0 text-[12.5px] font-medium text-text-primary">
+								{seasonLabel(season.seasonNumber)}
 							</span>
+							<span class="tnum text-[11.5px] text-text-muted">
+								{season.fileCount} / {season.airedCount}
+							</span>
+							<div class="h-1 min-w-10 flex-1 overflow-hidden rounded-full bg-surface-3">
+								<div
+									class="h-full rounded-full {season.airedCount > 0 &&
+									season.fileCount >= season.airedCount
+										? 'bg-healthy/70'
+										: 'bg-accent/70'}"
+									style="width: {season.airedCount > 0
+										? Math.max(2, Math.min(100, (season.fileCount / season.airedCount) * 100))
+										: 2}%"
+								></div>
+							</div>
+							<span
+								class="w-16 shrink-0 text-right text-[11px] {season.airedCount - season.fileCount >
+								0
+									? 'text-degraded'
+									: 'text-healthy'}"
+							>
+								{season.airedCount - season.fileCount > 0
+									? `${season.airedCount - season.fileCount} missing`
+									: 'Complete'}
+							</span>
+							{#if season.airedCount - season.fileCount > 0 && season.oldestMissingAt}
+								<span
+									class="tnum w-14 shrink-0 text-right text-[11px] text-text-faint"
+									title="Oldest missing episode aired {new Date(
+										season.oldestMissingAt
+									).toLocaleDateString()}"
+								>
+									oldest {daysAgo(season.oldestMissingAt)}
+								</span>
+							{/if}
+						</button>
+						<!-- Safe Actions (§5): targeted season search, only where useful. -->
+						{#if integrationId && actions?.canSearchSeason && season.airedCount - season.fileCount > 0}
+							<ActionButton
+								actionId="sonarr.searchSeason"
+								{integrationId}
+								target={{ seriesId: series.id, seasonNumber: season.seasonNumber }}
+								label="Search season"
+								compact
+								ariaLabel="Search {seasonLabel(season.seasonNumber)} in Sonarr"
+							/>
 						{/if}
-					</button>
+					</div>
 					{#if expandedSeasons.has(season.seasonNumber)}
 						<ul class="divide-y divide-border-subtle border-t border-border-subtle">
 							{#each season.episodes as episode (episode.id)}
@@ -576,10 +653,25 @@
 								{episode.customFormats.join(', ')}
 							</p>{/if}
 					{:else if episode.state === 'missing'}
-						<p>
-							<span class="text-text-faint">Backlog:</span>
-							aired {daysAgo(episode.airDateUtc)} — still missing
-						</p>
+						<div class="flex items-center justify-between gap-2">
+							<p>
+								<span class="text-text-faint">Backlog:</span>
+								aired {daysAgo(episode.airDateUtc)} — still missing
+							</p>
+							{#if integrationId && actions?.canSearchEpisode}
+								<ActionButton
+									actionId="sonarr.searchEpisode"
+									{integrationId}
+									target={{ episodeIds: [episode.id] }}
+									label="Search again"
+									compact
+									ariaLabel="Search episode E{String(episode.episodeNumber).padStart(
+										2,
+										'0'
+									)} in Sonarr"
+								/>
+							{/if}
+						</div>
 					{/if}
 					{#if chips.length > 0}
 						<div class="flex flex-wrap items-center gap-1.5">

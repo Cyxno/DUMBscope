@@ -37,6 +37,12 @@ export interface IntegrationConfig {
 	id: string;
 	type: IntegrationType;
 	url: string;
+	/**
+	 * Optional browser-facing web-UI URL for "Open service" links. The `url`
+	 * stays the server-side polling target; this is purely for navigation.
+	 * Validated http(s) on write; null = fall back to `url`.
+	 */
+	publicUrl: string | null;
 	/** Presence flag only — the key itself never leaves the server. */
 	hasApiKey: boolean;
 	enabled: boolean;

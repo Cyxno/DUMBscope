@@ -66,6 +66,11 @@ logs, system, movies, subtitles, mobile).
   subtitles; missing/upgrades/queue intelligence; per-item drawers (seasons,
   episodes, quality, subtitle coverage); media-flow correlation
   (grab → download → import → library).
+- **Safe Actions** — a deliberately narrow control plane: targeted _Search
+  again_ / _Search season_ / _Refresh_ commands for Sonarr and Radarr from
+  the Library, _Open {Service}_ deep links, and confirmed _Restart service_
+  via DUMB's own management route. Allowlist-only, audited, capability-gated
+  — see [docs/ACTIONS.md](docs/ACTIONS.md).
 - **Incidents** — sustained-failure detection with grace periods and
   hysteresis (no flapping), fingerprint-based deduplication with occurrence
   counts, dependency correlation ("root cause: PostgreSQL"), timeline,
@@ -123,6 +128,26 @@ reported honestly as basic monitoring rather than claimed.
 - **Safe remediation** — exactly one action: `restart-managed-service` via
   DUMB's own management route, guarded by explicit confirmation, cooldowns,
   attempt caps and verification.
+
+## Safe Actions
+
+The control-plane layer on top of observability — narrow by design, honest by
+default. Full documentation in [docs/ACTIONS.md](docs/ACTIONS.md).
+
+- **Targeted media commands** — _Search again_ on a missing episode or movie,
+  _Search season_ on a season with gaps, _Refresh_ a series/movie. Every
+  command targets exact upstream ids through Sonarr/Radarr's official
+  command API; "Search requested" is never rendered as "media found".
+- **Open {Service}** — deep links into each service's own web UI
+  (Sonarr series page, Radarr movie page, service root otherwise), with an
+  optional per-integration public URL and an Auto/Internal/Public
+  preference for home-vs-reverse-proxy use.
+- **Restart service** — from the service drawer, behind an explicit
+  confirmation, reusing the remediation layer's allowlist, 6 h cooldown,
+  attempt caps, audit and verification.
+- **Audit** — every attempt persisted before execution (actor, target,
+  result, duration, upstream command id — no secrets), surfaced under
+  Activity → Recent actions; 14-day retention.
 
 ## Library
 
@@ -264,9 +289,10 @@ on startup. DUMBscope never auto-updates itself.
 See [SECURITY.md](SECURITY.md). Highlights: no Docker socket, non-privileged
 container, no telemetry and no third-party calls; server-side credentials with
 AES-256-GCM encryption at rest; HttpOnly session cookies, rate limiting and
-same-origin enforcement; read-only monitoring by default with a single
-explicit-confirmation remediation action; automatic recovery is off by
-default.
+same-origin enforcement; monitoring is read-only, and the only write paths
+are the allowlisted [Safe Actions](docs/ACTIONS.md) (targeted search/refresh,
+confirmed restart) — every one authenticated, rate-limited, server-side
+validated and audited; automatic recovery remains off by default.
 
 ## Troubleshooting
 

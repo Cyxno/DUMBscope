@@ -31,6 +31,9 @@ export interface AppSettings {
 	memoryCriticalGb: number;
 	/** Optional public origin for deep links in outbound notifications. */
 	notificationPublicBaseUrl: string | null;
+	/** Which integration URL "Open service" links use (§2): auto resolves to
+	 *  the public URL when the browser is not on the internal host. */
+	linkOpenPreference: 'auto' | 'internal' | 'public';
 }
 
 function getSetting(key: string): string | null {
@@ -67,7 +70,8 @@ export function getSettings(): AppSettings {
 		memoryMonitoring: getSetting('reliability.memoryMonitoring') !== 'false',
 		memoryWarningGb: clampGb(getSetting('reliability.memoryWarningGb'), 3.5),
 		memoryCriticalGb: clampGb(getSetting('reliability.memoryCriticalGb'), 4.5),
-		notificationPublicBaseUrl: normalizeBaseUrl(getSetting('notifications.publicBaseUrl'))
+		notificationPublicBaseUrl: normalizeBaseUrl(getSetting('notifications.publicBaseUrl')),
+		linkOpenPreference: normalizeLinkPreference(getSetting('actions.linkOpenPreference'))
 	};
 }
 
@@ -85,7 +89,8 @@ export function getSettingsForClient() {
 		mountMonitoring: s.mountMonitoring,
 		memoryMonitoring: s.memoryMonitoring,
 		memoryWarningGb: s.memoryWarningGb,
-		memoryCriticalGb: s.memoryCriticalGb
+		memoryCriticalGb: s.memoryCriticalGb,
+		linkOpenPreference: s.linkOpenPreference
 	};
 }
 
@@ -164,6 +169,15 @@ export function setMemoryThresholds(warningGb: number, criticalGb: number): void
 function normalizeBaseUrl(raw: string | null): string | null {
 	if (!raw) return null;
 	return /^https?:\/\//.test(raw) ? raw.replace(/\/+$/, '') : null;
+}
+
+function normalizeLinkPreference(raw: string | null): AppSettings['linkOpenPreference'] {
+	return raw === 'internal' || raw === 'public' ? raw : 'auto';
+}
+
+/** "Open links using" preference for service web-UI links (docs/ACTIONS.md §2). */
+export function setLinkOpenPreference(value: 'auto' | 'internal' | 'public'): void {
+	setSetting('actions.linkOpenPreference', value);
 }
 
 /** Monitored mount targets: a JSON list of MountTarget. */

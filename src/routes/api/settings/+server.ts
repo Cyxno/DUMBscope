@@ -14,7 +14,8 @@ import {
 	setDumbCredentials,
 	setReliabilityEnabled,
 	setNotificationPublicBaseUrl,
-	setMemoryThresholds
+	setMemoryThresholds,
+	setLinkOpenPreference
 } from '$lib/server/config/settings';
 import { getHub } from '$lib/server/telemetry/hub';
 import { DumbClient, DumbAuthError, DumbError } from '$lib/server/dumb/client';
@@ -48,7 +49,9 @@ const patchSchema = z.object({
 	memoryMonitoring: z.boolean().optional(),
 	memoryWarningGb: z.number().min(0.5).max(64).optional(),
 	memoryCriticalGb: z.number().min(0.5).max(64).optional(),
-	notificationPublicBaseUrl: z.union([z.literal(''), z.string().trim().url().max(256)]).optional()
+	notificationPublicBaseUrl: z.union([z.literal(''), z.string().trim().url().max(256)]).optional(),
+	// Safe Actions: which integration URL "Open service" links use (§2).
+	linkOpenPreference: z.enum(['auto', 'internal', 'public']).optional()
 });
 
 /** Settings view: never includes secrets, only presence flags. */
@@ -89,6 +92,11 @@ export const PATCH: RequestHandler = async ({ request }) => {
 	// Notifications: optional public origin used for outbound deep links.
 	if (patch.notificationPublicBaseUrl !== undefined) {
 		setNotificationPublicBaseUrl(patch.notificationPublicBaseUrl || null);
+	}
+
+	// Safe Actions: browser-side link target preference.
+	if (patch.linkOpenPreference !== undefined) {
+		setLinkOpenPreference(patch.linkOpenPreference);
 	}
 
 	// Connection changes: validate, then test credentials when provided.

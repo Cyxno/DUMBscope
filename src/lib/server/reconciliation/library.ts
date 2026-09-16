@@ -48,6 +48,8 @@ export interface ArrFileRecord {
 	path: string;
 	size?: number | null;
 	addedAt?: number | null;
+	/** For broken-symlink verdicts: the unresolved symlink target. */
+	target?: string;
 }
 
 export interface PlexPartRecord {
@@ -96,7 +98,7 @@ export interface LibraryProber {
 export type ItemVerdict =
 	| { status: 'available' }
 	| { status: 'missing' }
-	| { status: 'broken-symlink' }
+	| { status: 'broken-symlink'; target: string }
 	| { status: 'backend-down'; mount: string }
 	| { status: 'unverifiable'; mount: string }
 	| { status: 'unreadable'; mount: string; code?: string };
@@ -269,7 +271,7 @@ async function classifyPath(
 				if (visibility === 'missing' || visibility === 'empty' || visibility === 'error') {
 					return { status: 'unverifiable', mount: targetMount?.label ?? prefix };
 				}
-				return { status: 'broken-symlink' };
+				return { status: 'broken-symlink', target };
 			}
 			return { status: 'missing' };
 		}
@@ -349,7 +351,8 @@ export async function reconcileLibrary(options: ReconcileOptions): Promise<Recon
 		}
 		if (verdict.status === 'backend-down') arrBackendDown.push(rec);
 		else if (verdict.status === 'missing') arrMissing.push(rec);
-		else if (verdict.status === 'broken-symlink') arrBrokenSymlink.push(rec);
+		else if (verdict.status === 'broken-symlink')
+			arrBrokenSymlink.push({ ...rec, target: verdict.target });
 		else if (verdict.status === 'unverifiable') arrUnverifiable.push(rec);
 		else arrUnreadable.push(rec);
 	}
@@ -482,7 +485,11 @@ export async function reconcileLibrary(options: ReconcileOptions): Promise<Recon
 			summary:
 				'The symlink exists but its target is gone while the owning mount is healthy. ' +
 				'This is permanent missing media, not a transient backend outage.',
-			evidence: [`recorded path: ${rec.path}`],
+			evidence: [
+				`symlink: ${rec.path}`,
+				...(rec.target ? [`target: ${rec.target}`] : []),
+				'target stat: ENOENT'
+			],
 			resolvable: true
 		});
 	}

@@ -12,7 +12,7 @@
  * the root directory is the cheapest honest signal.
  */
 import { Worker } from 'node:worker_threads';
-import type { FsKind, LibraryProber } from './library';
+import type { FsKind, LibraryProber, MountVisibility } from './library';
 
 const WORKER_SOURCE = `
 const { parentPort } = require('node:worker_threads');
@@ -39,6 +39,15 @@ parentPort.on('message', async (msg) => {
 				// Real read: readdir on the mount root. statfs lies on dead FUSE.
 				await fsp.readdir(op.path);
 				results.push({ ok: true });
+			} else if (op.op === 'visibility') {
+				// An empty root is the signature of a bind of a not-yet-mounted
+				// host path; a live FUSE mount root lists content.
+				try {
+					const entries = await fsp.readdir(op.path);
+					results.push({ visible: entries.length > 0 ? 'visible' : 'empty' });
+				} catch (verr) {
+					results.push({ visible: verr && verr.code === 'ENOENT' ? 'missing' : 'error' });
+				}
 			}
 		} catch (err) {
 			if (op.op === 'lstat') {
@@ -141,6 +150,15 @@ export class WorkerLibraryProber implements LibraryProber {
 			return r.ok;
 		} catch {
 			return false;
+		}
+	}
+
+	async mountVisibility(prefix: string): Promise<MountVisibility> {
+		try {
+			const r = await this.run<{ visible: MountVisibility }>({ op: 'visibility', path: prefix });
+			return r.visible;
+		} catch {
+			return 'error';
 		}
 	}
 

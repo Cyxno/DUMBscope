@@ -73,6 +73,9 @@ export interface PathAliasSpec {
 
 export type FsKind = 'file' | 'symlink' | 'missing' | 'error';
 
+/** Visibility of a mount root from this process's filesystem view. */
+export type MountVisibility = 'missing' | 'empty' | 'visible' | 'error';
+
 /** Filesystem probe contract — injectable so tests can simulate failures. */
 export interface LibraryProber {
 	lstat(path: string): Promise<{ kind: FsKind; target?: string; size?: number; code?: string }>;
@@ -80,6 +83,14 @@ export interface LibraryProber {
 	resolve(path: string): Promise<'exists' | 'missing' | 'error'>;
 	/** True when a real file operation (not statfs!) succeeds on this mount. */
 	mountHealthy(prefix: string): Promise<boolean>;
+	/**
+	 * Distinguish "mount not visible to us" from "mount present but target
+	 * gone": a bind of a not-yet-mounted host path shows up as an EMPTY
+	 * directory, while a healthy FUSE mount root lists content. Observers
+	 * outside the container that owns the mount see 'missing' or 'empty' and
+	 * must not report its items as permanently missing.
+	 */
+	mountVisibility(prefix: string): Promise<MountVisibility>;
 }
 
 export type ItemVerdict =
@@ -87,10 +98,17 @@ export type ItemVerdict =
 	| { status: 'missing' }
 	| { status: 'broken-symlink' }
 	| { status: 'backend-down'; mount: string }
+	| { status: 'unverifiable'; mount: string }
 	| { status: 'unreadable'; mount: string; code?: string };
 
 export interface ReconcileFinding {
-	kind: 'arr-file-missing' | 'broken-symlink' | 'plex-ghost' | 'plex-stale' | 'backend-unavailable';
+	kind:
+		| 'arr-file-missing'
+		| 'broken-symlink'
+		| 'plex-ghost'
+		| 'plex-stale'
+		| 'backend-unavailable'
+		| 'mount-unverifiable';
 	fingerprint: string;
 	severity: IncidentSeverity;
 	title: string;
@@ -109,7 +127,9 @@ export interface ReconcileStats {
 	plexGhosts: number;
 	plexStale: number;
 	pathsOnDownMount: number;
+	pathsUnverifiable: number;
 	mountsDown: string[];
+	mountsUnverifiable: string[];
 	durationMs: number;
 }
 
@@ -164,7 +184,8 @@ async function classifyPath(
 	path: string,
 	prober: LibraryProber,
 	mounts: MountTargetSpec[],
-	mountHealth: Map<string, boolean>
+	mountHealth: Map<string, boolean>,
+	mountVisibility: Map<string, MountVisibility>
 ): Promise<ItemVerdict> {
 	const l = await prober.lstat(path);
 	if (l.kind === 'missing') return { status: 'missing' };
@@ -181,8 +202,22 @@ async function classifyPath(
 	}
 	const r = await prober.resolve(path);
 	if (r === 'exists') return { status: 'available' };
-	if (r === 'missing')
-		return target !== null ? { status: 'broken-symlink' } : { status: 'missing' };
+	if (r === 'missing') {
+		if (target !== null) {
+			// Target gone: is that permanent (broken symlink) or is the mount
+			// simply not visible from this filesystem view (observer outside
+			// the container that owns the mount)? An empty mount root is the
+			// signature of a bind of a not-yet-mounted host path.
+			const targetMount = target !== null ? mountForTarget(target, mounts) : null;
+			const prefix = targetMount?.prefix ?? target.split('/').slice(0, 4).join('/') + '/';
+			const visibility = mountVisibility.get(prefix);
+			if (visibility === 'missing' || visibility === 'empty' || visibility === 'error') {
+				return { status: 'unverifiable', mount: targetMount?.label ?? prefix };
+			}
+			return { status: 'broken-symlink' };
+		}
+		return { status: 'missing' };
+	}
 	return {
 		status: 'unreadable',
 		mount: target ? (mountForTarget(target, mounts)?.label ?? 'local') : 'local'
@@ -211,9 +246,18 @@ export async function reconcileLibrary(options: ReconcileOptions): Promise<Recon
 	const arrMissing: ArrFileRecord[] = [];
 	const arrBrokenSymlink: ArrFileRecord[] = [];
 	const arrBackendDown: ArrFileRecord[] = [];
+	const arrUnverifiable: ArrFileRecord[] = [];
 	const arrUnreadable: ArrFileRecord[] = [];
+
+	// Visibility of every configured mount root, so "target gone" can be told
+	// apart from "mount not visible to us".
+	const mountVisibility = new Map<string, MountVisibility>();
+	for (const m of mounts) {
+		mountVisibility.set(m.prefix, await prober.mountVisibility(m.prefix));
+	}
+
 	for (const rec of arrFiles) {
-		const verdict = await classifyPath(rec.path, prober, mounts, mountHealth);
+		const verdict = await classifyPath(rec.path, prober, mounts, mountHealth, mountVisibility);
 		if (verdict.status === 'available') {
 			arrAvailable.add(normalizePath(rec.path, aliases));
 			continue;
@@ -221,6 +265,7 @@ export async function reconcileLibrary(options: ReconcileOptions): Promise<Recon
 		if (verdict.status === 'backend-down') arrBackendDown.push(rec);
 		else if (verdict.status === 'missing') arrMissing.push(rec);
 		else if (verdict.status === 'broken-symlink') arrBrokenSymlink.push(rec);
+		else if (verdict.status === 'unverifiable') arrUnverifiable.push(rec);
 		else arrUnreadable.push(rec);
 	}
 
@@ -228,14 +273,19 @@ export async function reconcileLibrary(options: ReconcileOptions): Promise<Recon
 	const plexAvailable = new Set<string>();
 	const plexGhosts: PlexPartRecord[] = [];
 	let plexOnDownMount = 0;
+	let plexUnverifiable = 0;
 	for (const part of plexParts) {
-		const verdict = await classifyPath(part.path, prober, mounts, mountHealth);
+		const verdict = await classifyPath(part.path, prober, mounts, mountHealth, mountVisibility);
 		if (verdict.status === 'available') {
 			plexAvailable.add(normalizePath(part.path, aliases));
 			continue;
 		}
 		if (verdict.status === 'backend-down') {
 			plexOnDownMount++;
+			continue;
+		}
+		if (verdict.status === 'unverifiable') {
+			plexUnverifiable++;
 			continue;
 		}
 		// missing (deleted) or broken-symlink: Plex plays a path that is gone.
@@ -259,9 +309,18 @@ export async function reconcileLibrary(options: ReconcileOptions): Promise<Recon
 
 	// ---------------------------------------------------------------------------
 	// 5. Findings. One per stable identity; a down mount yields ONE finding.
+	//
+	// Visibility is the primary signal: a mount root that is missing or an
+	// empty directory means this instance cannot verify items on it at all
+	// (info, "not visible from this filesystem view"). A visible root whose
+	// real file operations fail means the backend is genuinely down
+	// (critical, "backend unavailable") — that distinction is what keeps a
+	// temporary backend outage from masquerading as permanent missing media.
 	// ---------------------------------------------------------------------------
 	const findings: ReconcileFinding[] = [];
-	const downMounts = mounts.filter((m) => mountHealth.get(m.prefix) === false);
+	const downMounts = mounts.filter(
+		(m) => mountVisibility.get(m.prefix) === 'visible' && mountHealth.get(m.prefix) === false
+	);
 
 	for (const m of downMounts) {
 		findings.push({
@@ -277,6 +336,31 @@ export async function reconcileLibrary(options: ReconcileOptions): Promise<Recon
 				`mount ${m.prefix} (${m.label}) failed a file-level probe`,
 				`${arrBackendDown.length} Arr files and ${plexOnDownMount} Plex parts ` +
 					'live on this mount and are currently unusable'
+			],
+			resolvable: true
+		});
+	}
+
+	// Mounts whose root is not visible at all (no bind, or a bind of a
+	// not-yet-mounted host path): an observer outside the mount owner cannot
+	// judge those items. One info finding per mount, never per-item warnings.
+	const unverifiableMounts = mounts.filter((m) => {
+		const v = mountVisibility.get(m.prefix);
+		return v === 'missing' || v === 'empty' || v === 'error';
+	});
+	for (const m of unverifiableMounts) {
+		findings.push({
+			kind: 'mount-unverifiable',
+			fingerprint: `recon:mount-unverifiable:${m.prefix}`,
+			severity: 'info',
+			title: `Storage mount ${m.label}: not visible from this filesystem view`,
+			summary:
+				`The mount root ${m.prefix} is missing or an empty directory here, so items ` +
+				'targeting it cannot be verified from this instance. Mount the volume into ' +
+				'DUMBscope (or exclude the target) to verify those items.',
+			evidence: [
+				`${arrUnverifiable.length} Arr files and ${plexUnverifiable} Plex parts ` +
+					'target this mount and were skipped'
 			],
 			resolvable: true
 		});
@@ -348,7 +432,9 @@ export async function reconcileLibrary(options: ReconcileOptions): Promise<Recon
 		plexGhosts: plexGhosts.length,
 		plexStale: plexStale.length,
 		pathsOnDownMount: arrBackendDown.length + plexOnDownMount,
+		pathsUnverifiable: arrUnverifiable.length + plexUnverifiable,
 		mountsDown: downMounts.map((m) => m.prefix),
+		mountsUnverifiable: unverifiableMounts.map((m) => m.prefix),
 		durationMs: (options.now?.() ?? Date.now()) - t0
 	};
 

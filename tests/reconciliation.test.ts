@@ -21,6 +21,7 @@ import {
 	reconcileLibrary,
 	type ArrFileRecord,
 	type LibraryProber,
+	type MountVisibility,
 	type PlexPartRecord
 } from '../src/lib/server/reconciliation/library';
 
@@ -38,6 +39,7 @@ const ALIASES = [
 function fakeProber(state: {
 	files: Map<string, { symlink?: string; size?: number }>;
 	healthyMounts: Set<string>;
+	visibility?: Map<string, MountVisibility>;
 }): LibraryProber {
 	return {
 		async lstat(path) {
@@ -56,6 +58,11 @@ function fakeProber(state: {
 		},
 		async mountHealthy(prefix) {
 			return state.healthyMounts.has(prefix);
+		},
+		async mountVisibility(prefix): Promise<MountVisibility> {
+			return (
+				state.visibility?.get(prefix) ?? (state.healthyMounts.has(prefix) ? 'visible' : 'missing')
+			);
 		}
 	};
 }
@@ -202,7 +209,13 @@ describe('library reconciliation — production incident scenarios', () => {
 			plexParts: [],
 			prober: fakeProber({
 				files,
-				healthyMounts: new Set(['/mnt/debrid/decypharr']) // nzbdav probe FAILS
+				healthyMounts: new Set(['/mnt/debrid/decypharr']), // nzbdav file-ops FAIL
+				// …but the root is visible and lists content: the dead-FUSE
+				// signature (real ops → EIO, statfs/readdir succeed).
+				visibility: new Map<string, MountVisibility>([
+					['/mnt/remote/nzbdav', 'visible'],
+					['/mnt/debrid/decypharr', 'visible']
+				])
 			})
 		});
 		const backendFindings = result.findings.filter((f) => f.kind === 'backend-unavailable');
@@ -224,6 +237,9 @@ describe('library reconciliation — production incident scenarios', () => {
 			},
 			async mountHealthy() {
 				return true;
+			},
+			async mountVisibility() {
+				return 'visible';
 			}
 		};
 		const result = await reconcileLibrary({
@@ -248,7 +264,14 @@ describe('library reconciliation — production incident scenarios', () => {
 			aliases: ALIASES,
 			arrFiles: [arrFile({ path: '/media/x/ep.mkv' })],
 			plexParts: [],
-			prober: fakeProber({ files, healthyMounts: new Set(['/mnt/debrid/decypharr']) })
+			prober: fakeProber({
+				files,
+				healthyMounts: new Set(['/mnt/debrid/decypharr']),
+				visibility: new Map<string, MountVisibility>([
+					['/mnt/remote/nzbdav', 'visible'],
+					['/mnt/debrid/decypharr', 'visible']
+				])
+			})
 		});
 		expect(before.findings.map((f) => f.fingerprint)).toContain(
 			'recon:backend-unavailable:/mnt/remote/nzbdav'
@@ -298,5 +321,40 @@ describe('library reconciliation — production incident scenarios', () => {
 		});
 		expect(result.findings).toHaveLength(0);
 		expect(result.stats.plexStale).toBe(0);
+	});
+});
+
+describe('observer-visibility semantics', () => {
+	it('F3: items on a mount that is not visible to this instance are unverifiable, not ghosts', async () => {
+		// Beta/prod DUMBscope containers bind /mnt/remote/nzbdav, but after the
+		// in-container mount rework the host path is an empty directory: the
+		// mount lives inside DUMB. An observer must NOT report those items as
+		// permanently missing — it must say "cannot verify" once, per mount.
+		const files = new Map<string, { symlink?: string; size?: number }>();
+		files.set('/media/show/ep.mkv', { symlink: '/mnt/remote/nzbdav/.ids/42' });
+		files.set('/symlinks/TV Shows/show/ep.mkv', { symlink: '/mnt/remote/nzbdav/.ids/42' });
+		// The target exists INSIDE DUMB only — not in this container's view:
+		const visibility = new Map<string, MountVisibility>([
+			['/mnt/remote/nzbdav', 'empty'], // bind of not-mounted host path
+			['/mnt/debrid/decypharr', 'visible']
+		]);
+		const result = await reconcileLibrary({
+			mounts: MOUNTS,
+			aliases: ALIASES,
+			arrFiles: [arrFile({ path: '/media/show/ep.mkv' })],
+			plexParts: [plexPart({ path: '/symlinks/TV Shows/show/ep.mkv' })],
+			prober: fakeProber({
+				files,
+				healthyMounts: new Set(MOUNTS.map((m) => m.prefix)),
+				visibility
+			})
+		});
+		const kinds = result.findings.map((f) => f.kind);
+		expect(kinds).not.toContain('plex-ghost');
+		expect(kinds).not.toContain('broken-symlink');
+		expect(kinds).toContain('mount-unverifiable');
+		const mv = result.findings.find((f) => f.kind === 'mount-unverifiable');
+		expect(mv?.severity).toBe('info');
+		expect(result.stats.pathsUnverifiable).toBe(2);
 	});
 });

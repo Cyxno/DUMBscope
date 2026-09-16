@@ -56,7 +56,8 @@ export function readPlexLibrarySnapshot(dbPath: string): PlexSnapshot {
 				       mp.size AS size
 				FROM media_parts mp
 				JOIN media_items mi ON mi.id = mp.media_item_id
-				WHERE mp.file IS NOT NULL AND mp.deleted_at IS NULL
+				WHERE mp.file IS NOT NULL AND mp.file != ''
+				  AND mp.deleted_at IS NULL
 			`;
 			for (const row of db.prepare(q).iterate() as Iterable<{
 				section: number;

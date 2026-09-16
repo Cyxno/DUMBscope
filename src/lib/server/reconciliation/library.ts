@@ -230,6 +230,7 @@ async function classifyPath(
 	pathAliases: PathAliasSpec[],
 	rootVisibility: Map<string, MountVisibility>
 ): Promise<ItemVerdict> {
+	if (!path) return { status: 'missing' };
 	// Try every filesystem view of this logical path. The recorded view may
 	// not exist in this container while an alias view does (DUMBscope binds
 	// /mnt/vm_storage/symlinks/… while Plex records /symlinks/…).

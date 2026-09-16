@@ -74,10 +74,7 @@ export class WorkerLibraryProber implements LibraryProber {
 	private seq = 0;
 	private pending = new Map<number, Pending>();
 
-	constructor(
-		private readonly opTimeoutMs = 8_000,
-		private readonly idleShutdownMs = 30_000
-	) {}
+	constructor(private readonly opTimeoutMs = 8_000) {}
 
 	private ensureWorker(): Worker {
 		if (this.worker) return this.worker;
@@ -167,8 +164,5 @@ export class WorkerLibraryProber implements LibraryProber {
 		this.worker = null;
 		this.pending.clear();
 		if (w) void w.terminate();
-		if (this.idleTimer) clearTimeout(this.idleTimer);
 	}
-
-	private idleTimer: NodeJS.Timeout | null = null;
 }

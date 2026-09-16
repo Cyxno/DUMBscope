@@ -198,6 +198,22 @@ export function getReconciliationAliasesJson(): string | null {
 	return getSetting('reconciliation.aliases');
 }
 
+/**
+ * Synthetic production self-test paths. When set, the reconciler classifies
+ * these paths as extra items each cycle (never sourced from the real
+ * libraries): point them at fixtures under a dedicated selftest directory to
+ * watch an incident open and resolve in a live instance.
+ */
+export function getReconciliationSelftestPaths(): {
+	brokenPath: string | null;
+	ghostPath: string | null;
+} {
+	return {
+		brokenPath: getSetting('reconciliation.selftestBrokenPath'),
+		ghostPath: getSetting('reconciliation.selftestGhostPath')
+	};
+}
+
 export function getReconciliationPlexDbPath(): string | null {
 	return getSetting('reconciliation.plexDbPath');
 }

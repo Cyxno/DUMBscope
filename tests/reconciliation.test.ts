@@ -363,3 +363,71 @@ describe('observer-visibility semantics', () => {
 		expect(result.stats.pathsUnverifiable).toBe(2);
 	});
 });
+
+describe('production selftest fixtures', () => {
+	it('selftest broken path classifies as broken-symlink and resolves after repair', async () => {
+		const files = new Map<string, { symlink?: string; size?: number }>();
+		files.set('/selftest/broken.mkv', { symlink: '/selftest/targets/target.mkv' });
+		// broken: target absent
+		const broken = await reconcileLibrary({
+			mounts: [],
+			aliases: [],
+			arrFiles: [
+				arrFile({
+					key: 'recon-selftest:broken-symlink',
+					path: '/selftest/broken.mkv',
+					addedAt: Date.now()
+				})
+			],
+			plexParts: [],
+			prober: fakeProber({ files, healthyMounts: new Set() })
+		});
+		expect(broken.findings.map((f) => f.fingerprint)).toContain(
+			'recon:broken-symlink:recon-selftest:broken-symlink'
+		);
+
+		// repaired: target now exists — same fingerprint must NOT re-open
+		files.set('/selftest/targets/target.mkv', { size: 10 });
+		const fixed = await reconcileLibrary({
+			mounts: [],
+			aliases: [],
+			arrFiles: [
+				arrFile({
+					key: 'recon-selftest:broken-symlink',
+					path: '/selftest/broken.mkv',
+					addedAt: Date.now()
+				})
+			],
+			plexParts: [],
+			prober: fakeProber({ files, healthyMounts: new Set() })
+		});
+		expect(fixed.findings).toHaveLength(0);
+		expect(fixed.stats.available).toBe(1);
+	});
+
+	it('selftest ghost path classifies as plex-ghost and resolves after repair', async () => {
+		const files = new Map<string, { symlink?: string; size?: number }>();
+		// ghost: path recorded but nothing on disk
+		const ghosted = await reconcileLibrary({
+			mounts: [],
+			aliases: [],
+			arrFiles: [],
+			plexParts: [plexPart({ key: 'recon-selftest:ghost', path: '/selftest/ghost-part.mkv' })],
+			prober: fakeProber({ files, healthyMounts: new Set() })
+		});
+		expect(ghosted.findings.map((f) => f.fingerprint)).toContain(
+			'recon:plex-ghost:recon-selftest:ghost'
+		);
+
+		// repaired: file appears
+		files.set('/selftest/ghost-part.mkv', { size: 5 });
+		const fixed = await reconcileLibrary({
+			mounts: [],
+			aliases: [],
+			arrFiles: [],
+			plexParts: [plexPart({ key: 'recon-selftest:ghost', path: '/selftest/ghost-part.mkv' })],
+			prober: fakeProber({ files, healthyMounts: new Set() })
+		});
+		expect(fixed.findings).toHaveLength(0);
+	});
+});

@@ -41,6 +41,7 @@ import {
 	getReconciliationAliasesJson,
 	getReconciliationPlexCredentials,
 	getReconciliationPlexDbPath,
+	getReconciliationSelftestPaths,
 	reconciliationAutoRefreshEnabled,
 	reconciliationEnabled
 } from '../config/settings';
@@ -266,7 +267,9 @@ export class Hub {
 					plexDbPath: getReconciliationPlexDbPath(),
 					plexUrl: getReconciliationPlexCredentials()?.url ?? null,
 					plexToken: getReconciliationPlexCredentials()?.token ?? null,
-					plexAutoRefresh: reconciliationAutoRefreshEnabled()
+					plexAutoRefresh: reconciliationAutoRefreshEnabled(),
+					selftestBrokenPath: getReconciliationSelftestPaths().brokenPath,
+					selftestGhostPath: getReconciliationSelftestPaths().ghostPath
 				};
 			},
 			reportFinding: (finding) =>

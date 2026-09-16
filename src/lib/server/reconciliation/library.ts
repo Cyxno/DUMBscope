@@ -234,7 +234,6 @@ async function classifyPath(
 	// Try every filesystem view of this logical path. The recorded view may
 	// not exist in this container while an alias view does (DUMBscope binds
 	// /mnt/vm_storage/symlinks/… while Plex records /symlinks/…).
-	let missingEverywhere = true;
 	let recordedViewVisible = false;
 	const views = aliasViews(path, pathAliases);
 	for (const view of views) {
@@ -245,7 +244,6 @@ async function classifyPath(
 			}
 			continue;
 		}
-		missingEverywhere = false;
 		if (l.kind === 'error') {
 			return { status: 'unreadable', mount: 'local', code: l.code };
 		}

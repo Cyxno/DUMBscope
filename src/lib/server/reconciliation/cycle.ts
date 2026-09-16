@@ -15,6 +15,7 @@ import type {
 	PlexPartRecord,
 	ReconcileFinding
 } from './library';
+import { WorkerLibraryProber } from './prober';
 import { reconcileLibrary } from './library';
 
 const TUNING = {
@@ -45,6 +46,16 @@ export interface ReconcileSettings {
 	plexUrl: string | null;
 	plexToken: string | null;
 	plexAutoRefresh: boolean;
+	/**
+	 * Synthetic validation fixtures (production self-test). When set, these
+	 * paths are classified each cycle as extra items — nothing in the real
+	 * library is touched. Point `brokenPath` at a symlink whose target is
+	 * missing to open a `broken-symlink` finding; point `ghostPath` at a
+	 * missing path to open a `plex-ghost` finding. Remove the settings (or
+	 * make the paths resolve) and the findings resolve automatically.
+	 */
+	selftestBrokenPath: string | null;
+	selftestGhostPath: string | null;
 }
 
 export const DEFAULT_SETTINGS: ReconcileSettings = {
@@ -62,7 +73,9 @@ export const DEFAULT_SETTINGS: ReconcileSettings = {
 	plexDbPath: null,
 	plexUrl: null,
 	plexToken: null,
-	plexAutoRefresh: false
+	plexAutoRefresh: false,
+	selftestBrokenPath: null,
+	selftestGhostPath: null
 };
 
 async function fetchArrFiles(
@@ -173,10 +186,12 @@ export class ReconciliationRunner {
 	private timer: NodeJS.Timeout | null = null;
 	private startupTimer: NodeJS.Timeout | null = null;
 	private running = false;
+	private prober: WorkerLibraryProber | null = null;
 
 	constructor(private readonly options: ReconciliationRunnerOptions) {}
 
 	start(): void {
+		if (this.timer || this.startupTimer) return; // idempotent: reloads must not stack timers
 		// Scenario G: after a hub/container restart, verify the whole chain
 		// again — a restart is exactly when mounts and library state drift.
 		this.startupTimer = setTimeout(() => {
@@ -192,6 +207,8 @@ export class ReconciliationRunner {
 		if (this.startupTimer) clearTimeout(this.startupTimer);
 		this.timer = null;
 		this.startupTimer = null;
+		this.prober?.dispose();
+		this.prober = null;
 	}
 
 	async run(): Promise<void> {
@@ -215,6 +232,19 @@ export class ReconciliationRunner {
 				arrFiles.push(...files);
 			}
 
+			// Synthetic production self-test fixtures: classified like any
+			// other item, but never sourced from (or written to) the real
+			// libraries. See ReconcileSettings.selftest* docs.
+			if (settings.selftestBrokenPath) {
+				arrFiles.push({
+					source: 'sonarr',
+					key: 'recon-selftest:broken-symlink',
+					label: 'Reconciliation selftest (broken symlink)',
+					path: settings.selftestBrokenPath,
+					addedAt: null
+				});
+			}
+
 			let plexParts: PlexPartRecord[] = [];
 			if (settings.plexDbPath) {
 				const { readPlexLibrarySnapshot } = await import('./plex');
@@ -224,13 +254,26 @@ export class ReconciliationRunner {
 					plexParts = []; // snapshot unreadable: Plex dimension skipped this cycle
 				}
 			}
+			if (settings.selftestGhostPath) {
+				plexParts.push({
+					key: 'recon-selftest:ghost',
+					label: 'Reconciliation selftest (plex ghost)',
+					path: settings.selftestGhostPath,
+					sectionId: null,
+					size: null
+				});
+			}
+
+			if (!this.prober) {
+				this.prober = new WorkerLibraryProber();
+			}
 
 			const result = await reconcileLibrary({
 				mounts: settings.mounts,
 				aliases: settings.aliases.length ? settings.aliases : DEFAULT_SETTINGS.aliases,
 				arrFiles,
 				plexParts,
-				prober: new (await import('./prober')).WorkerLibraryProber(),
+				prober: this.prober,
 				staleGraceMs: TUNING.staleGraceMs,
 				now: this.options.now
 			});

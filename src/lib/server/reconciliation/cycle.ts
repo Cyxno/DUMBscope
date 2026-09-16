@@ -51,9 +51,13 @@ export const DEFAULT_SETTINGS: ReconcileSettings = {
 	enabled: true,
 	mounts: [],
 	aliases: [
-		// DUMB default topology: Sonarr/Radarr root folders vs Plex library root.
+		// DUMB default topology: Sonarr/Radarr roots vs Plex library roots,
+		// chained through to the raw bind view so every deployment view
+		// converges onto one canonical identity.
 		{ from: '/media/', to: '/symlinks/TV Shows/' },
-		{ from: '/media-movies/', to: '/symlinks/Movies/' }
+		{ from: '/media-movies/', to: '/symlinks/Movies/' },
+		{ from: '/symlinks/TV Shows/', to: '/mnt/vm_storage/symlinks/TV Shows/' },
+		{ from: '/symlinks/Movies/', to: '/mnt/vm_storage/symlinks/Movies/' }
 	],
 	plexDbPath: null,
 	plexUrl: null,
@@ -154,6 +158,13 @@ export interface ReconciliationRunnerOptions {
 	getSettings: () => ReconcileSettings;
 	reportFinding: (finding: ReconcileFinding) => void;
 	resolveFinding: (fingerprint: string) => void;
+	/**
+	 * Currently active reconciliation fingerprints according to the incident
+	 * store. Seeding the delta from here (instead of process memory) makes
+	 * resolution survive container restarts — without it, incidents opened by
+	 * a previous incarnation can never resolve (production lesson 2026-09-16).
+	 */
+	getActiveFingerprints?: () => Iterable<string>;
 	onStats?: (stats: Awaited<ReturnType<typeof reconcileLibrary>>['stats']) => void;
 	now?: () => number;
 }
@@ -217,7 +228,7 @@ export class ReconciliationRunner {
 
 			const result = await reconcileLibrary({
 				mounts: settings.mounts,
-				aliases: settings.aliases,
+				aliases: settings.aliases.length ? settings.aliases : DEFAULT_SETTINGS.aliases,
 				arrFiles,
 				plexParts,
 				prober: new (await import('./prober')).WorkerLibraryProber(),
@@ -225,6 +236,11 @@ export class ReconciliationRunner {
 				now: this.options.now
 			});
 
+			// Seed from the incident store on the very first run of this
+			// process so findings opened by a previous incarnation resolve.
+			if (this.activeFingerprints.size === 0 && this.options.getActiveFingerprints) {
+				this.activeFingerprints = new Set(this.options.getActiveFingerprints());
+			}
 			const seen = new Set<string>();
 			for (const finding of result.findings) {
 				seen.add(finding.fingerprint);

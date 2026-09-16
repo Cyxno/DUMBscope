@@ -278,7 +278,12 @@ export class Hub {
 					evidence: finding.evidence.join('\n')
 				}),
 			resolveFinding: (fingerprint) =>
-				this.engine.resolveFinding(fingerprint, 'Reconciled: filesystem, Arr and Plex agree again')
+				this.engine.resolveFinding(fingerprint, 'Reconciled: filesystem, Arr and Plex agree again'),
+			getActiveFingerprints: () =>
+				this.engine
+					.getActive()
+					.map((i) => i.fingerprint)
+					.filter((fp) => fp.startsWith('recon:'))
 		});
 	}
 

@@ -60,9 +60,14 @@ function fakeProber(state: {
 			return state.healthyMounts.has(prefix);
 		},
 		async mountVisibility(prefix): Promise<MountVisibility> {
-			return (
-				state.visibility?.get(prefix) ?? (state.healthyMounts.has(prefix) ? 'visible' : 'missing')
-			);
+			const explicit = state.visibility?.get(prefix);
+			if (explicit) return explicit;
+			// Configured mount prefixes follow mount health; plain local
+			// directories (/media, /symlinks) are visible in these scenarios.
+			if (MOUNTS.some((m) => m.prefix === prefix)) {
+				return state.healthyMounts.has(prefix) ? 'visible' : 'missing';
+			}
+			return 'visible';
 		}
 	};
 }

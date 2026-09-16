@@ -156,15 +156,24 @@ export interface ReconcileResult {
 // Path identity
 // ---------------------------------------------------------------------------
 
-/** Normalise a recorded path across declared aliases, for set comparison. */
+/** Normalise a recorded path across declared aliases (chained to fixpoint),
+ *  so `/media/X`, `/symlinks/TV Shows/X` and the raw bind view converge onto
+ *  one identity for set comparison. */
 export function normalizePath(path: string, aliases: PathAliasSpec[]): string {
 	let out = path;
-	for (const alias of aliases) {
-		if (out.startsWith(alias.from)) {
-			out = alias.to + out.slice(alias.from.length);
-			break;
+	for (let hop = 0; hop < 5; hop++) {
+		let changed = false;
+		for (const alias of aliases) {
+			if (out.startsWith(alias.from)) {
+				const next = alias.to + out.slice(alias.from.length);
+				if (next !== out) {
+					out = next;
+					changed = true;
+					break;
+				}
+			}
 		}
-		if (out.startsWith(alias.to)) break;
+		if (!changed) break;
 	}
 	return out;
 }
@@ -180,48 +189,104 @@ function mountForTarget(target: string, mounts: MountTargetSpec[]): MountTargetS
 // Classification
 // ---------------------------------------------------------------------------
 
+/** The filesystem root prefix of a recorded path, e.g. `/symlinks` or `/media`. */
+function pathRoot(path: string): string {
+	const parts = path.split('/').filter(Boolean);
+	return '/' + (parts[0] ?? '');
+}
+
+/**
+ * Rewrite a recorded path through every alias (chained, so Arr roots can
+ * converge onto Plex library roots and then onto the raw bind view). Used to
+ * probe alternate filesystem views of the same logical file.
+ */
+export function aliasViews(path: string, aliases: PathAliasSpec[]): string[] {
+	const views = new Set<string>([path]);
+	let current = path;
+	for (let hop = 0; hop < 5; hop++) {
+		let changed = false;
+		for (const alias of aliases) {
+			if (current.startsWith(alias.from)) {
+				const next = alias.to + current.slice(alias.from.length);
+				if (!views.has(next)) {
+					views.add(next);
+					current = next;
+					changed = true;
+					break;
+				}
+			}
+		}
+		if (!changed) break;
+	}
+	return [...views];
+}
+
 async function classifyPath(
 	path: string,
 	prober: LibraryProber,
 	mounts: MountTargetSpec[],
 	mountHealth: Map<string, boolean>,
-	mountVisibility: Map<string, MountVisibility>
+	mountVisibility: Map<string, MountVisibility>,
+	pathAliases: PathAliasSpec[],
+	rootVisibility: Map<string, MountVisibility>
 ): Promise<ItemVerdict> {
-	const l = await prober.lstat(path);
-	if (l.kind === 'missing') return { status: 'missing' };
-	if (l.kind === 'error') {
-		return { status: 'unreadable', mount: 'local', code: l.code };
-	}
-	const target = l.kind === 'symlink' ? (l.target ?? '') : null;
-	if (target !== null) {
-		const mount = mountForTarget(target, mounts);
-		if (mount) {
-			const healthy = mountHealth.get(mount.prefix) ?? true;
-			if (!healthy) return { status: 'backend-down', mount: mount.label };
-		}
-	}
-	const r = await prober.resolve(path);
-	if (r === 'exists') return { status: 'available' };
-	if (r === 'missing') {
-		if (target !== null) {
-			// Target gone: is that permanent (broken symlink) or is the mount
-			// simply not visible from this filesystem view (observer outside
-			// the container that owns the mount)? An empty mount root is the
-			// signature of a bind of a not-yet-mounted host path.
-			const targetMount = target !== null ? mountForTarget(target, mounts) : null;
-			const prefix = targetMount?.prefix ?? target.split('/').slice(0, 4).join('/') + '/';
-			const visibility = mountVisibility.get(prefix);
-			if (visibility === 'missing' || visibility === 'empty' || visibility === 'error') {
-				return { status: 'unverifiable', mount: targetMount?.label ?? prefix };
+	// Try every filesystem view of this logical path. The recorded view may
+	// not exist in this container while an alias view does (DUMBscope binds
+	// /mnt/vm_storage/symlinks/… while Plex records /symlinks/…).
+	let missingEverywhere = true;
+	let recordedViewVisible = false;
+	const views = aliasViews(path, pathAliases);
+	for (const view of views) {
+		const l = await prober.lstat(view);
+		if (l.kind === 'missing') {
+			if (view === path && (rootVisibility.get(pathRoot(path)) ?? 'visible') === 'visible') {
+				recordedViewVisible = true;
 			}
-			return { status: 'broken-symlink' };
+			continue;
 		}
-		return { status: 'missing' };
+		missingEverywhere = false;
+		if (l.kind === 'error') {
+			return { status: 'unreadable', mount: 'local', code: l.code };
+		}
+		const target = l.kind === 'symlink' ? (l.target ?? '') : null;
+		if (target !== null) {
+			const mount = mountForTarget(target, mounts);
+			if (mount) {
+				const healthy = mountHealth.get(mount.prefix) ?? true;
+				if (!healthy) return { status: 'backend-down', mount: mount.label };
+			}
+		}
+		const r = await prober.resolve(view);
+		if (r === 'exists') return { status: 'available' };
+		if (r === 'missing') {
+			if (target !== null) {
+				// Target gone: is that permanent (broken symlink) or is the
+				// mount simply not visible from this filesystem view? An
+				// empty mount root is the signature of a bind of a
+				// not-yet-mounted host path.
+				const targetMount = target !== null ? mountForTarget(target, mounts) : null;
+				const prefix = targetMount?.prefix ?? target.split('/').slice(0, 4).join('/') + '/';
+				const visibility = mountVisibility.get(prefix);
+				if (visibility === 'missing' || visibility === 'empty' || visibility === 'error') {
+					return { status: 'unverifiable', mount: targetMount?.label ?? prefix };
+				}
+				return { status: 'broken-symlink' };
+			}
+			return { status: 'missing' };
+		}
+		return {
+			status: 'unreadable',
+			mount: target ? (mountForTarget(target, mounts)?.label ?? 'local') : 'local'
+		};
 	}
-	return {
-		status: 'unreadable',
-		mount: target ? (mountForTarget(target, mounts)?.label ?? 'local') : 'local'
-	};
+	// Every view is missing. If even the recorded path's own root directory
+	// is not visible here, this instance cannot judge the item at all —
+	// reporting it as permanently missing would be a lie (production lesson
+	// 2026-09-16: 4.5k false plex-ghost findings without this rule).
+	if (!recordedViewVisible) {
+		return { status: 'unverifiable', mount: pathRoot(path) };
+	}
+	return { status: 'missing' };
 }
 
 // ---------------------------------------------------------------------------
@@ -256,8 +321,29 @@ export async function reconcileLibrary(options: ReconcileOptions): Promise<Recon
 		mountVisibility.set(m.prefix, await prober.mountVisibility(m.prefix));
 	}
 
+	// Root visibility for the recorded path views themselves (e.g. `/symlinks`
+	// is invisible in a DUMBscope container that binds the raw symlink dir).
+	const rootVisibility = new Map<string, MountVisibility>();
+	const recordRoot = async (p: string) => {
+		const root = pathRoot(p);
+		if (!rootVisibility.has(root)) {
+			rootVisibility.set(root, await prober.mountVisibility(root));
+		}
+	};
+	await recordRoot('/symlinks');
+	for (const rec of arrFiles) await recordRoot(rec.path);
+	for (const part of plexParts) await recordRoot(part.path);
+
 	for (const rec of arrFiles) {
-		const verdict = await classifyPath(rec.path, prober, mounts, mountHealth, mountVisibility);
+		const verdict = await classifyPath(
+			rec.path,
+			prober,
+			mounts,
+			mountHealth,
+			mountVisibility,
+			aliases,
+			rootVisibility
+		);
 		if (verdict.status === 'available') {
 			arrAvailable.add(normalizePath(rec.path, aliases));
 			continue;
@@ -275,7 +361,15 @@ export async function reconcileLibrary(options: ReconcileOptions): Promise<Recon
 	let plexOnDownMount = 0;
 	let plexUnverifiable = 0;
 	for (const part of plexParts) {
-		const verdict = await classifyPath(part.path, prober, mounts, mountHealth, mountVisibility);
+		const verdict = await classifyPath(
+			part.path,
+			prober,
+			mounts,
+			mountHealth,
+			mountVisibility,
+			aliases,
+			rootVisibility
+		);
 		if (verdict.status === 'available') {
 			plexAvailable.add(normalizePath(part.path, aliases));
 			continue;

@@ -154,15 +154,18 @@ export function runProbeRound(ops: FsProbe[], timeoutMs: number): Promise<ProbeR
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			// Reclaim the worker on EVERY exit path — success included. A
+			// worker is single-use by design: leaving a completed round's
+			// isolate alive leaks one idle thread (~8 MB RSS) per round, and
+			// the mount monitor runs one round per mount per minute
+			// (2026-09-17: 4 mounts → GBs per hour across both instances).
+			void worker.terminate().catch(() => {
+				// already gone
+			});
 			resolve({ ...result, durationMs: Date.now() - started });
 		};
 		const worker = new Worker(WORKER_SOURCE, { eval: true });
 		const timer = setTimeout(() => {
-			try {
-				worker.terminate();
-			} catch {
-				// already gone
-			}
 			const remaining: ProbeOpResult[] = [];
 			for (let i = results.length; i < ops.length; i++) {
 				remaining.push({ ok: false, code: 'TIMEOUT', message: 'probe timed out' });

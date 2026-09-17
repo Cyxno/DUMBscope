@@ -67,6 +67,8 @@ interface Pending {
 	resolve: (value: unknown) => void;
 	reject: (reason: unknown) => void;
 	timer: NodeJS.Timeout;
+	/** The worker this op was posted to (identity-checked on cleanup). */
+	worker: Worker;
 }
 
 export class WorkerLibraryProber implements LibraryProber {
@@ -87,10 +89,16 @@ export class WorkerLibraryProber implements LibraryProber {
 			entry.resolve(msg.results[0]);
 		});
 		const kill = () => {
-			const w = this.worker;
-			this.worker = null;
-			this.pending.clear();
-			if (w) void w.terminate();
+			// Identity-safe: by the time 'exit'/'error' fires, this.worker may
+			// already point at a NEWER worker (an op timed out and a fresh one
+			// was created). Never null out or terminate that replacement.
+			if (this.worker === worker) this.worker = null;
+			for (const [id, entry] of this.pending) {
+				if (entry.worker === worker) this.pending.delete(id);
+			}
+			void worker.terminate().catch(() => {
+				// already gone
+			});
 		};
 		worker.on('error', kill);
 		worker.on('exit', kill);
@@ -104,13 +112,17 @@ export class WorkerLibraryProber implements LibraryProber {
 		return new Promise<T>((resolve, reject) => {
 			const timer = setTimeout(() => {
 				this.pending.delete(id);
-				// A hung op poisons the worker: terminate and leak no handles.
-				const w = this.worker;
-				this.worker = null;
-				if (w) void w.terminate();
+				// A hung op poisons ITS worker: terminate exactly that worker
+				// and leak no handles. Later ops may already run on a new one.
+				if (this.worker === worker) {
+					this.worker = null;
+					void worker.terminate().catch(() => {
+						// already gone
+					});
+				}
 				reject(new Error(`probe timeout after ${this.opTimeoutMs}ms`));
 			}, this.opTimeoutMs);
-			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer });
+			this.pending.set(id, { resolve: resolve as (v: unknown) => void, reject, timer, worker });
 			worker.postMessage({ id, ops: [op] });
 		});
 	}

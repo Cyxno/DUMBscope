@@ -28,8 +28,29 @@ const TUNING = {
 	/** Max Sonarr series probed per cycle (truncation is reported, not hidden). */
 	sonarrSeriesCap: 400,
 	/** Concurrent Sonarr episodefile requests. */
-	concurrency: 8
+	concurrency: 8,
+	/** First backoff after an Arr fetch failure. */
+	fetchBackoffBaseMs: 60_000,
+	/** Backoff ceiling: an unreachable Arr is retried at most every 10 min. */
+	fetchBackoffMaxMs: 10 * 60_000
 } as const;
+
+/**
+ * Per-integration fetch bookkeeping. A failed integration never aborts the
+ * cycle and never crashes the process: it degrades to its last-good data
+ * (or, if it never succeeded, suspends the Arr-vs-Plex diff for the cycle)
+ * and retries on an exponential, bounded backoff.
+ */
+interface IntegrationFetchState {
+	/** Last successful fetch output; null until the first success. */
+	files: ArrFileRecord[] | null;
+	/** Timestamp of the last successful fetch. */
+	lastGoodAt: number;
+	/** Consecutive failures — drives the exponential backoff. */
+	consecutiveFailures: number;
+	/** Earliest wall-clock time the next fetch attempt is allowed. */
+	nextAttemptAt: number;
+}
 
 interface IntegrationLike {
 	id: string;
@@ -180,6 +201,19 @@ export interface ReconciliationRunnerOptions {
 	getActiveFingerprints?: () => Iterable<string>;
 	onStats?: (stats: Awaited<ReturnType<typeof reconcileLibrary>>['stats']) => void;
 	now?: () => number;
+	/**
+	 * Test seam: resolve the Arr poll targets without touching the integrations
+	 * store (which drags the database into unit tests). Defaults to the store.
+	 */
+	resolveArrTargets?: () => Promise<ArrTarget[]> | ArrTarget[];
+}
+
+/** One enabled Sonarr/Radarr the runner should poll. */
+export interface ArrTarget {
+	id: string;
+	type: 'sonarr' | 'radarr';
+	url: string;
+	apiKey: string;
 }
 
 export class ReconciliationRunner {
@@ -187,6 +221,8 @@ export class ReconciliationRunner {
 	private startupTimer: NodeJS.Timeout | null = null;
 	private running = false;
 	private prober: WorkerLibraryProber | null = null;
+	/** Per-integration fetch state, keyed by integration id. */
+	private fetchStates = new Map<string, IntegrationFetchState>();
 
 	constructor(private readonly options: ReconciliationRunnerOptions) {}
 
@@ -217,19 +253,109 @@ export class ReconciliationRunner {
 		if (!settings.enabled) return;
 		this.running = true;
 		try {
-			const { listIntegrations, getApiKey } = await import('../integrations/store');
+			let targets: ArrTarget[];
+			if (this.options.resolveArrTargets) {
+				targets = await this.options.resolveArrTargets();
+			} else {
+				const { listIntegrations, getApiKey } = await import('../integrations/store');
+				targets = listIntegrations()
+					.filter(
+						(c) =>
+							c.enabled !== false && (c.type === 'sonarr' || c.type === 'radarr')
+					)
+					.flatMap((c) => {
+						const apiKey = getApiKey(c.id);
+						return apiKey
+							? [{ id: c.id, type: c.type as 'sonarr' | 'radarr', url: c.url, apiKey }]
+							: [];
+					});
+			}
+			const now = this.options.now?.() ?? Date.now();
 			const arrFiles: ArrFileRecord[] = [];
-			for (const config of listIntegrations()) {
-				if (config.enabled === false) continue;
-				if (config.type !== 'sonarr' && config.type !== 'radarr') continue;
-				const apiKey = getApiKey(config.id);
-				if (!apiKey) continue;
-				const { files } = await fetchArrFiles(
-					config as unknown as IntegrationLike,
-					apiKey,
-					config.type
-				);
-				arrFiles.push(...files);
+			let arrIncomplete = false; // an enabled Arr contributed no data at all
+
+			for (const config of targets) {
+				// Error isolation (production lesson 2026-09-17): one unreachable
+				// Arr must never crash the process (unhandled rejection → exit →
+				// restart → full library resnapshot storm). A failure marks the
+				// integration degraded, backs off, and the cycle degrades with it.
+				let state = this.fetchStates.get(config.id);
+				if (!state) {
+					state = { files: null, lastGoodAt: 0, consecutiveFailures: 0, nextAttemptAt: 0 };
+					this.fetchStates.set(config.id, state);
+				}
+
+				if (now < state.nextAttemptAt) {
+					// Backoff gate: keep serving last-good (stale) data, no request.
+					if (state.files) arrFiles.push(...state.files);
+					else arrIncomplete = true;
+					continue;
+				}
+
+				try {
+					const { files } = await fetchArrFiles(
+						{ id: config.id, type: config.type, url: config.url },
+						config.apiKey,
+						config.type
+					);
+					const wasDown = state.consecutiveFailures > 0;
+					state.files = files;
+					state.lastGoodAt = now;
+					state.consecutiveFailures = 0;
+					state.nextAttemptAt = 0;
+					arrFiles.push(...files);
+					// Sustained recovery: clear the degraded incident. It resolves
+					// either here (dedupe fingerprint below) or via the active-set
+					// sweep when a diff cycle runs.
+					if (wasDown) {
+						console.log(
+							`[reconciliation] ${config.type} "${config.id}" recovered (backoff reset)`
+						);
+						this.options.resolveFinding(arrUnavailableFingerprint(config.id));
+					}
+				} catch (err) {
+					state.consecutiveFailures += 1;
+					const attempt = state.consecutiveFailures;
+					const backoff = Math.min(
+						TUNING.fetchBackoffBaseMs * 2 ** (attempt - 1),
+						TUNING.fetchBackoffMaxMs
+					);
+					state.nextAttemptAt = now + backoff;
+					const errorClass = err instanceof Error ? err.name : typeof err;
+					const detail = err instanceof Error ? err.message : String(err);
+					// Compact one-liner: no stack trace spam, no secrets (API key
+					// never enters the message; URL is deliberately omitted).
+					console.warn(
+						`[reconciliation] ${config.type} "${config.id}" fetch failed (${errorClass}: ${detail}); attempt ${attempt}, retrying in ${Math.round(backoff / 1000)}s`
+					);
+					if (state.files) {
+						// Degrade to last-good data rather than presenting an empty
+						// library as ground truth (which would mass-report false
+						// plex-file-not-in-sonarr findings).
+						arrFiles.push(...state.files);
+					} else {
+						arrIncomplete = true;
+						// Deduped by the incident engine on fingerprint: repeated
+						// failures refresh the summary, they never open new incidents.
+						this.options.reportFinding({
+							kind: 'backend-unavailable',
+							fingerprint: arrUnavailableFingerprint(config.id),
+							severity: 'warning',
+							title: `${config.id} unreachable (${config.type})`,
+							summary: `Reconciliation cannot read ${config.type}; Arr-vs-Plex checks are suspended for this integration. Retry in ${Math.round(backoff / 1000)}s.`,
+							evidence: [`${errorClass}: ${detail}`],
+							resolvable: true
+						});
+					}
+				}
+			}
+
+			// Safety valve: without data from every enabled Arr, the Arr-vs-Plex
+			// diff would compare Plex against a partial library and mass-report
+			// false positives. Skip the diff this cycle (findings stay untouched,
+			// nothing is resolved on stale evidence); the backoff gate retries.
+			if (arrIncomplete) {
+				return;
 			}
 
 			// Synthetic production self-test fixtures: classified like any
@@ -310,12 +436,31 @@ export class ReconciliationRunner {
 						if (part?.sectionId) sectionIds.add(part.sectionId);
 					}
 					for (const id of sectionIds) {
-						await refreshPlexSection(settings.plexUrl, settings.plexToken, id);
+						try {
+							await refreshPlexSection(settings.plexUrl, settings.plexToken, id);
+						} catch (err) {
+							// Remediation is best-effort; never let it kill the cycle.
+							console.warn(
+								`[reconciliation] Plex section ${id} refresh failed: ${err instanceof Error ? err.message : String(err)}`
+							);
+						}
 					}
 				}
 			}
+		} catch (err) {
+			// Last-resort guard: a reconciliation bug must degrade the feature,
+			// never the process (an escaped rejection exits Node ≥15).
+			console.error(
+				'[reconciliation] cycle failed unexpectedly:',
+				err instanceof Error ? `${err.name}: ${err.message}` : err
+			);
 		} finally {
 			this.running = false;
 		}
 	}
+}
+
+/** Stable incident fingerprint: one deduped incident per integration. */
+function arrUnavailableFingerprint(integrationId: string): string {
+	return `recon:arr-unavailable:${integrationId}`;
 }

@@ -96,6 +96,48 @@ export class MountMonitor {
 		return [...this.targets.values()].map((t) => t.report);
 	}
 
+	/**
+	 * Apply configuration changes (targets live in settings; the hub syncs on
+	 * every housekeeping tick). New targets start probing on their next round;
+	 * removed targets stop immediately and their paths are returned so the
+	 * caller can retire the findings as obsolete ("target removed") — without
+	 * this, a removed mount kept being probed forever with findings that could
+	 * never see a healthy round again.
+	 */
+	syncTargets(targets: MountTarget[]): string[] {
+		const seen = new Set(targets.map((t) => t.id));
+		const removed: string[] = [];
+		for (const [id, state] of this.targets) {
+			if (seen.has(id)) continue;
+			removed.push(state.report.target.path);
+			this.targets.delete(id);
+		}
+		for (const target of targets) {
+			const existing = this.targets.get(target.id);
+			if (!existing) {
+				this.targets.set(target.id, {
+					busy: false,
+					lastRoundAt: null,
+					consecutiveMissing: 0,
+					report: emptyReport(target)
+				});
+				continue;
+			}
+			// Same id but edited definition (label, path, consumers): keep the
+			// probe state, refresh the identity shown in reports.
+			const current = existing.report.target;
+			if (
+				current.path !== target.path ||
+				current.label !== target.label ||
+				current.kind !== target.kind ||
+				current.consumers.join('\u0000') !== target.consumers.join('\u0000')
+			) {
+				existing.report.target = target;
+			}
+		}
+		return removed;
+	}
+
 	stats(): { mountRounds: number; lastRoundMs: number | null } {
 		return { mountRounds: this.rounds, lastRoundMs: this.lastRoundMs };
 	}

@@ -12,6 +12,7 @@ import { describe, expect, it, beforeEach } from 'vitest';
 import {
 	MediaFlowCorrelator,
 	type ArrObservation,
+	type ArrSourceBatch,
 	type MediaFinding
 } from '../src/lib/server/media/flow';
 import { AcquisitionLedger, LEDGER_TUNING } from '../src/lib/server/media/ledger';
@@ -39,7 +40,7 @@ describe('media flow correlation', () => {
 	let clock: () => number;
 	let findings: MediaFinding[];
 	let resolved: string[];
-	let loader: () => Promise<ArrObservation[]>;
+	let loader: () => Promise<ArrSourceBatch>;
 	let correlator: MediaFlowCorrelator;
 
 	beforeEach(() => {
@@ -47,7 +48,10 @@ describe('media flow correlation', () => {
 		clock = () => now;
 		findings = [];
 		resolved = [];
-		loader = async () => [];
+		loader = async () => ({
+			sources: [],
+			complete: true
+		});
 		// Test isolation: the SQLite store is per-file, so clear the ledger.
 		getDb().prepare('DELETE FROM media_acquisitions').run();
 		getDb().prepare('DELETE FROM remediation_actions').run();
@@ -81,23 +85,29 @@ describe('media flow correlation', () => {
 	});
 
 	it('missing only: honest missing state, no finding', async () => {
-		loader = async () => [
-			observation('sonarr-a', {
-				missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }]
+				})
+			],
+			complete: true
+		});
 		await tick();
 		expect(findings).toHaveLength(0);
 		expect(correlator.snapshot().items[0]!.summary).toBe('missing');
 	});
 
 	it('missing + recent accepted grab: acquiring overrides missing (brief §15), no finding', async () => {
-		loader = async () => [
-			observation('sonarr-a', {
-				missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
-				events: [grab('sonarr-a', 1, 'req-1', 4)]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
+					events: [grab('sonarr-a', 1, 'req-1', 4)]
+				})
+			],
+			complete: true
+		});
 		await tick();
 		expect(findings).toHaveLength(0);
 		const item = correlator.snapshot().items[0]!;
@@ -112,12 +122,15 @@ describe('media flow correlation', () => {
 	});
 
 	it('repeated request while active: warning finding with count', async () => {
-		loader = async () => [
-			observation('sonarr-a', {
-				missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
-				events: [grab('sonarr-a', 1, 'req-1', 20), grab('sonarr-a', 1, 'req-2', 5)]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
+					events: [grab('sonarr-a', 1, 'req-1', 20), grab('sonarr-a', 1, 'req-2', 5)]
+				})
+			],
+			complete: true
+		});
 		await tick();
 		const repeat = findings.find((f) => f.fingerprint.startsWith('media-repeat:'));
 		expect(repeat).toBeDefined();
@@ -125,22 +138,25 @@ describe('media flow correlation', () => {
 	});
 
 	it('a request after a completed acquisition is NOT a repeat (shield, brief §20)', async () => {
-		loader = async () => [
-			observation('sonarr-a', {
-				events: [
-					{ ...grab('sonarr-a', 1, 'req-1', 48 * 60), event: 'grabbed' },
-					{
-						requestId: 'req-1',
-						mediaKey: episodeKey('sonarr-a', 1),
-						title: 'Some Show S01E01',
-						client: 'SABnzbd',
-						event: 'downloadFolderImported',
-						at: now - 47 * 60 * MIN
-					},
-					grab('sonarr-a', 1, 'req-2', 5)
-				]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					events: [
+						{ ...grab('sonarr-a', 1, 'req-1', 48 * 60), event: 'grabbed' },
+						{
+							requestId: 'req-1',
+							mediaKey: episodeKey('sonarr-a', 1),
+							title: 'Some Show S01E01',
+							client: 'SABnzbd',
+							event: 'downloadFolderImported',
+							at: now - 47 * 60 * MIN
+						},
+						grab('sonarr-a', 1, 'req-2', 5)
+					]
+				})
+			],
+			complete: true
+		});
 		await tick();
 		expect(findings.find((f) => f.fingerprint.startsWith('media-repeat:'))).toBeUndefined();
 	});
@@ -148,23 +164,26 @@ describe('media flow correlation', () => {
 	it('re-grab after completion while STILL missing: the production loop (repeat)', async () => {
 		// The complaint shape: an acquisition completed but the item never
 		// imported cleanly, so it stays missing and gets re-offered.
-		loader = async () => [
-			observation('sonarr-a', {
-				missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
-				events: [
-					grab('sonarr-a', 1, 'req-1', 120),
-					{
-						requestId: 'req-1',
-						mediaKey: episodeKey('sonarr-a', 1),
-						title: 'x',
-						client: 'SABnzbd',
-						event: 'downloadFolderImported',
-						at: now - 118 * MIN
-					},
-					grab('sonarr-a', 1, 'req-2', 5)
-				]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
+					events: [
+						grab('sonarr-a', 1, 'req-1', 120),
+						{
+							requestId: 'req-1',
+							mediaKey: episodeKey('sonarr-a', 1),
+							title: 'x',
+							client: 'SABnzbd',
+							event: 'downloadFolderImported',
+							at: now - 118 * MIN
+						},
+						grab('sonarr-a', 1, 'req-2', 5)
+					]
+				})
+			],
+			complete: true
+		});
 		await tick();
 		const repeat = findings.find((f) => f.fingerprint.startsWith('media-repeat:'));
 		expect(repeat).toBeDefined();
@@ -174,43 +193,49 @@ describe('media flow correlation', () => {
 	});
 
 	it('imported inside grace: no mismatch warning', async () => {
-		loader = async () => [
-			observation('sonarr-a', {
-				missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
-				events: [
-					grab('sonarr-a', 1, 'req-1', 12),
-					{
-						requestId: 'req-1',
-						mediaKey: episodeKey('sonarr-a', 1),
-						title: 'x',
-						client: 'SABnzbd',
-						event: 'downloadFolderImported',
-						at: now - 5 * MIN
-					}
-				]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
+					events: [
+						grab('sonarr-a', 1, 'req-1', 12),
+						{
+							requestId: 'req-1',
+							mediaKey: episodeKey('sonarr-a', 1),
+							title: 'x',
+							client: 'SABnzbd',
+							event: 'downloadFolderImported',
+							at: now - 5 * MIN
+						}
+					]
+				})
+			],
+			complete: true
+		});
 		await tick();
 		expect(findings.find((f) => f.fingerprint.startsWith('media-mismatch:'))).toBeUndefined();
 	});
 
 	it('imported but still missing beyond grace: mismatch warning opens', async () => {
-		loader = async () => [
-			observation('sonarr-a', {
-				missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
-				events: [
-					grab('sonarr-a', 1, 'req-1', 40),
-					{
-						requestId: 'req-1',
-						mediaKey: episodeKey('sonarr-a', 1),
-						title: 'x',
-						client: 'SABnzbd',
-						event: 'downloadFolderImported',
-						at: now - 20 * MIN
-					}
-				]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
+					events: [
+						grab('sonarr-a', 1, 'req-1', 40),
+						{
+							requestId: 'req-1',
+							mediaKey: episodeKey('sonarr-a', 1),
+							title: 'x',
+							client: 'SABnzbd',
+							event: 'downloadFolderImported',
+							at: now - 20 * MIN
+						}
+					]
+				})
+			],
+			complete: true
+		});
 		await tick();
 		const mismatch = findings.find((f) => f.fingerprint.startsWith('media-mismatch:'));
 		expect(mismatch).toBeDefined();
@@ -227,12 +252,15 @@ describe('media flow correlation', () => {
 			event: 'downloadFailed' as const,
 			at: now - (29 - i * 10) * MIN
 		}));
-		loader = async () => [
-			observation('sonarr-a', {
-				missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
-				events: [...events, ...failed]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
+					events: [...events, ...failed]
+				})
+			],
+			complete: true
+		});
 		await tick({ mountUnhealthy: false, mountLabel: null });
 		expect(findings.find((f) => f.fingerprint.startsWith('media-failing:'))).toBeDefined();
 
@@ -243,14 +271,17 @@ describe('media flow correlation', () => {
 	});
 
 	it('multi-instance: the same episode id on two Sonarr instances never collides (§64)', async () => {
-		loader = async () => [
-			observation('sonarr-a', {
-				events: [grab('sonarr-a', 7, 'req-a', 5)]
-			}),
-			observation('sonarr-b', {
-				events: [grab('sonarr-b', 7, 'req-b', 5, 'qBittorrent')]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					events: [grab('sonarr-a', 7, 'req-a', 5)]
+				}),
+				observation('sonarr-b', {
+					events: [grab('sonarr-b', 7, 'req-b', 5, 'qBittorrent')]
+				})
+			],
+			complete: true
+		});
 		await tick();
 		expect(episodeKey('sonarr-a', 7)).not.toBe(episodeKey('sonarr-b', 7));
 		expect(correlator.snapshot().items).toHaveLength(2);
@@ -258,12 +289,15 @@ describe('media flow correlation', () => {
 	});
 
 	it('radarr movies use their own namespaced key', async () => {
-		loader = async () => [
-			{
-				...observation('radarr-a', { sourceType: 'radarr' as const }),
-				missing: [{ mediaKey: movieKey('radarr-a', 42), title: 'Some Movie (2026)', mediaId: 42 }]
-			}
-		];
+		loader = async () => ({
+			sources: [
+				{
+					...observation('radarr-a', { sourceType: 'radarr' as const }),
+					missing: [{ mediaKey: movieKey('radarr-a', 42), title: 'Some Movie (2026)', mediaId: 42 }]
+				}
+			],
+			complete: true
+		});
 		await tick();
 		const item = correlator.snapshot().items[0]!;
 		expect(item.mediaKey).toBe('radarr:radarr-a:movie:42');
@@ -271,35 +305,41 @@ describe('media flow correlation', () => {
 	});
 
 	it('late grabbed event never regresses an imported item (§66)', async () => {
-		loader = async () => [
-			observation('sonarr-a', {
-				events: [
-					grab('sonarr-a', 1, 'req-1', 30),
-					{
-						requestId: 'req-1',
-						mediaKey: episodeKey('sonarr-a', 1),
-						title: 'x',
-						client: 'SABnzbd',
-						event: 'downloadFolderImported',
-						at: now - 25 * MIN
-					},
-					// Late-arriving duplicate grab frame with an older timestamp.
-					grab('sonarr-a', 1, 'req-1', 29)
-				]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					events: [
+						grab('sonarr-a', 1, 'req-1', 30),
+						{
+							requestId: 'req-1',
+							mediaKey: episodeKey('sonarr-a', 1),
+							title: 'x',
+							client: 'SABnzbd',
+							event: 'downloadFolderImported',
+							at: now - 25 * MIN
+						},
+						// Late-arriving duplicate grab frame with an older timestamp.
+						grab('sonarr-a', 1, 'req-1', 29)
+					]
+				})
+			],
+			complete: true
+		});
 		await tick();
 		const item = correlator.snapshot().items[0]!;
 		expect(item.summary).toBe('available');
 	});
 
 	it('queue presence reports downloading and suppresses findings', async () => {
-		loader = async () => [
-			observation('sonarr-a', {
-				missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
-				queue: [{ mediaKey: episodeKey('sonarr-a', 1), state: 'downloading' }]
-			})
-		];
+		loader = async () => ({
+			sources: [
+				observation('sonarr-a', {
+					missing: [{ mediaKey: episodeKey('sonarr-a', 1), title: 'Some Show S01E01', mediaId: 1 }],
+					queue: [{ mediaKey: episodeKey('sonarr-a', 1), state: 'downloading' }]
+				})
+			],
+			complete: true
+		});
 		await tick();
 		expect(correlator.snapshot().items[0]!.summary).toBe('downloading');
 		expect(findings).toHaveLength(0);

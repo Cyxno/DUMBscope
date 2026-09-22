@@ -14,6 +14,7 @@ import type {
 	ConnectionSnapshot,
 	HealthStatus,
 	Incident,
+	IncidentResolutionKind,
 	IncidentSeverity,
 	LogLine,
 	MetricsSnapshot,
@@ -28,9 +29,37 @@ import { INCIDENT_TUNING as TUNING } from './tuning';
 import { MOUNT_TUNING } from '../reliability/mounts';
 import { serviceKeyFromName } from '../dumb/normalize';
 
+/**
+ * The detector that owns an incident's lifecycle, derived from its fingerprint
+ * prefix. The stale-incident safety net uses this to decide whether an open
+ * incident is still evaluable; the engine records it on every row.
+ */
+export function detectorForFingerprint(fp: string): string {
+	if (fp.startsWith('svc-unhealthy:') || fp.startsWith('svc-degraded:')) return 'status.health';
+	if (fp.startsWith('svc-stopped:')) return 'status.stopped';
+	if (fp.startsWith('svc-restart-failures:')) return 'status.restart';
+	if (fp.startsWith('svc-log-errors:')) return 'logs.errors';
+	if (fp.startsWith('db-health:')) return 'metrics.database';
+	if (fp.startsWith('disk-usage:')) return 'metrics.disk';
+	if (fp.startsWith('dumb-offline:') || fp.startsWith('dumb-credentials:')) return 'connection';
+	if (fp.startsWith('telemetry-stale:')) return 'connection.telemetry';
+	if (fp.startsWith('integration-down:')) return 'integration';
+	if (fp.startsWith('mount:')) return 'mounts';
+	if (fp.startsWith('symlinks:')) return 'mounts.symlinks';
+	if (fp.startsWith('memory:')) return 'memory';
+	if (fp.startsWith('media-')) return 'media-flow';
+	if (fp.startsWith('recon:')) return 'reconciliation';
+	if (fp.startsWith('self:')) return 'runtime';
+	if (fp.startsWith('restart-storm:')) return 'anomaly.restart';
+	if (fp.startsWith('disk-trend:')) return 'anomaly.disk-trend';
+	return 'legacy';
+}
+
 interface OpenState {
 	/** Open (or pending-open) incident keyed by fingerprint. */
 	byFingerprint: Map<string, Incident>;
+	/** Affected entity (service key / path / integration id / media key) per fingerprint. */
+	identityByFingerprint: Map<string, string>;
 	/** Trackers for signals that have not yet crossed their threshold. */
 	unhealthyStreak: Map<string, { count: number; since: number; lastReason: string | null }>;
 	degradedStreak: Map<string, { count: number; since: number }>;
@@ -46,6 +75,14 @@ interface OpenState {
 	mountHealthyRounds: Map<string, number>;
 	/** Rounds since the systemic symlink signal last held, per mount. */
 	symlinkCleanRounds: Map<string, number>;
+	/**
+	 * Identities (fs path / process name) with an open metrics-scoped incident
+	 * that were ABSENT from the latest metrics snapshot: absent since when.
+	 * Absence alone never resolves — it resolves only after metrics stayed
+	 * otherwise fresh for the full window (identity gone from DUMB, not a
+	 * telemetry hiccup).
+	 */
+	metricsAbsentSince: Map<string, number>;
 }
 
 export interface EngineEvents {
@@ -55,6 +92,18 @@ export interface EngineEvents {
 
 export class IncidentEngine {
 	private state: OpenState = freshState();
+
+	/**
+	 * Mount path → consumer service keys, refreshed by the hub whenever mount
+	 * targets change. Dependency evidence for correlation only — never used to
+	 * open incidents.
+	 */
+	private mountConsumerIndex: Map<string, string[]> | null = null;
+
+	/** Provide the mount path → consumers index (hub call, may be null). */
+	setMountConsumerIndex(index: Map<string, string[]> | null): void {
+		this.mountConsumerIndex = index;
+	}
 
 	constructor(
 		private readonly events: EngineEvents = {},
@@ -67,21 +116,91 @@ export class IncidentEngine {
 	}
 
 	/**
-	 * Load persisted active incidents into state after a restart. Without
-	 * this, an incident that was active when the process died can never
-	 * resolve again: resolution only touches incidents in memory, so the row
-	 * stays 'active' forever (production audit 2026-09-10). Hydrated
+	 * Load persisted open incidents (active + acknowledged) into state after a
+	 * restart. Without this, an incident that was active when the process died
+	 * can never resolve again: resolution only touches incidents in memory, so
+	 * the row stays 'active' forever (production audit 2026-09-10). Hydrated
 	 * incidents resolve naturally once their condition clears.
+	 *
+	 * Hydration also rebuilds the detector bookkeeping an in-memory engine
+	 * would have had: affected identities (for the safety net) and an error
+	 * window seed per hydrated log-error incident, so "error rate returned to
+	 * normal" stays reachable after a restart instead of the incident becoming
+	 * unresolvable.
 	 */
 	hydrate(): void {
-		for (const incident of incidentRepository.active()) {
+		for (const incident of incidentRepository.open()) {
 			const existing = this.state.byFingerprint.get(incident.fingerprint);
-			if (!existing) this.state.byFingerprint.set(incident.fingerprint, incident);
+			if (existing) continue;
+			this.state.byFingerprint.set(incident.fingerprint, incident);
+			const identity = incident.affectedServices[0];
+			if (identity) this.state.identityByFingerprint.set(incident.fingerprint, identity);
+			// Post-restart verification seed for log-error incidents: one clean
+			// window after boot resolves them (the detector watched and no
+			// errors arrived). Without the seed the burst map is empty and the
+			// sweep can never consider the incident again.
+			if (incident.fingerprint.startsWith('svc-log-errors:') && identity) {
+				this.state.errorBurst.set(identity, [this.nowFn()]);
+			}
 		}
 	}
 
+	/**
+	 * Open incidents (active + acknowledged): acknowledged problems are still
+	 * technically open and keep participating in evaluation, correlation and
+	 * resolution — they are only muted for the operator.
+	 */
 	getActive(): Incident[] {
-		return [...this.state.byFingerprint.values()].filter((i) => i.status === 'active');
+		return [...this.state.byFingerprint.values()].filter(
+			(i) => i.status === 'active' || i.status === 'acknowledged'
+		);
+	}
+
+	/** Open incident fingerprints whose prefix matches one of `prefixes`. */
+	openFingerprints(prefixes: string[]): string[] {
+		return [...this.state.byFingerprint.values()]
+			.filter((i) => prefixes.some((p) => i.fingerprint.startsWith(p)))
+			.map((i) => i.fingerprint);
+	}
+
+	/** Affected identity recorded for an open incident (path, process, id, media key). */
+	identityOf(fp: string): string | null {
+		return this.state.identityByFingerprint.get(fp) ?? null;
+	}
+
+	/**
+	 * Stamp `lastEvaluatedAt` on open incidents of the given detectors: proof
+	 * the owning detector ran and had the chance to change its verdict.
+	 * Writes are throttled per incident; stamps never emit SSE events.
+	 */
+	stampEvaluated(prefixes: string[], now: number): void {
+		for (const incident of this.state.byFingerprint.values()) {
+			if (!prefixes.some((p) => incident.fingerprint.startsWith(p))) continue;
+			if (incident.lastEvaluatedAt !== null && now - incident.lastEvaluatedAt < 60_000) continue;
+			incident.lastEvaluatedAt = now;
+			incidentRepository.update(incident);
+		}
+	}
+
+	/**
+	 * Resolve open incidents matching `predicate` with an explicit `obsolete`
+	 * resolution. Used by the stale-incident safety net: the finding's origin
+	 * (target/monitor/integration) is provably gone — this is NOT a recovery.
+	 * Returns the number of resolved incidents.
+	 */
+	resolveWhere(
+		predicate: (incident: Incident) => boolean,
+		reasonFor: (incident: Incident) => string,
+		now: number
+	): number {
+		let count = 0;
+		for (const incident of [...this.state.byFingerprint.values()]) {
+			if (incident.status !== 'active' && incident.status !== 'acknowledged') continue;
+			if (!predicate(incident)) continue;
+			this.resolveIfActive(incident.fingerprint, now, reasonFor(incident), 'obsolete');
+			count++;
+		}
+		return count;
 	}
 
 	// -------------------------------------------------------------------------
@@ -294,6 +413,51 @@ export class IncidentEngine {
 		this.state.metricsStaleSince = null;
 		this.resolveIfActive(Fingerprints.telemetryStale(), now, 'Metrics are updating again');
 
+		/** Absence sweeps: identities with an open metrics-scoped incident that
+		 *  are missing from the current snapshot. A metrics frame just arrived,
+		 *  so the picture is fresh — an identity still absent after the window
+		 *  is gone from DUMB's view (unmounted fs, removed process), and its
+		 *  finding becomes obsolete. This is not a recovery and never claims one. */
+		const reportedFs = new Set(snapshot.filesystems.map((f) => f.path));
+		const reportedProcesses = new Set(snapshot.processes.map((p) => p.name));
+		const absentSweep = (
+			prefix: string,
+			reported: Set<string>,
+			reason: (identity: string) => string
+		): void => {
+			for (const incident of [...this.state.byFingerprint.values()]) {
+				if (!incident.fingerprint.startsWith(prefix)) continue;
+				if (incident.status !== 'active' && incident.status !== 'acknowledged') continue;
+				const identity = this.state.identityByFingerprint.get(incident.fingerprint);
+				if (identity === undefined) continue; // legacy row: detector may still re-adopt it
+				if (reported.has(identity)) {
+					this.state.metricsAbsentSince.delete(incident.fingerprint);
+					continue;
+				}
+				const since = this.state.metricsAbsentSince.get(incident.fingerprint) ?? now;
+				this.state.metricsAbsentSince.set(incident.fingerprint, since);
+				if (now - since >= TUNING.identityAbsentResolveMs) {
+					this.resolveIfActive(incident.fingerprint, now, reason(identity), 'obsolete');
+					this.state.metricsAbsentSince.delete(incident.fingerprint);
+				}
+			}
+		};
+		absentSweep(
+			'disk-usage:',
+			reportedFs,
+			(identity) => `Filesystem ${identity} is no longer reported by DUMB metrics`
+		);
+		absentSweep(
+			'db-health:',
+			reportedProcesses,
+			(identity) => `Process ${identity} is no longer reported by DUMB metrics`
+		);
+		absentSweep(
+			'memory:',
+			reportedProcesses,
+			(identity) => `Process ${identity} is no longer reported by DUMB metrics`
+		);
+
 		for (const fs of snapshot.filesystems) {
 			const above = this.state.diskAboveSince.get(fs.path) ?? null;
 			const over = fs.percent >= TUNING.diskWarnPercent;
@@ -320,6 +484,7 @@ export class IncidentEngine {
 				title: `Disk usage high on ${fs.path}`,
 				summary: `${fs.percent.toFixed(1)}% used (${formatBytes(fs.usedBytes)} of ${formatBytes(fs.totalBytes)})`,
 				service: null,
+				identity: fs.path,
 				evidenceMessage: `${fs.path}: ${fs.percent.toFixed(1)}% used${fs.inodePercent !== null ? `, inodes ${fs.inodePercent.toFixed(1)}%` : ''}`,
 				source: 'metrics',
 				refreshSummary: !critical
@@ -354,6 +519,7 @@ export class IncidentEngine {
 	 */
 	onIntegrations(statuses: { id: string; failures: number }[]): void {
 		const now = this.nowFn();
+		this.stampEvaluated(['integration-down:'], now);
 		for (const s of statuses) {
 			if (s.failures >= TUNING.integrationFailureThreshold) {
 				this.openIncident({
@@ -362,6 +528,7 @@ export class IncidentEngine {
 					title: `${s.id} deep monitoring failing`,
 					summary: 'Repeated integration failures. Generic DUMB monitoring is unaffected.',
 					service: null,
+					identity: s.id,
 					evidenceMessage: `${s.failures} consecutive failed polls`,
 					source: 'integration',
 					refreshSummary: true
@@ -378,23 +545,40 @@ export class IncidentEngine {
 
 	/** Called periodically by the hub to detect a stalled metrics stream. */
 	/**
-	 * Discovery reconciliation: stopped incidents whose process is not part
-	 * of DUMB's managed registry are ephemeral helpers (e.g. one-shot setup
-	 * steps) — resolve them on every trusted registry refresh.
+	 * Discovery reconciliation: incidents for processes outside DUMB's managed
+	 * registry describe services that no longer exist (ephemeral helpers,
+	 * removed services, renamed instances). Resolution here is explicitly
+	 * "obsolete — the monitored target is gone", never a recovery. Covers all
+	 * service-bound detectors; before this sweep only covered stopped
+	 * incidents, unhealthy/degraded/restart findings stayed open forever after
+	 * their service disappeared from DUMB.
 	 */
 	reconcileRegistryStops(managedProcessNames: ReadonlySet<string>): void {
 		const now = this.nowFn();
-		for (const incident of this.getActive()) {
-			if (!incident.fingerprint.startsWith('svc-stopped:')) continue;
-			// The incident title embeds the process name: "<name> is stopped".
-			const name = incident.title.replace(/ is stopped$/, '');
-			if (managedProcessNames.has(name)) continue;
-			this.resolveIfActive(
-				incident.fingerprint,
-				now,
-				'Resolved: process is not part of the managed registry'
-			);
+		if (managedProcessNames.size === 0) return; // registry unknown: cannot judge
+		const managedKeys = new Set<string>();
+		for (const name of managedProcessNames) {
+			managedKeys.add(name);
+			managedKeys.add(serviceKeyFromName(name));
 		}
+		const isManaged = (incident: Incident): boolean => {
+			const identity = this.state.identityByFingerprint.get(incident.fingerprint);
+			if (identity !== undefined) return managedKeys.has(identity);
+			// Legacy rows without a stored identity: fall back to the embedded
+			// service key, then the title ("&lt;name&gt; is stopped" et al).
+			const first = incident.affectedServices[0];
+			if (first && managedKeys.has(first)) return true;
+			const titleName = /^(.*) (is|keeps|database is)/.exec(incident.title)?.[1];
+			return titleName !== undefined && managedKeys.has(titleName);
+		};
+		this.resolveWhere(
+			(incident) =>
+				(incident.fingerprint.startsWith('svc-') ||
+					incident.fingerprint.startsWith('db-health:')) &&
+				!isManaged(incident),
+			() => 'Resolved: process is not part of the managed registry',
+			now
+		);
 	}
 
 	onTick(lastMetricsAt: number | null, statusLive: boolean): void {
@@ -488,6 +672,8 @@ export class IncidentEngine {
 		summary: string;
 		evidence: string;
 		refreshSummary?: boolean;
+		/** Affected entity (media key, integration id, …) for lifecycle sweeps. */
+		identity?: string;
 	}): void {
 		this.openIncident({
 			fingerprint: input.fingerprint,
@@ -495,6 +681,7 @@ export class IncidentEngine {
 			title: input.title,
 			summary: input.summary,
 			service: null,
+			identity: input.identity,
 			evidenceMessage: input.evidence,
 			source: 'reliability',
 			refreshSummary: input.refreshSummary ?? true
@@ -526,6 +713,7 @@ export class IncidentEngine {
 	 */
 	onMountHealth(reports: MountReport[]): void {
 		const now = this.nowFn();
+		this.stampEvaluated(['mount:', 'symlinks:'], now);
 		for (const report of reports) {
 			const path = report.target.path;
 			const fp = Fingerprints.mountUnhealthy(path);
@@ -556,6 +744,7 @@ export class IncidentEngine {
 									? 'Configured mount path does not exist inside the DUMBscope container'
 									: 'Storage mount is answering intermittently') + consumerNote,
 					service: null,
+					identity: path,
 					evidenceMessage:
 						(report.lastError ?? `state=${stateLabel}`) +
 						(report.statLatencyMs !== null ? `, stat ${Math.round(report.statLatencyMs)}ms` : '') +
@@ -597,21 +786,33 @@ export class IncidentEngine {
 					title: `${report.target.label}: most sampled symlinks are broken`,
 					summary: `${sample.broken} of ${sample.sampled} sampled links point at missing targets — the storage behind this root looks unavailable.${report.target.consumers.length > 0 ? ` May be affected: ${report.target.consumers.join(', ')}.` : ''}`,
 					service: null,
+					identity: path,
 					evidenceMessage: `sampled=${sample.sampled} valid=${sample.valid} broken=${sample.broken} unreadable=${sample.unreadable}`,
 					source: 'reliability',
 					refreshSummary: true
 				});
-			} else if (sample && sample.sampled >= MOUNT_TUNING.systemicMinSample) {
-				const clean = (this.state.symlinkCleanRounds.get(path) ?? 0) + 1;
-				this.state.symlinkCleanRounds.set(path, clean);
-				if (clean >= MOUNT_TUNING.healthyRoundsForRecovery) {
-					this.resolveIfActive(
-						symlinkFp,
-						now,
-						sample.broken === 0
-							? 'Sampled symlinks resolve again'
-							: `Symlink integrity back within bounds (${sample.broken}/${sample.sampled} broken)`
-					);
+			} else {
+				// Recovery evidence: any real sample below the systemic broken
+				// ratio counts as a clean round — including samples below the
+				// systemic minimum (a restructured library legitimately samples
+				// fewer links; requiring ≥ systemicMinSample here used to make
+				// resolved recovery unreachable and left findings open forever).
+				const withinBounds =
+					sample === null ||
+					sample.sampled === 0 ||
+					sample.broken / sample.sampled < MOUNT_TUNING.systemicBrokenRatio;
+				if (withinBounds) {
+					const clean = (this.state.symlinkCleanRounds.get(path) ?? 0) + 1;
+					this.state.symlinkCleanRounds.set(path, clean);
+					if (clean >= MOUNT_TUNING.healthyRoundsForRecovery) {
+						this.resolveIfActive(
+							symlinkFp,
+							now,
+							sample === null || sample.broken === 0
+								? 'Sampled symlinks resolve again'
+								: `Symlink integrity back within bounds (${sample.broken}/${sample.sampled} broken)`
+						);
+					}
 				}
 			}
 		}
@@ -667,6 +868,7 @@ export class IncidentEngine {
 					? ` · host memory pressure ${assessmentToApply.hostMemPercent.toFixed(0)}%`
 					: ''),
 			service: null,
+			identity: assessmentToApply.process,
 			evidenceMessage: evidence,
 			source: 'reliability',
 			refreshSummary: true
@@ -680,7 +882,11 @@ export class IncidentEngine {
 	/**
 	 * Re-evaluate active incidents against the dependency graph: incidents whose
 	 * service depends on another service with an active incident become
-	 * consequences of that root cause.
+	 * consequences of that root cause. Mount findings participate as root-cause
+	 * candidates through their configured `consumers` (declared dependency
+	 * evidence — never guessed): NZBDAV failure → mount unavailable → symlink
+	 * roots broken → Arr import problems chains become one correlation chain
+	 * instead of N independent problems.
 	 */
 	correlate(graph: TopologyGraph): void {
 		const now = this.nowFn();
@@ -697,10 +903,22 @@ export class IncidentEngine {
 			incoming.set(edge.to, list);
 		}
 
+		// Mount findings as upstream candidates: consumer service key → mount
+		// finding (declared dependency, so causality claims stay evidence-based).
+		const mountRoots = new Map<string, Incident>();
+		for (const incident of active) {
+			if (incident.detector !== 'mounts' && incident.detector !== 'mounts.symlinks') continue;
+			if (incident.rootCauseFingerprint) continue;
+			const identity = this.state.identityByFingerprint.get(incident.fingerprint);
+			const report = this.mountConsumerIndex?.get(identity ?? '');
+			if (!report) continue;
+			for (const consumer of report) mountRoots.set(consumer, incident);
+		}
+
 		for (const incident of active) {
 			const serviceKey = incidentServiceKey(incident);
 			if (!serviceKey) continue;
-			const rootCause = findRootCause(
+			let rootCause = findRootCause(
 				serviceKey,
 				byService,
 				incoming,
@@ -708,6 +926,19 @@ export class IncidentEngine {
 				now,
 				new Set()
 			);
+			// Declared mount dependency: the mount finding started before (or
+			// with) this incident and is still open.
+			if (!rootCause) {
+				const mountRoot = mountRoots.get(serviceKey);
+				if (
+					mountRoot &&
+					mountRoot !== incident &&
+					mountRoot.fingerprint !== incident.fingerprint &&
+					mountRoot.firstSeen <= incident.firstSeen + TUNING.correlationWindowMs
+				) {
+					rootCause = mountRoot;
+				}
+			}
 			if (rootCause && rootCause !== incident) {
 				const previousRoot = incident.rootCauseFingerprint;
 				// Attribute the ultimate root cause down the chain.
@@ -772,6 +1003,8 @@ export class IncidentEngine {
 		title: string;
 		summary: string | null;
 		service: string | null;
+		/** Affected entity for non-service findings (path, process, integration id, media key). */
+		identity?: string;
 		evidenceMessage: string;
 		source: Incident['evidence'][number]['source'];
 		refreshSummary?: boolean;
@@ -783,11 +1016,15 @@ export class IncidentEngine {
 		if (persisted && !existing) {
 			// Engine restarted while the incident is still open: adopt it.
 			this.state.byFingerprint.set(input.fingerprint, persisted);
+			const identity = input.identity ?? input.service ?? persisted.affectedServices[0];
+			if (identity && !this.state.identityByFingerprint.has(input.fingerprint)) {
+				this.state.identityByFingerprint.set(input.fingerprint, identity);
+			}
 			this.events.onIncidentChange?.(persisted, 'updated');
 			return persisted;
 		}
 
-		if (existing && existing.status === 'active') {
+		if (existing && (existing.status === 'active' || existing.status === 'acknowledged')) {
 			if (input.refreshSummary && input.summary) existing.summary = input.summary;
 			// Severity escalation/de-escalation while active (e.g. a memory
 			// finding that keeps growing): record the transition in the timeline.
@@ -808,29 +1045,41 @@ export class IncidentEngine {
 				this.events.onIncidentChange?.(existing, 'updated');
 			}
 			existing.lastSeen = now;
+			existing.lastEvaluatedAt = now;
+			existing.lastEvidenceAt = now;
 			incidentRepository.update(existing);
 			this.state.byFingerprint.set(input.fingerprint, existing);
 			return existing;
 		}
 
-		// Reopen semantics: the same failure class came back. Bump occurrences on
-		// the previous record instead of creating a look-alike row.
+		// Reopen semantics: the same failure class came back. A *resolved*
+		// record re-opens with an occurrence bump instead of creating a
+		// look-alike row. An *archived* record stays archived — history the
+		// operator cleared must not resurrect; a fresh incident is created.
 		const previous = incidentRepository.findLatestByFingerprint(input.fingerprint);
 		if (previous && previous.status === 'resolved') {
 			previous.occurrences += 1;
 			previous.status = 'active';
 			previous.resolvedAt = null;
+			previous.resolutionKind = null;
+			previous.resolutionReason = null;
 			previous.lastSeen = now;
+			previous.lastEvaluatedAt = now;
+			previous.lastEvidenceAt = now;
 			previous.severity = input.severity;
 			if (input.refreshSummary && input.summary) previous.summary = input.summary;
 			previous.timeline.push({ at: now, severity: input.severity, message: 'Recurred' });
 			this.trim(previous);
 			incidentRepository.update(previous);
 			this.state.byFingerprint.set(input.fingerprint, previous);
+			if (input.identity ?? input.service) {
+				this.state.identityByFingerprint.set(input.fingerprint, (input.identity ?? input.service)!);
+			}
 			this.events.onIncidentChange?.(previous, 'updated');
 			return previous;
 		}
 
+		const identity = input.identity ?? input.service;
 		const incident: Incident = {
 			id: newIncidentId(),
 			fingerprint: input.fingerprint,
@@ -840,15 +1089,22 @@ export class IncidentEngine {
 			summary: input.summary,
 			rootCauseService: null,
 			rootCauseFingerprint: null,
-			affectedServices: input.service ? [input.service] : [],
+			affectedServices: input.service ? [input.service] : identity ? [identity] : [],
 			firstSeen: now,
 			lastSeen: now,
 			resolvedAt: null,
 			occurrences: 1,
+			detector: detectorForFingerprint(input.fingerprint),
+			lastEvaluatedAt: now,
+			lastEvidenceAt: now,
+			acknowledgedAt: null,
+			resolutionKind: null,
+			resolutionReason: null,
 			evidence: [{ at: now, source: input.source, message: input.evidenceMessage }],
 			timeline: []
 		};
 		this.state.byFingerprint.set(input.fingerprint, incident);
+		if (identity) this.state.identityByFingerprint.set(input.fingerprint, identity);
 		incidentRepository.create(incident);
 		this.events.onIncidentChange?.(incident, 'opened');
 		return incident;
@@ -856,8 +1112,10 @@ export class IncidentEngine {
 
 	private touchIncident(fp: string, now: number): void {
 		const incident = this.state.byFingerprint.get(fp);
-		if (incident && incident.status === 'active') {
+		if (incident && (incident.status === 'active' || incident.status === 'acknowledged')) {
 			incident.lastSeen = now;
+			incident.lastEvaluatedAt = now;
+			incident.lastEvidenceAt = now;
 			incidentRepository.update(incident);
 		}
 	}
@@ -872,19 +1130,37 @@ export class IncidentEngine {
 		incidentRepository.appendEvidence(incident.id, evidence);
 	}
 
-	private resolveIfActive(fp: string, now: number, message: string): void {
+	/**
+	 * Resolve one open incident. `kind` records what the resolution MEANS:
+	 * 'recovered' requires the detector to have positively confirmed it;
+	 * 'obsolete' means the finding's origin is gone (target removed, monitor
+	 * disabled) and is never presented as a technical recovery. UNKNOWN
+	 * detector state never reaches this path — callers that cannot verify
+	 * simply do not resolve.
+	 */
+	private resolveIfActive(
+		fp: string,
+		now: number,
+		message: string,
+		kind: IncidentResolutionKind = 'recovered'
+	): void {
 		const incident = this.state.byFingerprint.get(fp);
-		if (!incident || incident.status !== 'active') return;
+		if (!incident) return;
+		if (incident.status !== 'active' && incident.status !== 'acknowledged') return;
 		incident.status = 'resolved';
 		incident.resolvedAt = now;
 		incident.lastSeen = now;
 		incident.rootCauseService = null;
 		incident.rootCauseFingerprint = null;
+		incident.resolutionKind = kind;
+		incident.resolutionReason = message;
 		incident.timeline.push({ at: now, severity: 'info', message });
 		this.trim(incident);
 		incidentRepository.update(incident);
 		incidentRepository.appendTimeline(incident.id, { at: now, message, severity: 'info' });
 		this.state.byFingerprint.delete(fp);
+		this.state.identityByFingerprint.delete(fp);
+		this.state.metricsAbsentSince.delete(fp);
 		this.events.onIncidentChange?.(incident, 'resolved');
 	}
 
@@ -901,6 +1177,7 @@ export class IncidentEngine {
 function freshState(): OpenState {
 	return {
 		byFingerprint: new Map(),
+		identityByFingerprint: new Map(),
 		unhealthyStreak: new Map(),
 		degradedStreak: new Map(),
 		healthyStreak: new Map(),
@@ -912,17 +1189,34 @@ function freshState(): OpenState {
 		diskAboveSince: new Map(),
 		restartFailures: new Map(),
 		mountHealthyRounds: new Map(),
-		symlinkCleanRounds: new Map()
+		symlinkCleanRounds: new Map(),
+		metricsAbsentSince: new Map()
 	};
 }
 
-/** Services whose fingerprint is not service-bound (gateway, disk, telemetry). */
+/**
+ * Service-bound incidents only: dependency-graph correlation is defined on
+ * service keys. Findings scoped to other entities (mount paths, media items,
+ * integrations, processes) join correlation through their own declared
+ * dependency evidence (mount consumers), never through this map.
+ */
 function incidentServiceKey(incident: Incident): string | null {
+	if (
+		!incident.detector.startsWith('status.') &&
+		incident.detector !== 'logs.errors' &&
+		incident.detector !== 'legacy' &&
+		incident.detector !== ''
+	) {
+		return null;
+	}
 	const first = incident.affectedServices[0];
 	return incident.rootCauseFingerprint ? null : (first ?? null);
 }
 
 function rootCauseServiceName(incident: Incident): string {
+	// Mount findings title as "<label>: <state>" — the label is the target name.
+	const mountMatch = /^([^:]+): /.exec(incident.title);
+	if (mountMatch) return mountMatch[1]!;
 	const match = /^(.*) (is|keeps|database is)/.exec(incident.title);
 	return match?.[1] ?? incident.title;
 }

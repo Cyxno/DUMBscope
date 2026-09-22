@@ -10,6 +10,7 @@ import type {
 	ConnectionSnapshot,
 	ConnectionState,
 	DiscoveredService,
+	Incident,
 	LogLine,
 	MetricsHistoryPoint,
 	MetricsSnapshot,
@@ -49,6 +50,10 @@ import { MemoryAnomalyTracker, type MemoryTuningOverrides } from '../reliability
 import { fsProbeCallCount } from '../reliability/fsprobe';
 import { getRemediationManager, type RemediationManager } from '../reliability/remediation';
 import { MediaFlowCorrelator, loadArrObservations } from '../media/flow';
+import { IncidentSafetyNet } from '../incidents/safety-net';
+import { incidentRepository } from '../incidents/repository';
+import { getRuntimeMonitor } from '../runtime/monitor';
+import { detectDiskTrend, detectRestartStorms } from '../reliability/anomalies';
 
 const GIB = 1024 ** 3;
 
@@ -140,6 +145,12 @@ const DISCOVERY_REFRESH_MS = 10 * 60_000;
 const TOKEN_REFRESH_THROTTLE_MS = 4 * 60_000;
 /** Minimum spacing between stale-recovery stream restarts. */
 const STREAMS_BOUNCE_THROTTLE_MS = 60_000;
+/** Safety-net cadence: bounded lifecycle integrity pass. */
+const SAFETY_NET_INTERVAL_MS = 10 * 60_000;
+/** Resource-anomaly pass cadence (restart storms, disk trend). */
+const ANOMALY_PASS_INTERVAL_MS = 60_000;
+/** Incident history pruning cadence (bounded storage). */
+const HISTORY_PRUNE_INTERVAL_MS = 24 * 60 * 60_000;
 
 export interface HubEvent {
 	event: string;
@@ -176,6 +187,14 @@ export class Hub {
 	private mountMonitor: MountMonitor;
 	private memoryTracker: MemoryAnomalyTracker;
 	private lastReliabilitySignature: string | null = null;
+
+	// -- lifecycle integrity + self-monitoring ---------------------------------
+	private safetyNet: IncidentSafetyNet;
+	private runtimeMonitor: ReturnType<typeof getRuntimeMonitor>;
+	private lastSafetyNetAt = 0;
+	private lastAnomalyPassAt = 0;
+	private lastHistoryPruneAt = 0;
+	private lastMountedPaths = new Set<string>();
 
 	// -- media correlation + remediation (DEEL 2): observe-first ---------------
 	private mediaFlow: MediaFlowCorrelator;
@@ -245,13 +264,19 @@ export class Hub {
 			now: clock,
 			loader: loadArrObservations,
 			tuning: fast ? { cycleMs: 4_000 } : undefined,
+			getActiveFingerprints: () =>
+				this.engine
+					.getActive()
+					.map((i) => i.fingerprint)
+					.filter((fp) => fp.startsWith('media-')),
 			onFinding: (finding) =>
 				this.engine.reportFinding({
 					fingerprint: finding.fingerprint,
 					severity: finding.severity,
 					title: finding.title,
 					summary: finding.summary,
-					evidence: finding.evidence
+					evidence: finding.evidence,
+					identity: finding.mediaKey ?? undefined
 				}),
 			onResolve: (fingerprint, message) => this.engine.resolveFinding(fingerprint, message)
 		});
@@ -288,6 +313,26 @@ export class Hub {
 					.map((i) => i.fingerprint)
 					.filter((fp) => fp.startsWith('recon:'))
 		});
+		// Lifecycle integrity safety net (§3) + self-monitoring (§4/§5).
+		this.safetyNet = new IncidentSafetyNet(this.engine);
+		this.runtimeMonitor = getRuntimeMonitor({
+			onFinding: (finding) =>
+				this.engine.reportFinding({
+					fingerprint: finding.fingerprint,
+					severity: finding.severity,
+					title: finding.title,
+					summary: finding.summary,
+					evidence: finding.evidence
+				}),
+			onResolve: (fingerprint, message) => this.engine.resolveFinding(fingerprint, message)
+		});
+		this.runtimeMonitor.setProviders({
+			sseClients: () => this.subscriberCount(),
+			reconDurationMs: () => this.reconciliation.observability().lastAttempt?.durationMs ?? null,
+			probeDurationMs: () => this.mountMonitor.stats().lastRoundMs,
+			jobsActive: () => this.scheduledJobCount(),
+			reconWorkersActive: () => 0 // the prober worker is idle-cycled; tracked via fsprobe counters
+		});
 	}
 
 	/**
@@ -318,6 +363,7 @@ export class Hub {
 		this.startStreams(settings);
 		this.housekeeper ??= setInterval(() => this.housekeep(), 10_000);
 		this.reconciliation.start();
+		this.runtimeMonitor.start();
 		this.publishConnection();
 	}
 
@@ -367,6 +413,7 @@ export class Hub {
 		this.activityUnsubscribe = null;
 		this.stopStreams();
 		this.reconciliation.stop();
+		this.runtimeMonitor.stop();
 		if (this.housekeeper) {
 			clearInterval(this.housekeeper);
 			this.housekeeper = null;
@@ -629,7 +676,13 @@ export class Hub {
 		this.emitServices();
 		// FASE C: per-process RSS samples for anomaly detection. Failure-
 		// isolated inside the tracker — never disturbs the metrics pipeline.
-		this.memoryTracker.onSnapshot(snapshot);
+		// Instance keys (§8) keep same-name service instances from mixing.
+		const identities = new Map<string, string>();
+		for (const proc of snapshot.processes) {
+			const discovered = this.discoveredByProcess.get(proc.name);
+			if (discovered) identities.set(proc.name, discovered.key);
+		}
+		this.memoryTracker.onSnapshot(snapshot, identities);
 		this.tracker.dataReceived(snapshot.receivedAt);
 		this.publishConnection();
 	}
@@ -687,6 +740,7 @@ export class Hub {
 		this.engine.correlate(this.topology());
 		this.engine.onConnection(connection);
 		this.runReliabilityChecks();
+		this.runLifecyclePasses(now);
 
 		// REST recovery: probe while the bootstrap never succeeded this session,
 		// while the connection is not delivering (mid-run outage), and once more
@@ -742,6 +796,124 @@ export class Hub {
 			this.reload();
 		}
 		this.publishConnection();
+	}
+
+	/**
+	 * Lifecycle integrity passes (§1/§3): keep mount targets in sync with the
+	 * configuration, run the stale-incident safety net on its bounded cadence,
+	 * the resource-anomaly passes, and prune incident history to its cap.
+	 * Every pass is failure-isolated — lifecycle bookkeeping must never break
+	 * the telemetry loop.
+	 */
+	private runLifecyclePasses(now: number): void {
+		try {
+			// Mount target sync: new targets start probing, removed targets stop
+			// and their findings retire as obsolete ("target removed").
+			const targets = loadMountTargets();
+			const removedPaths = this.mountMonitor.syncTargets(targets);
+			for (const path of removedPaths) {
+				this.engine.resolveWhere(
+					(i) =>
+						(i.fingerprint.startsWith('mount:') || i.fingerprint.startsWith('symlinks:')) &&
+						this.engine.identityOf(i.fingerprint) === path,
+					() => `Resolved: monitored mount "${path}" was removed from the configuration`,
+					now
+				);
+			}
+			// Dependency evidence for correlation: mount path → consumer keys.
+			this.engine.setMountConsumerIndex(new Map(targets.map((t) => [t.path, t.consumers])));
+			this.lastMountedPaths = new Set(targets.map((t) => t.path));
+		} catch {
+			// config sync is best-effort
+		}
+
+		if (now - this.lastSafetyNetAt >= SAFETY_NET_INTERVAL_MS) {
+			this.lastSafetyNetAt = now;
+			try {
+				void import('../integrations/store').then(({ listIntegrations }) => {
+					const settings = getSettings();
+					this.safetyNet.run({
+						now,
+						mountTargets: loadMountTargets(),
+						mountMonitoringEnabled: settings.mountMonitoring,
+						memoryMonitoringEnabled: settings.memoryMonitoring,
+						reconciliationEnabled: reconciliationEnabled(),
+						runtimeMonitoringEnabled: true,
+						registeredIntegrationIds: listIntegrations().map((c) => c.id),
+						arrIntegrationsPresent: listIntegrations().some(
+							(c) => c.enabled !== false && (c.type === 'sonarr' || c.type === 'radarr')
+						),
+						dumbConfigured: this.configured,
+						metricsFresh:
+							this.metricsLatest !== null && now - this.metricsLatest.receivedAt < 5 * 60_000
+					});
+				});
+			} catch {
+				// isolated
+			}
+		}
+
+		if (now - this.lastAnomalyPassAt >= ANOMALY_PASS_INTERVAL_MS) {
+			this.lastAnomalyPassAt = now;
+			try {
+				const nameFor = (key: string): string =>
+					this.getServices().find((s) => s.key === key)?.name ??
+					this.getDiscovered().find((d) => d.key === key)?.name ??
+					key;
+				const storms = detectRestartStorms(nameFor);
+				const stormFps = new Set(storms.map((s) => s.fingerprint));
+				for (const storm of storms) {
+					this.engine.reportFinding({
+						fingerprint: storm.fingerprint,
+						severity: storm.severity,
+						title: storm.title,
+						summary: storm.summary,
+						evidence: storm.evidence,
+						identity: storm.identity
+					});
+				}
+				for (const fp of this.engine.openFingerprints(['restart-storm:'])) {
+					if (!stormFps.has(fp)) {
+						this.engine.resolveFinding(fp, 'Restart rate returned to normal');
+					}
+				}
+				const diskFinding = detectDiskTrend(this.metricsHistory);
+				if (diskFinding) {
+					this.engine.reportFinding({
+						fingerprint: diskFinding.fingerprint,
+						severity: diskFinding.severity,
+						title: diskFinding.title,
+						summary: diskFinding.summary,
+						evidence: diskFinding.evidence,
+						identity: diskFinding.identity
+					});
+				} else {
+					this.engine.resolveFinding(
+						'disk-trend:host',
+						'Disk growth trend is no longer projected to reach the warning level'
+					);
+				}
+			} catch {
+				// isolated
+			}
+		}
+
+		if (now - this.lastHistoryPruneAt >= HISTORY_PRUNE_INTERVAL_MS) {
+			this.lastHistoryPruneAt = now;
+			try {
+				incidentRepository.pruneHistory(500);
+			} catch {
+				// isolated
+			}
+		}
+	}
+
+	/** Alive scheduled timers across the known registries (runtime panel). */
+	private scheduledJobCount(): number {
+		let count = 0;
+		if (this.housekeeper) count++;
+		if (this.reconciliation.observability().nextRunAt !== null) count += 2; // cycle + startup timers
+		return count;
 	}
 
 	/**
@@ -1052,6 +1224,33 @@ export class Hub {
 		return this.engine.getActive();
 	}
 
+	/** Aggregated incident counts (header badges). */
+	getIncidentCounts() {
+		return incidentRepository.counts();
+	}
+
+	/** DUMBscope runtime self-monitoring sample + lag stats (System panel). */
+	getRuntimeSnapshot() {
+		return {
+			sample: this.runtimeMonitor.latest(),
+			lag: this.runtimeMonitor.lagStats(),
+			uptimeMs: this.runtimeMonitor.uptimeMs()
+		};
+	}
+
+	/** Reconciliation observability (last runs, status, next scheduled). */
+	getReconciliationObservability() {
+		return this.reconciliation.observability();
+	}
+
+	/** Stale-incident safety net bookkeeping (System panel). */
+	getSafetyNetInfo() {
+		return {
+			lastInspectedAt: this.safetyNet.lastInspectedAt,
+			lastResolvedCount: this.safetyNet.lastResolvedCount
+		};
+	}
+
 	activityFeed(limit = 60): ActivityEntry[] {
 		return recentActivity(limit);
 	}
@@ -1063,6 +1262,14 @@ export class Hub {
 	wireActivity(): void {
 		if (this.activityUnsubscribe) return;
 		this.activityUnsubscribe = onActivity((entry) => this.broadcast('activity', entry));
+	}
+
+	/**
+	 * Fan out one operator-driven incident change (acknowledge/archive) so
+	 * every open tab sees it live, same as detector-driven changes.
+	 */
+	notifyIncidentChange(incident: Incident): void {
+		this.broadcast('incident', incident);
 	}
 
 	// -------------------------------------------------------------------------

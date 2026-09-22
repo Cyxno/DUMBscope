@@ -134,9 +134,32 @@ parentPort.on('message', async (msg) => {
 
 let fsCalls = 0;
 
+/** Worker lifecycle counters (self-monitoring): growth of `active` across
+ *  rounds would be a thread leak — the reclaim-on-every-exit-path fix keeps
+ *  it at zero between rounds, and the runtime monitor watches exactly that. */
+let workersSpawned = 0;
+let workersActive = 0;
+let workersTerminated = 0;
+let workersTimedOut = 0;
+
 /** Total probe operations issued since process start (for the overhead report). */
 export function fsProbeCallCount(): number {
 	return fsCalls;
+}
+
+/** Worker lifecycle snapshot for the DUMBscope runtime panel. */
+export function fsProbeWorkerStats(): {
+	spawned: number;
+	active: number;
+	terminated: number;
+	timedOut: number;
+} {
+	return {
+		spawned: workersSpawned,
+		active: workersActive,
+		terminated: workersTerminated,
+		timedOut: workersTimedOut
+	};
 }
 
 /**
@@ -147,6 +170,8 @@ export function fsProbeCallCount(): number {
 export function runProbeRound(ops: FsProbe[], timeoutMs: number): Promise<ProbeRoundResult> {
 	const started = Date.now();
 	fsCalls += ops.length;
+	workersSpawned++;
+	workersActive++;
 	return new Promise((resolve) => {
 		const results: ProbeOpResult[] = [];
 		let settled = false;
@@ -154,11 +179,14 @@ export function runProbeRound(ops: FsProbe[], timeoutMs: number): Promise<ProbeR
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
+			workersActive = Math.max(0, workersActive - 1);
+			if (result.timedOut) workersTimedOut++;
 			// Reclaim the worker on EVERY exit path — success included. A
 			// worker is single-use by design: leaving a completed round's
 			// isolate alive leaks one idle thread (~8 MB RSS) per round, and
 			// the mount monitor runs one round per mount per minute
 			// (2026-09-17: 4 mounts → GBs per hour across both instances).
+			workersTerminated++;
 			void worker.terminate().catch(() => {
 				// already gone
 			});

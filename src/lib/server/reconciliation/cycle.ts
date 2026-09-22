@@ -13,7 +13,8 @@ import type {
 	MountTargetSpec,
 	PathAliasSpec,
 	PlexPartRecord,
-	ReconcileFinding
+	ReconcileFinding,
+	ReconcileStats
 } from './library';
 import { WorkerLibraryProber } from './prober';
 import { reconcileLibrary } from './library';
@@ -34,6 +35,18 @@ const TUNING = {
 	/** Backoff ceiling: an unreachable Arr is retried at most every 10 min. */
 	fetchBackoffMaxMs: 10 * 60_000
 } as const;
+
+/** Observer-visible record of one reconciliation attempt (System panel). */
+export interface ReconciliationRunInfo {
+	/** Epoch ms the attempt started. */
+	at: number;
+	status: 'ok' | 'failed' | 'skipped-incomplete' | 'disabled';
+	durationMs: number;
+	/** Item verdict counts from the reconcile pass (null when it never ran). */
+	stats: ReconcileStats | null;
+	/** Human-readable failure detail (no credentials, no URLs). */
+	error: string | null;
+}
 
 /**
  * Per-integration fetch bookkeeping. A failed integration never aborts the
@@ -223,8 +236,36 @@ export class ReconciliationRunner {
 	private prober: WorkerLibraryProber | null = null;
 	/** Per-integration fetch state, keyed by integration id. */
 	private fetchStates = new Map<string, IntegrationFetchState>();
+	/** Last attempted / last successful run, for the observability panel. */
+	private lastAttempt: ReconciliationRunInfo | null = null;
+	private lastSuccess: ReconciliationRunInfo | null = null;
+	/** Bounded history of recent attempts (newest last). */
+	private history: ReconciliationRunInfo[] = [];
 
 	constructor(private readonly options: ReconciliationRunnerOptions) {}
+
+	/** Observability snapshot: last attempt, last success, next scheduled run. */
+	observability(): {
+		lastAttempt: ReconciliationRunInfo | null;
+		lastSuccess: ReconciliationRunInfo | null;
+		nextRunAt: number | null;
+		running: boolean;
+		recent: ReconciliationRunInfo[];
+	} {
+		const timer = this.timer;
+		// Best-effort next-fire estimate from the live interval timer.
+		let nextRunAt: number | null = null;
+		if (timer && typeof timer.unref === 'function') {
+			nextRunAt = Date.now() + TUNING.cycleMs; // interval is fixed-cadence
+		}
+		return {
+			lastAttempt: this.lastAttempt,
+			lastSuccess: this.lastSuccess,
+			nextRunAt,
+			running: this.running,
+			recent: this.history.slice(-10)
+		};
+	}
 
 	start(): void {
 		if (this.timer || this.startupTimer) return; // idempotent: reloads must not stack timers
@@ -250,8 +291,18 @@ export class ReconciliationRunner {
 	async run(): Promise<void> {
 		if (this.running) return;
 		const settings = this.options.getSettings();
-		if (!settings.enabled) return;
+		if (!settings.enabled) {
+			this.recordRun({
+				at: Date.now(),
+				status: 'disabled',
+				durationMs: 0,
+				stats: null,
+				error: null
+			});
+			return;
+		}
 		this.running = true;
+		const startedAt = Date.now();
 		try {
 			let targets: ArrTarget[];
 			if (this.options.resolveArrTargets) {
@@ -259,10 +310,7 @@ export class ReconciliationRunner {
 			} else {
 				const { listIntegrations, getApiKey } = await import('../integrations/store');
 				targets = listIntegrations()
-					.filter(
-						(c) =>
-							c.enabled !== false && (c.type === 'sonarr' || c.type === 'radarr')
-					)
+					.filter((c) => c.enabled !== false && (c.type === 'sonarr' || c.type === 'radarr'))
 					.flatMap((c) => {
 						const apiKey = getApiKey(c.id);
 						return apiKey
@@ -308,9 +356,7 @@ export class ReconciliationRunner {
 					// either here (dedupe fingerprint below) or via the active-set
 					// sweep when a diff cycle runs.
 					if (wasDown) {
-						console.log(
-							`[reconciliation] ${config.type} "${config.id}" recovered (backoff reset)`
-						);
+						console.log(`[reconciliation] ${config.type} "${config.id}" recovered (backoff reset)`);
 						this.options.resolveFinding(arrUnavailableFingerprint(config.id));
 					}
 				} catch (err) {
@@ -355,6 +401,13 @@ export class ReconciliationRunner {
 			// false positives. Skip the diff this cycle (findings stay untouched,
 			// nothing is resolved on stale evidence); the backoff gate retries.
 			if (arrIncomplete) {
+				this.recordRun({
+					at: startedAt,
+					status: 'skipped-incomplete',
+					durationMs: Date.now() - startedAt,
+					stats: null,
+					error: 'an enabled Arr contributed no data; Arr-vs-Plex diff skipped'
+				});
 				return;
 			}
 
@@ -421,6 +474,13 @@ export class ReconciliationRunner {
 				if (!seen.has(fp)) this.options.resolveFinding(fp);
 			}
 			this.options.onStats?.(result.stats);
+			this.recordRun({
+				at: startedAt,
+				status: 'ok',
+				durationMs: Date.now() - startedAt,
+				stats: result.stats,
+				error: null
+			});
 
 			// Opt-in remediation: when Plex shows ghosts or lags behind the
 			// Arrs, ask Plex to rescan the affected sections. Never default:
@@ -450,13 +510,26 @@ export class ReconciliationRunner {
 		} catch (err) {
 			// Last-resort guard: a reconciliation bug must degrade the feature,
 			// never the process (an escaped rejection exits Node ≥15).
-			console.error(
-				'[reconciliation] cycle failed unexpectedly:',
-				err instanceof Error ? `${err.name}: ${err.message}` : err
-			);
+			const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+			console.error('[reconciliation] cycle failed unexpectedly:', detail);
+			this.recordRun({
+				at: startedAt,
+				status: 'failed',
+				durationMs: Date.now() - startedAt,
+				stats: null,
+				error: detail
+			});
 		} finally {
 			this.running = false;
 		}
+	}
+
+	/** Keep the bounded run history and the last-attempt/last-success pointers. */
+	private recordRun(info: ReconciliationRunInfo): void {
+		this.lastAttempt = info;
+		if (info.status === 'ok') this.lastSuccess = info;
+		this.history.push(info);
+		if (this.history.length > 10) this.history.shift();
 	}
 }
 

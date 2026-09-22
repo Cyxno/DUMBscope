@@ -14,8 +14,12 @@
  */
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http';
-import { AddressInfo } from 'node:net';
-import { ReconciliationRunner, type ArrTarget, type ReconciliationRunnerOptions } from '../src/lib/server/reconciliation/cycle';
+import type { AddressInfo } from 'node:net';
+import {
+	ReconciliationRunner,
+	type ArrTarget,
+	type ReconciliationRunnerOptions
+} from '../src/lib/server/reconciliation/cycle';
 import type { ReconcileSettings } from '../src/lib/server/reconciliation/cycle';
 
 const BASE_SETTINGS: ReconcileSettings = {
@@ -44,8 +48,7 @@ function makeRecorder() {
 	return {
 		reported,
 		resolved,
-		reportFinding: (f: { fingerprint: string; title: string; summary: string }) =>
-			reported.push(f),
+		reportFinding: (f: { fingerprint: string; title: string; summary: string }) => reported.push(f),
 		resolveFinding: (fp: string) => resolved.push(fp)
 	};
 }
@@ -80,11 +83,13 @@ afterAll(() => {
 });
 
 /** Minimal Sonarr/Radarr API mock. handler=null → accept and never respond. */
-async function startArrMock(handler: ((req: IncomingMessage, res: ServerResponse) => void) | null): Promise<{
+async function startArrMock(
+	handler: ((req: IncomingMessage, res: ServerResponse) => void) | null
+): Promise<{
 	url: string;
 	requests: () => number;
 	setHandler: (h: typeof handler) => void;
-	}> {
+}> {
 	let count = 0;
 	let current = handler;
 	const server = createServer((req, res) => {
@@ -117,7 +122,7 @@ describe('ReconciliationRunner error isolation', () => {
 		});
 		await expect(h.runner.run()).resolves.toBeUndefined(); // no unhandled rejection
 		expect(h.findings.reported).toHaveLength(1);
-		expect(h.findings.reported[0].fingerprint).toBe('recon:arr-unavailable:sonarr-main');
+		expect(h.findings.reported[0]!.fingerprint).toBe('recon:arr-unavailable:sonarr-main');
 		// Second failing cycle must refresh the SAME incident, not open a new one.
 		h.advance(10 * 60_000);
 		await h.runner.run();
@@ -132,12 +137,14 @@ describe('ReconciliationRunner error isolation', () => {
 			targets: [{ id: 'sonarr-slow', type: 'sonarr', url: mock.url, apiKey: 'k' }]
 		});
 		await expect(h.runner.run()).resolves.toBeUndefined();
-		expect(h.findings.reported[0].fingerprint).toBe('recon:arr-unavailable:sonarr-slow');
-		expect(h.findings.reported[0].summary).toContain('suspended');
+		expect(h.findings.reported[0]!.fingerprint).toBe('recon:arr-unavailable:sonarr-slow');
+		expect(h.findings.reported[0]!.summary).toContain('suspended');
 	}, 30_000);
 
 	it('per-integration isolation: Sonarr down (stale data) does not stop Radarr processing', async () => {
-		const radarr = await startArrMock((req, res) => arrJson(res, [{ id: 1, title: 'Movie', hasFile: false }]));
+		const radarr = await startArrMock((req, res) =>
+			arrJson(res, [{ id: 1, title: 'Movie', hasFile: false }])
+		);
 		const sonarr = await startArrMock(null); // first call hangs → failure; then down
 		const h = makeHarness({
 			targets: [
@@ -247,7 +254,7 @@ describe('ReconciliationRunner error isolation', () => {
 		const h = makeHarness({
 			targets: [{ id: 'sonarr-main', type: 'sonarr', url: mock.url, apiKey: 'k' }]
 		});
-		let unhandled: unknown[] = [];
+		const unhandled: unknown[] = [];
 		const onUnhandled = (err: unknown) => unhandled.push(err);
 		process.on('unhandledRejection', onUnhandled);
 		try {

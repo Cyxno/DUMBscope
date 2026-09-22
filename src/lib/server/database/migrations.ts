@@ -345,6 +345,105 @@ const MIGRATIONS: Migration[] = [
 				-- write (same rules as url).
 				ALTER TABLE integrations ADD COLUMN public_url TEXT;
 			`
+	},
+	{
+		version: 9,
+		name: 'incident lifecycle metadata, runtime samples, multi-instance memory identity',
+		sql: `
+			-- Lifecycle metadata (additive; all nullable/defaulted so existing
+			-- rows stay valid). detector records the owning detector so a finding
+			-- whose detector disappeared can be identified by the safety net;
+			-- resolution_kind separates "detector positively confirmed recovery"
+			-- from "the finding is obsolete" — never presented as a recovery.
+			ALTER TABLE incidents ADD COLUMN detector TEXT NOT NULL DEFAULT '';
+			ALTER TABLE incidents ADD COLUMN last_evaluated_at INTEGER;
+			ALTER TABLE incidents ADD COLUMN last_evidence_at INTEGER;
+			ALTER TABLE incidents ADD COLUMN acknowledged_at INTEGER;
+			ALTER TABLE incidents ADD COLUMN resolution_kind TEXT;
+			ALTER TABLE incidents ADD COLUMN resolution_reason TEXT;
+			CREATE INDEX IF NOT EXISTS idx_incidents_status_seen
+				ON incidents(status, last_seen);
+
+			-- DUMBscope self-monitoring (System → Runtime): one bounded 1-minute
+			-- row plus two aggregate tiers. Rows are fixed-width and pruned on a
+			-- schedule, so growth is predictable: ~1.5k + ~2k + ~1.4k rows
+			-- steady state (26h / 7d / 30d retention), well under 1 MB total.
+			CREATE TABLE IF NOT EXISTS runtime_samples (
+				at INTEGER PRIMARY KEY,
+				rss_bytes INTEGER,
+				heap_used_bytes INTEGER,
+				heap_total_bytes INTEGER,
+				external_bytes INTEGER,
+				array_buffers_bytes INTEGER,
+				event_loop_lag_ms INTEGER,
+				fds INTEGER,
+				workers_active INTEGER,
+				workers_spawned INTEGER,
+				workers_terminated INTEGER,
+				workers_timed_out INTEGER,
+				sse_clients INTEGER,
+				db_bytes INTEGER,
+				wal_bytes INTEGER,
+				jobs_active INTEGER,
+				recon_duration_ms INTEGER,
+				probe_duration_ms INTEGER,
+				notif_queue_depth INTEGER
+			);
+			CREATE TABLE IF NOT EXISTS runtime_samples_5m (
+				at INTEGER PRIMARY KEY,
+				rss_avg_bytes INTEGER, rss_max_bytes INTEGER,
+				heap_avg_bytes INTEGER, heap_max_bytes INTEGER,
+				lag_avg_ms INTEGER, lag_max_ms INTEGER,
+				fds_max INTEGER,
+				workers_max INTEGER,
+				sse_max INTEGER,
+				recon_avg_ms INTEGER, recon_max_ms INTEGER,
+				probe_avg_ms INTEGER,
+				samples INTEGER NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS runtime_samples_30m (
+				at INTEGER PRIMARY KEY,
+				rss_avg_bytes INTEGER, rss_max_bytes INTEGER,
+				heap_avg_bytes INTEGER, heap_max_bytes INTEGER,
+				lag_avg_ms INTEGER, lag_max_ms INTEGER,
+				fds_max INTEGER,
+				workers_max INTEGER,
+				sse_max INTEGER,
+				recon_avg_ms INTEGER, recon_max_ms INTEGER,
+				probe_avg_ms INTEGER,
+				samples INTEGER NOT NULL
+			);
+
+			-- Stable per-instance identity for memory samples (process identity,
+			-- §8): '' on legacy rows means "scoped by process name only". New rows
+			-- carry the discovered service key so same-name instances (Sonarr vs
+			-- Sonarr Anime, Radarr vs Radarr 4K) never mix baselines/history.
+			ALTER TABLE memory_samples ADD COLUMN instance_key TEXT NOT NULL DEFAULT '';
+			CREATE INDEX IF NOT EXISTS idx_memory_samples_instance_at
+				ON memory_samples(instance_key, process, at);
+
+			-- Long-term service-memory tiers (§6): raw samples stay ~26h; the
+			-- 5-minute tier keeps 7 days and the 30-minute tier 30 days. One
+			-- row per process per bucket, avg + max; bounded and pruned.
+			CREATE TABLE IF NOT EXISTS memory_samples_5m (
+				process TEXT NOT NULL,
+				instance_key TEXT NOT NULL DEFAULT '',
+				at INTEGER NOT NULL,
+				avg_bytes INTEGER NOT NULL,
+				max_bytes INTEGER NOT NULL,
+				samples INTEGER NOT NULL,
+				PRIMARY KEY (process, instance_key, at)
+			);
+			CREATE TABLE IF NOT EXISTS memory_samples_30m (
+				process TEXT NOT NULL,
+				instance_key TEXT NOT NULL DEFAULT '',
+				at INTEGER NOT NULL,
+				avg_bytes INTEGER NOT NULL,
+				max_bytes INTEGER NOT NULL,
+				samples INTEGER NOT NULL,
+				PRIMARY KEY (process, instance_key, at)
+			);
+		`
 	}
 ];
 export function currentVersion(db: DatabaseSync): number {

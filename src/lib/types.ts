@@ -227,11 +227,30 @@ export interface ConnectionSnapshot {
 // ---------------------------------------------------------------------------
 
 export type IncidentSeverity = 'info' | 'warning' | 'critical';
-export type IncidentStatus = 'active' | 'resolved';
+/**
+ * Incident lifecycle states:
+ * - `active`: open problem, detector still sees it, needs attention.
+ * - `acknowledged`: an operator saw it — still a technically open problem
+ *   (the detector keeps evaluating it), but visually muted.
+ * - `resolved`: the detector positively confirmed recovery, or the safety net
+ *   proved the finding obsolete (target/monitor/detector gone).
+ * - `archived`: cleared from the working views by an operator; kept for
+ *   history. A recurrence under the same fingerprint opens a NEW incident
+ *   instead of un-archiving history.
+ */
+export type IncidentStatus = 'active' | 'acknowledged' | 'resolved' | 'archived';
+
+/**
+ * What a resolution actually means. `recovered` requires positive detector
+ * evidence; `obsolete` covers "the thing this finding was about is gone"
+ * (target removed, monitor disabled, detector unavailable) and must never be
+ * presented as a technical recovery.
+ */
+export type IncidentResolutionKind = 'recovered' | 'obsolete' | 'operator';
 
 export interface IncidentEvidence {
 	at: number;
-	source: 'status' | 'logs' | 'metrics' | 'connection' | 'integration' | 'reliability';
+	source: 'status' | 'logs' | 'metrics' | 'connection' | 'integration' | 'reliability' | 'runtime';
 	message: string;
 }
 
@@ -255,8 +274,26 @@ export interface Incident {
 	lastSeen: number;
 	resolvedAt: number | null;
 	occurrences: number;
+	/** Owning detector ('status', 'mounts', 'media-flow', 'reconciliation', …). */
+	detector: string;
+	/** Last time the owning detector pass ran for this incident (even when the verdict was "no change"). */
+	lastEvaluatedAt: number | null;
+	/** Last time positive evidence of the problem was recorded. */
+	lastEvidenceAt: number | null;
+	acknowledgedAt: number | null;
+	/** What a resolution means (null while open). */
+	resolutionKind: IncidentResolutionKind | null;
+	/** Short human reason recorded at resolution (also in the timeline). */
+	resolutionReason: string | null;
 	evidence: IncidentEvidence[];
 	timeline: IncidentTimelineEntry[];
+}
+
+/** Aggregated incident counts for headers and badges. */
+export interface IncidentCounts {
+	active: number;
+	acknowledged: number;
+	resolved: number;
 }
 
 // ---------------------------------------------------------------------------

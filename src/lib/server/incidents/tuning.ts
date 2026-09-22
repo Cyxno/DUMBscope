@@ -37,5 +37,12 @@ export const INCIDENT_TUNING = {
 	/** Maximum timeline entries retained per incident. */
 	maxTimeline: 100,
 	/** Total incidents retained in history. */
-	historyLimit: 500
+	historyLimit: 500,
+	/**
+	 * How long a metrics-scoped identity (filesystem / process) with an open
+	 * incident can stay absent from otherwise-fresh DUMB metrics before its
+	 * finding resolves as obsolete ("no longer reported"). Absence alone
+	 * before this window never resolves anything.
+	 */
+	identityAbsentResolveMs: 10 * 60_000
 } as const;

@@ -2,7 +2,7 @@
 
 ## feat(reconciliation): deterministic library reconciliation (FASE D)
 
-Read-only verification that what Sonarr/Radarr and Plex *claim* is
+Read-only verification that what Sonarr/Radarr and Plex _claim_ is
 actually true on the filesystem, with findings flowing into the incident
 engine via stateless open/close deltas.
 

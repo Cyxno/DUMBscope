@@ -89,12 +89,25 @@ export interface MediaFlowContext {
 	mountLabel: string | null;
 }
 
+export interface ArrSourceBatch {
+	sources: ArrObservation[];
+	/**
+	 * True only when EVERY enabled Sonarr/Radarr answered this cycle. The
+	 * close-out sweep (resolving findings absent from the current picture)
+	 * runs only on complete data: a failed Arr read must never look like
+	 * "the condition disappeared".
+	 */
+	complete: boolean;
+}
+
 export interface MediaFlowCorrelatorOptions {
 	now?: () => number;
 	ledger?: AcquisitionLedger;
-	loader: () => Promise<ArrObservation[]>;
+	loader: () => Promise<ArrSourceBatch>;
 	onFinding: (finding: MediaFinding) => void;
 	onResolve: (fingerprint: string, message: string) => void;
+	/** Currently open media fingerprints (from the incident store/engine). */
+	getActiveFingerprints?: () => string[];
 	tuning?: Partial<Record<keyof typeof MEDIA_FLOW_TUNING, number>>;
 }
 
@@ -117,9 +130,10 @@ interface FlowWork {
 export class MediaFlowCorrelator {
 	private readonly nowFn: () => number;
 	private readonly ledger: AcquisitionLedger;
-	private readonly loader: () => Promise<ArrObservation[]>;
+	private readonly loader: () => Promise<ArrSourceBatch>;
 	private readonly onFinding: (finding: MediaFinding) => void;
 	private readonly onResolve: (fingerprint: string, message: string) => void;
+	private readonly getActiveFingerprints: () => string[];
 	private readonly t: Record<keyof typeof MEDIA_FLOW_TUNING, number>;
 
 	private lastCycleAt = 0;
@@ -140,6 +154,7 @@ export class MediaFlowCorrelator {
 		this.loader = options.loader;
 		this.onFinding = options.onFinding;
 		this.onResolve = options.onResolve;
+		this.getActiveFingerprints = options.getActiveFingerprints ?? (() => []);
 		this.t = { ...MEDIA_FLOW_TUNING, ...options.tuning } as Record<
 			keyof typeof MEDIA_FLOW_TUNING,
 			number
@@ -169,8 +184,8 @@ export class MediaFlowCorrelator {
 		this.running = true;
 		this.lastCycleAt = now;
 		try {
-			const sources = await this.loader();
-			this.buildFlows(sources, context, now);
+			const batch = await this.loader();
+			this.buildFlows(batch.sources, batch.complete, context, now);
 			this.computePropagation();
 		} catch {
 			// A failed Arr read must never take down the reliability loop; the
@@ -184,7 +199,12 @@ export class MediaFlowCorrelator {
 	// Correlation
 	// ---------------------------------------------------------------------------
 
-	private buildFlows(sources: ArrObservation[], context: MediaFlowContext, now: number): void {
+	private buildFlows(
+		sources: ArrObservation[],
+		dataComplete: boolean,
+		context: MediaFlowContext,
+		now: number
+	): void {
 		const work = new Map<string, FlowWork>();
 		const workOf = (mediaKey: string, seed: Partial<FlowWork>): FlowWork => {
 			let w = work.get(mediaKey);
@@ -300,7 +320,7 @@ export class MediaFlowCorrelator {
 			const repeatFp = `media-repeat:${mediaKey}`;
 			const mismatchFp = `media-mismatch:${mediaKey}`;
 			const failingFp = `media-failing:${mediaKey}`;
-			const repeated = this.detectRepeat(mediaKey, sorted, now, w.isMissing);
+			const repeated = this.detectRepeat(mediaKey, sorted, now, w);
 			const mismatch = this.detectMismatch(w, sorted, now);
 
 			if (mismatch) {
@@ -352,6 +372,27 @@ export class MediaFlowCorrelator {
 			}
 
 			w.classification = classify(w, repeated, mismatch, failures, context, this.t, now);
+		}
+
+		// Complete-cycle close-out: any still-open media finding that the FULL
+		// current picture no longer shows is resolved — including items whose
+		// acquisitions aged out of the history window, vanished from the queue
+		// or disappeared from history entirely. This is the fix for incidents
+		// that stayed ACTIVE for days after the underlying condition ended:
+		// scoped resolution only touched keys still being evaluated. On
+		// incomplete data (any enabled Arr unreadable) the sweep is skipped —
+		// a failed read must never resolve findings.
+		if (dataComplete) {
+			for (const fp of this.getActiveFingerprints()) {
+				if (
+					!fp.startsWith('media-repeat:') &&
+					!fp.startsWith('media-mismatch:') &&
+					!fp.startsWith('media-failing:')
+				)
+					continue;
+				if (activeFingerprints.has(fp)) continue;
+				this.onResolve(fp, 'Resolved: the condition is no longer present in the current Arr state');
+			}
 		}
 
 		// Mismatch resolution bookkeeping for the metrics.
@@ -411,12 +452,18 @@ export class MediaFlowCorrelator {
 	 * A repeat: a new grab for an item whose previous request is still active
 	 * (never imported) or completed only within the completion shield. Returns
 	 * the repeat cluster evidence when found (brief §19/§20/§21).
+	 *
+	 * "Still active" is verified, not assumed: an acquisition counts as active
+	 * while the item is missing from the Arr, sits in its queue, or saw grab
+	 * activity inside the acquiring grace. A cluster with none of those —
+	 * nothing imported, nothing queued, no activity for hours — is a stale
+	 * history echo, not an active problem, and must not hold the finding open.
 	 */
 	private detectRepeat(
 		mediaKey: string,
 		sorted: MediaAcquisition[],
 		now: number,
-		stillMissing: boolean
+		w: FlowWork
 	): { count: number; clusterStart: number } | null {
 		if (sorted.length < 2) return null;
 		const inWindow = sorted.filter((a) => now - a.firstSeen <= this.t.repeatWindowMs);
@@ -430,13 +477,24 @@ export class MediaFlowCorrelator {
 			// *repeat* when the item is STILL missing (the import did not
 			// stick); otherwise it is a normal upgrade/new acquisition
 			// (brief §20). Give quick propagation the mismatch grace first.
-			if (!stillMissing) return null;
+			if (!w.isMissing) return null;
 			if (now - previous.completedAt < this.t.mismatchGraceMs) return null;
 			return { count: inWindow.length, clusterStart: inWindow[0]!.firstSeen };
 		}
 		// Previous request never completed: still active inside the window?
 		if ((latest.acceptedAt ?? latest.firstSeen) - previous.firstSeen > this.t.repeatWindowMs)
 			return null;
+		// Active-work verification: missing in the Arr, in the queue, or
+		// recent grab/failure activity keeps the repeat alive; a silent
+		// cluster resolves instead of lingering for the whole window.
+		const inQueue = w.observations.some(
+			(o) => o.state === 'downloading' || o.state === 'importing'
+		);
+		const lastActivity = Math.max(
+			...sorted.map((a) => Math.max(a.firstSeen, a.failedAt ?? 0, a.completedAt ?? 0))
+		);
+		const activeWork = w.isMissing || inQueue || now - lastActivity <= this.t.acquiringGraceMs;
+		if (!activeWork) return null;
 		return { count: inWindow.length, clusterStart: inWindow[0]!.firstSeen };
 	}
 
@@ -455,8 +513,8 @@ export class MediaFlowCorrelator {
 		for (const [mediaKey, acqs] of byMedia) {
 			if (acqs.length < 2) continue;
 			const sorted = [...acqs].sort((a, b) => a.firstSeen - b.firstSeen);
-			const stillMissing = work.get(mediaKey)?.isMissing ?? false;
-			if (this.detectRepeat(mediaKey, sorted, now, stillMissing)) count++;
+			const w = work.get(mediaKey) ?? emptyWork(mediaKey);
+			if (this.detectRepeat(mediaKey, sorted, now, w)) count++;
 		}
 		return count;
 	}
@@ -546,16 +604,23 @@ function classify(
 // The read-only loader: builds ArrObservations from configured integrations
 // -----------------------------------------------------------------------------
 
-export async function loadArrObservations(): Promise<ArrObservation[]> {
+export async function loadArrObservations(): Promise<ArrSourceBatch> {
 	const { listIntegrations, getApiKey } = await import('../integrations/store');
 	const { ArrBaseClient } = await import('../integrations/arr/base');
 	const { getCachedData } = await import('../integrations/manager');
 	const out: ArrObservation[] = [];
+	let enabled = 0;
+	let succeeded = 0;
 	for (const config of listIntegrations()) {
 		if (config.enabled === false || (config.type !== 'sonarr' && config.type !== 'radarr'))
 			continue;
+		enabled++;
 		const apiKey = getApiKey(config.id);
-		if (!apiKey) continue;
+		if (!apiKey) {
+			// Unusable configuration: this integration contributes nothing and
+			// cannot succeed — mark the cycle incomplete.
+			continue;
+		}
 		const client = new ArrBaseClient(config.url, apiKey);
 		const now = Date.now();
 		try {
@@ -626,12 +691,14 @@ export async function loadArrObservations(): Promise<ArrObservation[]> {
 				events,
 				queue: queueItems
 			});
+			succeeded++;
 		} catch {
-			// One unreadable integration must not silence the others.
+			// One unreadable integration must not silence the others — but it
+			// does make this cycle's picture incomplete, so no close-outs run.
 			continue;
 		}
 	}
-	return out;
+	return { sources: out, complete: enabled === 0 || enabled === succeeded };
 }
 
 // -----------------------------------------------------------------------------
@@ -662,4 +729,22 @@ function percentile(sorted: number[], p: number): number {
 	const s = [...sorted].sort((a, b) => a - b);
 	const idx = Math.min(s.length - 1, Math.max(0, Math.round((p / 100) * (s.length - 1))));
 	return s[idx]!;
+}
+
+/** Minimal evaluation-only work item for ledger keys without a live source. */
+function emptyWork(mediaKey: string): FlowWork {
+	return {
+		key: mediaKey,
+		observations: [],
+		title: 'Unknown',
+		sourceType: 'sonarr',
+		integrationId: '',
+		mediaId: null,
+		isMissing: false,
+		lastGrabAt: null,
+		lastFailureAt: null,
+		lastImportAt: null,
+		acquisitions: 0,
+		classification: null
+	};
 }

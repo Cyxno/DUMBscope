@@ -135,11 +135,18 @@ export class MemoryAnomalyTracker {
 	}
 
 	/**
-	 * Feed one metrics snapshot. Records samples at the throttled cadence; the
-	 * per-process value is the max RSS among same-named entries in the frame
-	 * (external processes can share a name; the largest is the one at risk).
+	 * Feed one metrics snapshot. Records samples at the throttled cadence.
+	 *
+	 * Process identity (§8): each sample carries the *instance key* of the
+	 * discovered service when known (`instance_key`), so baselines and history
+	 * can never silently merge two same-name instances (Sonarr vs Sonarr
+	 * Anime, Radarr vs Radarr 4K). DUMB exposes managed instances as separate
+	 * processes with distinct names, so the two-level key is defensive: it
+	 * keeps name-only legacy rows readable (migration path) while new rows are
+	 * instance-scoped. Same-named duplicate rows in one frame (the only merge)
+	 * take the max RSS — conservative, never averaged down.
 	 */
-	onSnapshot(snapshot: MetricsSnapshot): void {
+	onSnapshot(snapshot: MetricsSnapshot, identities?: ReadonlyMap<string, string>): void {
 		if (this.enabledFn && !this.enabledFn()) return;
 		const now = this.nowFn();
 		const byName = new Map<string, number>();
@@ -148,7 +155,9 @@ export class MemoryAnomalyTracker {
 			byName.set(proc.name, Math.max(byName.get(proc.name) ?? 0, proc.memoryBytes));
 		}
 		for (const [name, rss] of byName) {
-			let state = this.processes.get(name);
+			const instanceKey = identities?.get(name) ?? '';
+			const stateKey = `${instanceKey}\u0000${name}`;
+			let state = this.processes.get(stateKey);
 			if (!state) {
 				state = {
 					lastSampleAt: 0,
@@ -159,15 +168,17 @@ export class MemoryAnomalyTracker {
 					recoveredSince: null,
 					criticalSince: null
 				};
-				this.processes.set(name, state);
+				this.processes.set(stateKey, state);
 			}
 			state.latestBytes = rss;
 			if (now - state.lastSampleAt >= this.t.sampleIntervalMs) {
 				state.lastSampleAt = now;
 				try {
 					getDb()
-						.prepare('INSERT INTO memory_samples (process, at, rss_bytes) VALUES (?, ?, ?)')
-						.run(name, now, Math.round(rss));
+						.prepare(
+							'INSERT INTO memory_samples (process, at, rss_bytes, instance_key) VALUES (?, ?, ?, ?)'
+						)
+						.run(name, now, Math.round(rss), instanceKey);
 				} catch {
 					// A failed sample insert must never disturb the metrics pipeline.
 				}
@@ -188,9 +199,13 @@ export class MemoryAnomalyTracker {
 		const warningBytes = this.warningBytesFn();
 		const criticalBytes = this.criticalBytesFn();
 		const views: ProcessMemoryView[] = [];
-		for (const [name, state] of this.processes) {
+		for (const [stateKey, state] of this.processes) {
 			try {
-				const history = loadSamples(name, now, this.t);
+				// stateKey = "<instanceKey>\u0000<process>" (instance may be '').
+				const sep = stateKey.indexOf('\u0000');
+				const instanceKey = stateKey.slice(0, sep);
+				const name = stateKey.slice(sep + 1);
+				const history = loadSamples(name, instanceKey, now, this.t);
 				if (history.latest === null) continue;
 				// Assess first, then build the view: the view must reflect the
 				// level the assessment just produced (e.g. a fresh 'ok').
@@ -246,14 +261,24 @@ interface SampleHistory {
 	growth15m: number | null;
 }
 
-function loadSamples(process: string, now: number, t: MemoryTuning): SampleHistory {
+function loadSamples(
+	process: string,
+	instanceKey: string,
+	now: number,
+	t: MemoryTuning
+): SampleHistory {
 	const db = getDb();
 	const windowStart = now - t.retentionMs;
+	// Instance-scoped rows plus legacy name-only rows: an upgrade keeps its
+	// history continuous (§8 migration strategy) without ever mixing two
+	// instance-scoped series.
 	const rows = db
 		.prepare(
-			'SELECT at, rss_bytes FROM memory_samples WHERE process = ? AND at >= ? ORDER BY at ASC'
+			`SELECT at, rss_bytes FROM memory_samples
+			 WHERE process = ? AND (instance_key = ? OR instance_key = '') AND at >= ?
+			 ORDER BY at ASC`
 		)
-		.all(process, windowStart) as { at: number; rss_bytes: number }[];
+		.all(process, instanceKey, windowStart) as { at: number; rss_bytes: number }[];
 	const history: SampleHistory = {
 		latest: null,
 		baseline: null,

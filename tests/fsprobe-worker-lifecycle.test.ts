@@ -60,11 +60,10 @@ function makeProbeTarget(): string {
 	return dir;
 }
 
-const HEALTHY_OPS = (dir: string) =>
-	[
-		{ op: 'stat' as const, path: path.join(dir, 'file.txt') },
-		{ op: 'list' as const, path: dir, entryBudget: 50, depth: 1, linkSampleCap: 4 }
-	];
+const HEALTHY_OPS = (dir: string) => [
+	{ op: 'stat' as const, path: path.join(dir, 'file.txt') },
+	{ op: 'list' as const, path: dir, entryBudget: 50, depth: 1, linkSampleCap: 4 }
+];
 
 describe('fsprobe worker lifecycle (memory-leak regression)', () => {
 	it('reclaims its worker after healthy rounds — 40 rounds add no threads', async () => {

@@ -82,7 +82,7 @@ describe('v0.1.1 → v0.2 migration', () => {
 
 	it('applies migration 3 and reports version 7 (media snapshots, memory samples, acquisition ledger, notifications)', () => {
 		const db = new DatabaseSync(file, { readOnly: true });
-		expect(currentVersion(db)).toBe(8);
+		expect(currentVersion(db)).toBe(9);
 		const tables = db
 			.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 			.all()
@@ -164,12 +164,12 @@ describe('v0.3.0 → current migration (release rehearsal)', () => {
 
 	it('applies migration 4 exactly once and reports version 7', () => {
 		const db = new DatabaseSync(file, { readOnly: true });
-		expect(currentVersion(db)).toBe(8);
+		expect(currentVersion(db)).toBe(9);
 		const rows = db
 			.prepare('SELECT version, COUNT(*) c FROM schema_version GROUP BY version ORDER BY version')
 			.all() as { version: number; c: number }[];
 		db.close();
-		expect(rows.map((r) => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8]);
+		expect(rows.map((r) => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
 		expect(rows.every((r) => r.c === 1)).toBe(true);
 	});
 
@@ -244,6 +244,6 @@ describe('already-current schema is a no-op (idempotence)', () => {
 		db.close();
 		expect(objectsAfter).toEqual(objectsBefore);
 		expect(versionRowsAfter).toEqual(versionRowsBefore);
-		expect(version).toBe(8);
+		expect(version).toBe(9);
 	});
 });

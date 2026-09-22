@@ -38,7 +38,7 @@ export interface ServiceSlo {
 	firstObservedAt: number | null;
 }
 
-const WINDOWS = [24 * 60 * 60_000, 7 * 24 * 60 * 60_000, 30 * 24 * 60 * 60_000] as const;
+export const WINDOWS = [24 * 60 * 60_000, 7 * 24 * 60 * 60_000, 30 * 24 * 60 * 60_000] as const;
 
 interface OutageInterval {
 	firstSeen: number;
@@ -87,6 +87,18 @@ function restartCount(serviceKey: string, since: number): number {
 		)
 		.get(serviceKey, since) as { c: number };
 	return Number(row.c ?? 0);
+}
+
+/** Earliest evidence DUMBscope has for a service (incidents + events). */
+export function firstObservedAtFor(serviceKey: string): number | null {
+	const incident = getDb()
+		.prepare(`SELECT MIN(first_seen) AS t FROM incidents WHERE affected_services LIKE ?`)
+		.get(`%${JSON.stringify(serviceKey).slice(1, -1)}%`) as { t: number | null };
+	const event = getDb()
+		.prepare(`SELECT MIN(at) AS t FROM service_events WHERE service_key = ?`)
+		.get(serviceKey) as { t: number | null };
+	const candidates = [incident.t, event.t].filter((t): t is number => t !== null);
+	return candidates.length > 0 ? Math.min(...candidates) : null;
 }
 
 export function serviceSlo(

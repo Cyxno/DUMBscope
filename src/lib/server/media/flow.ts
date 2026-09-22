@@ -472,6 +472,10 @@ export class MediaFlowCorrelator {
 		const previous = sorted[sorted.length - 2]!;
 		const latestIsNew = (latest.acceptedAt ?? latest.firstSeen) - previous.firstSeen > 60_000;
 		if (!latestIsNew) return null;
+		// The newest request already imported and the item is no longer
+		// missing: the cluster is over regardless of how it started (the
+		// import resolves the repeat condition).
+		if (latest.completedAt !== null && !w.isMissing) return null;
 		if (previous.completedAt !== null) {
 			// The previous request completed. A follow-up grab is only a
 			// *repeat* when the item is STILL missing (the import did not

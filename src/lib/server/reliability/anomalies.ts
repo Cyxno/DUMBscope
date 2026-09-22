@@ -56,8 +56,11 @@ export interface RestartStormHit extends ResourceAnomalyFinding {
 }
 
 /** Count observed starts per service inside the window (bounded SQL). */
-function recentStarts(windowMs: number): Map<string, { count: number; lastAt: number }> {
-	const since = Date.now() - windowMs;
+function recentStarts(
+	windowMs: number,
+	now = Date.now()
+): Map<string, { count: number; lastAt: number }> {
+	const since = now - windowMs;
 	const rows = getDb()
 		.prepare(
 			`SELECT service_key, COUNT(*) AS c, MAX(at) AS last_at
@@ -74,11 +77,12 @@ function recentStarts(windowMs: number): Map<string, { count: number; lastAt: nu
 /** Detect restart storms. Returns one finding per storming service. */
 export function detectRestartStorms(
 	displayNameFor: (serviceKey: string) => string,
-	tuning = ANOMALY_TUNING
+	tuning: { [K in keyof typeof ANOMALY_TUNING]: number } = { ...ANOMALY_TUNING },
+	now = Date.now()
 ): RestartStormHit[] {
 	const hits: RestartStormHit[] = [];
 	try {
-		for (const [serviceKey, stats] of recentStarts(tuning.stormWindowMs)) {
+		for (const [serviceKey, stats] of recentStarts(tuning.stormWindowMs, now)) {
 			if (stats.count < tuning.stormThreshold) continue;
 			const name = displayNameFor(serviceKey);
 			hits.push({

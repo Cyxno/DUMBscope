@@ -9,6 +9,7 @@ import type {
 	ConnectionSnapshot,
 	DiscoveredService,
 	Incident,
+	IncidentCounts,
 	LogLine,
 	MediaFlowSnapshot,
 	MetricsHistoryPoint,
@@ -69,6 +70,8 @@ class LiveStore {
 	cpuSeries = $state<Record<string, number[]>>({});
 	logs = $state<LogLine[]>([]);
 	activeIncidents = $state<Incident[]>([]);
+	/** Header badges: open problems by state plus resolved history size. */
+	incidentCounts = $state<IncidentCounts>({ active: 0, acknowledged: 0, resolved: 0 });
 	topology = $state<TopologyGraph>({ nodes: [], edges: [] });
 	reliability = $state<ReliabilitySnapshot>({
 		mounts: [],
@@ -198,15 +201,27 @@ class LiveStore {
 		});
 		on<{ active: Incident[] }>('incidents', (data) => {
 			this.activeIncidents = data.active;
+			this.incidentCounts = {
+				active: data.active.filter((i) => i.status === 'active').length,
+				acknowledged: data.active.filter((i) => i.status === 'acknowledged').length,
+				resolved: this.incidentCounts.resolved
+			};
 		});
 		on<Incident>('incident', (incident) => {
+			const open = incident.status === 'active' || incident.status === 'acknowledged';
 			const idx = this.activeIncidents.findIndex((i) => i.id === incident.id);
-			if (incident.status === 'active') {
+			if (open) {
 				if (idx >= 0) this.activeIncidents[idx] = incident;
 				else this.activeIncidents.push(incident);
 			} else if (idx >= 0) {
 				this.activeIncidents.splice(idx, 1);
+				if (incident.status === 'resolved') this.incidentCounts.resolved++;
 			}
+			this.incidentCounts = {
+				active: this.activeIncidents.filter((i) => i.status === 'active').length,
+				acknowledged: this.activeIncidents.filter((i) => i.status === 'acknowledged').length,
+				resolved: this.incidentCounts.resolved
+			};
 			this.overview = {
 				...this.overview,
 				activeIncidents: this.activeIncidents.length,

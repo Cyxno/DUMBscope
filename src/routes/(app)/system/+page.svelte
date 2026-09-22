@@ -3,6 +3,7 @@
 	import Card from '$lib/components/Card.svelte';
 	import AreaChart from '$lib/components/AreaChart.svelte';
 	import EmptyState from '$lib/components/EmptyState.svelte';
+	import RuntimePanel from '$lib/components/RuntimePanel.svelte';
 	import { formatBytes, formatPercent, relativeTime } from '$lib/utils/format';
 	import { CONNECTION_LABELS } from '$lib/utils/status';
 	import type { MountHealth, MemoryAnomalyLevel } from '$lib/types';
@@ -216,6 +217,10 @@
 			{/each}
 		</div>
 	</header>
+
+	<!-- DUMBscope self-observability (§4): process vitals, leak signatures,
+	     reconciliation observability. Rendered first: watching the watcher. -->
+	<RuntimePanel />
 
 	<!-- DUMB connection diagnostics (brief §10): troubleshooting detail, honest per layer. -->
 	<Card

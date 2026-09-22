@@ -42,11 +42,9 @@ async function setRss(name: string, bytes: number | null): Promise<void> {
 	if (!res.ok) throw new Error(`rss control failed: ${res.status}`);
 }
 
-/** The Active section of the incidents page (history rows are separate). */
+/** The open-incidents section of the incidents page (default Active tab). */
 function activeSection(page: Page) {
-	return page
-		.locator('section')
-		.filter({ has: page.getByRole('heading', { name: 'Active', exact: true }) });
+	return page.getByTestId('open-incidents');
 }
 
 test('mount health: broken symlink warning opens on System and resolves after repair', async ({

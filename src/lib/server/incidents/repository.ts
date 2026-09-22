@@ -276,7 +276,7 @@ export const incidentRepository = {
 		incident.acknowledgedAt = incident.acknowledgedAt ?? at;
 		this.update(incident);
 		this.appendTimeline(incident.id, { at, message, severity: 'info' });
-		return incident;
+		return this.get(id);
 	},
 
 	unacknowledge(id: string, at: number, message: string): Incident | null {
@@ -286,7 +286,7 @@ export const incidentRepository = {
 		incident.acknowledgedAt = null;
 		this.update(incident);
 		this.appendTimeline(incident.id, { at, message, severity: 'info' });
-		return incident;
+		return this.get(id);
 	},
 
 	archive(id: string, at: number, message: string): Incident | null {
@@ -297,7 +297,7 @@ export const incidentRepository = {
 		incident.status = 'archived';
 		this.update(incident);
 		this.appendTimeline(incident.id, { at, message, severity: 'info' });
-		return incident;
+		return this.get(id);
 	},
 
 	/** Bulk-archive resolved incidents (optionally only those resolved before `beforeMs`). */

@@ -8,7 +8,7 @@
 	import { pipelineModelFromLive, pipelineMetaForKey } from '$lib/pipeline/from-live';
 	import { page } from '$app/state';
 	import { ScrollText, History, Check, Archive, ArchiveRestore, ChevronDown } from '@lucide/svelte';
-	import type { Incident } from '$lib/types';
+	import type { Incident, IncidentCounts } from '$lib/types';
 
 	type Tab = 'active' | 'acknowledged' | 'resolved' | 'archived';
 
@@ -30,8 +30,13 @@
 			const status = tab === 'archived' ? 'archived' : tab === 'resolved' ? 'resolved' : 'open';
 			const response = await fetch(`/api/incidents?status=${status}&limit=100`);
 			if (response.ok) {
-				const data = (await response.json()) as { incidents: Incident[] };
+				const data = (await response.json()) as {
+					incidents: Incident[];
+					counts: IncidentCounts;
+				};
 				historyList = data.incidents.filter((i) => i.status === tab);
+				// Authoritative counts on load; SSE keeps them fresh afterwards.
+				live.incidentCounts = data.counts;
 			}
 		} finally {
 			historyLoading = false;
@@ -97,8 +102,27 @@
 		});
 		if (response.ok) {
 			const data = (await response.json()) as { incident: Incident };
-			detail = data.incident;
+			// Update the drawer only when it is already showing this incident —
+			// row-level actions must not pop the drawer open over the list.
+			if (detail?.id === data.incident.id) detail = data.incident;
+			applyLocal(data.incident);
 			void loadHistory();
+		}
+	}
+
+	/**
+	 * Apply an operator action to the local live store immediately — SSE also
+	 * carries the change, but this keeps this tab's list instant and correct
+	 * even if the socket is mid-reconnect.
+	 */
+	function applyLocal(updated: Incident) {
+		const idx = live.activeIncidents.findIndex((i) => i.id === updated.id);
+		const open = updated.status === 'active' || updated.status === 'acknowledged';
+		if (open) {
+			if (idx >= 0) live.activeIncidents[idx] = updated;
+			else live.activeIncidents.push(updated);
+		} else if (idx >= 0) {
+			live.activeIncidents.splice(idx, 1);
 		}
 	}
 
@@ -165,7 +189,12 @@
 	 * nothing silently disappears.
 	 */
 	const groups = $derived.by(() => {
-		const list = tab === 'active' || tab === 'acknowledged' ? live.activeIncidents : historyList;
+		const open = tab === 'active' || tab === 'acknowledged' ? live.activeIncidents : historyList;
+		// Each tab shows only its own status; both are open problems but the
+		// Active view stays the "needs attention right now" list.
+		const list = open.filter((i) =>
+			tab === 'acknowledged' ? i.status === 'acknowledged' : i.status === 'active'
+		);
 		const fingerprints = new Set(list.map((i) => i.fingerprint));
 		const roots: Incident[] = [];
 		const children = new Map<string, Incident[]>();
@@ -261,7 +290,7 @@
 	</nav>
 
 	{#if tab === 'active' || tab === 'acknowledged'}
-		<section>
+		<section data-testid="open-incidents">
 			{#if groups.roots.length === 0}
 				<EmptyState
 					title={tab === 'active' ? 'All clear' : 'Nothing acknowledged'}
@@ -343,12 +372,12 @@
 						/>
 					</div>
 				{:else}
-					<ul class="divide-y divide-border-subtle">
+					<ul class="divide-y divide-border-subtle" data-testid="history-list">
 						{#each historyList as incident (incident.id)}
-							<li>
+							<li class="flex items-center gap-3 px-4 py-2.5 transition-colors hover:bg-surface-2">
 								<button
 									type="button"
-									class="flex w-full items-center gap-3 px-4 py-2.5 text-left transition-colors hover:bg-surface-2"
+									class="flex min-w-0 flex-1 items-center gap-3 text-left"
 									onclick={() => openIncident(incident.id)}
 								>
 									<span
@@ -364,18 +393,17 @@
 									<span class="tnum shrink-0 text-[11px] text-text-faint">
 										{formatDateTime(incident.firstSeen)} → {formatDateTime(incident.resolvedAt)}
 									</span>
-									{#if tab === 'resolved'}
-										<span
-											class="shrink-0 rounded-lg border border-border-subtle px-2 py-1 text-[10px] font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text-primary"
-											onclick={(e) => {
-												e.stopPropagation();
-												void act(incident, 'archive');
-											}}
-										>
-											Archive
-										</span>
-									{/if}
 								</button>
+								{#if tab === 'resolved'}
+									<button
+										type="button"
+										data-testid="row-archive"
+										class="shrink-0 rounded-lg border border-border-subtle px-2 py-1 text-[10px] font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text-primary"
+										onclick={() => act(incident, 'archive')}
+									>
+										Archive
+									</button>
+								{/if}
 							</li>
 						{/each}
 					</ul>
@@ -387,13 +415,19 @@
 
 {#snippet IncidentRow(incident: Incident)}
 	<div
+		data-testid="incident-row"
+		data-incident-status={incident.status}
 		class="group rounded-[14px] border border-border-subtle bg-surface-1 p-4 shadow-[var(--shadow-1)] transition-all hover:border-border-strong hover:shadow-[var(--shadow-2)] {incident.status ===
 		'acknowledged'
 			? 'opacity-70'
 			: ''}"
 	>
-		<button type="button" class="w-full text-left" onclick={() => openIncident(incident.id)}>
-			<div class="flex items-start gap-3">
+		<div class="flex items-start gap-3">
+			<button
+				type="button"
+				class="flex min-w-0 flex-1 items-start gap-3 text-left"
+				onclick={() => openIncident(incident.id)}
+			>
 				<span class="mt-1 h-2 w-2 shrink-0 rounded-full" style="background: {sevColor(incident)}"
 				></span>
 				<div class="min-w-0 flex-1">
@@ -442,27 +476,18 @@
 						{/if}
 					</p>
 				</div>
-				{#if incident.status === 'active'}
-					<span
-						class="shrink-0 rounded-lg border border-border-subtle px-2 py-1 text-[10px] font-medium text-text-muted opacity-0 transition-all group-hover:opacity-100 hover:border-border-strong hover:text-text-primary"
-						role="button"
-						tabindex="0"
-						onclick={(e) => {
-							e.stopPropagation();
-							void act(incident, 'acknowledge');
-						}}
-						onkeydown={(e) => {
-							if (e.key === 'Enter') {
-								e.stopPropagation();
-								void act(incident, 'acknowledge');
-							}
-						}}
-					>
-						Acknowledge
-					</span>
-				{/if}
-			</div>
-		</button>
+			</button>
+			{#if incident.status === 'active'}
+				<button
+					type="button"
+					data-testid="row-acknowledge"
+					class="shrink-0 rounded-lg border border-border-subtle px-2 py-1 text-[10px] font-medium text-text-muted transition-colors hover:border-border-strong hover:text-text-primary"
+					onclick={() => act(incident, 'acknowledge')}
+				>
+					Acknowledge
+				</button>
+			{/if}
+		</div>
 	</div>
 {/snippet}
 

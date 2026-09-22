@@ -140,7 +140,14 @@ export function categoryForFingerprint(fingerprint: string): NotificationCategor
 	if (fingerprint.startsWith('mount:') || fingerprint.startsWith('symlinks:')) return 'mount';
 	if (fingerprint.startsWith('memory:')) return 'memory';
 	if (fingerprint.startsWith('disk-') || fingerprint.startsWith('db-health:')) return 'storage';
+	if (fingerprint.startsWith('recon:')) return 'storage';
 	if (fingerprint.startsWith('media-')) return 'media-state';
+	if (
+		fingerprint.startsWith('self:') ||
+		fingerprint.startsWith('restart-storm:') ||
+		fingerprint.startsWith('disk-trend:')
+	)
+		return 'incident';
 	return 'incident';
 }
 

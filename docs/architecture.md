@@ -109,13 +109,23 @@ src/
   (`DUMBSCOPE_TRUST_PROXY=true` + `X-Forwarded-Proto: https`).
 - Every response carries hardening headers; SvelteKit CSP runs in hash mode.
 - Mutating API requests are checked for same-origin in addition to cookies.
-- v0.1 is read-only towards DUMB: no start/stop/restart endpoints exist.
+- Control-plane actions towards DUMB are allowlisted to three Safe Actions
+  (search-again, refresh, restart for a managed Sonarr/Radarr; docs/ACTIONS.md)
+  plus DUMB's own single-service restart route behind the remediation manager.
+  Each requires an admin session, same-origin and confirmation, and is
+  audit-first; everything else stays read-only.
 
 ## Database schema
 
-`settings`, `users`, `sessions`, `incidents`, `incident_events`,
-`health_transitions`, `service_events`, `schema_version`. Migrations are
-versioned, transactional and run automatically on startup. Log content and
+`settings`, `users`, `sessions`, `incidents` (lifecycle metadata:
+`detector`, `last_evaluated_at`, `last_evidence_at`, `acknowledged_at`,
+`resolution_kind`, `resolution_reason`), `incident_events`,
+`health_transitions`, `service_events`, `integrations`, `activity`,
+`media_snapshots`, `memory_samples` (+ `instance_key` and
+`_5m`/`_30m` aggregate tiers), `media_acquisitions`,
+`remediation_actions`, `notification_*`, `integration_actions`,
+`runtime_samples` (+ `_5m`/`_30m` tiers), `schema_version`. Migrations
+are versioned, transactional and run automatically on startup. Log content and
 media titles are never persisted; DUMB's own log redaction is applied before
 DUMBscope ever sees bytes.
 

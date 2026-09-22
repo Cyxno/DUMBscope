@@ -134,8 +134,10 @@ never shows a false red and recovers by itself.
 ## Mount health (FASE B)
 
 Read-only observability for the stack's storage paths. DUMBscope never
-mounts, remounts, restarts or repairs anything in this phase — detection
-only.
+mounts, remounts, restarts or repairs anything here — detection and honest
+lifecycle management only. (The one write path that exists anywhere in the
+product is the separately-gated Safe Actions control plane,
+docs/ACTIONS.md.)
 
 ### The monitored inventory
 
@@ -264,9 +266,10 @@ timeline. No second engine (brief §25/§26).
 
 ---
 
-## Settings (this phase)
+## Settings
 
-Settings → Reliability (all read-only observation switches; no remediation):
+Settings → Reliability (observation switches; the remediation _recommendation_
+layer is separate and off unless explicitly enabled):
 
 - Mount monitoring — ON by default.
 - Memory monitoring — ON by default.
@@ -277,6 +280,98 @@ The thresholds apply on the next detection pass; no reload needed.
 
 ---
 
+## Incident lifecycle semantics (v0.8)
+
+Incident state must represent reality. Every detector that can open a finding
+owns deterministic recovery/close semantics, and every resolution records
+WHAT it means — a recovery is never inferred from silence, and "cannot
+verify" is never reported as "recovered".
+
+### Statuses
+
+- **active** — open problem, detector still sees it. The default Incidents
+  view is this list: "what requires attention right now?"
+- **acknowledged** — an operator saw it. Still technically open: the detector
+  keeps evaluating it, it keeps escalating/correlating, and it resolves
+  normally once recovery is verified. It renders muted, never gone.
+- **resolved** — closed with a recorded resolutionKind:
+  - `recovered` — the detector positively confirmed recovery.
+  - `obsolete` — the finding's origin is provably gone (target removed,
+    monitor disabled, integration deleted, process no longer reported). This
+    is explicitly NOT a recovery and is labelled as such in the UI.
+  - `operator` — archive/clear bookkeeping.
+- **archived** — cleared from the working views by an operator (soft state,
+  never a deletion). A recurrence opens a NEW row; archived history does not
+  resurrect.
+
+### Lifecycle metadata
+
+Every incident row carries `detector` (owning detector, e.g. `mounts`,
+`media-flow`, `runtime`), `last_evaluated_at` (proof the detector ran and
+had the chance to change its verdict), `last_evidence_at` (last positive
+evidence), `acknowledged_at`, `resolved_at`, `resolution_kind` and
+`resolution_reason`.
+
+### Per-detector recovery semantics
+
+- **Service health/stopped/restart** (`status.*`): resolve after a sustained
+  healthy streak (3 observations) or a running state; a service that
+  disappears from DUMB's managed registry resolves as `obsolete`.
+- **Log-error bursts** (`logs.errors`): resolve after one full window with
+  no errors. After a restart the burst window is re-seeded, so post-restart
+  recovery is reachable.
+- **Disk / database health / memory** (`metrics.*`, `memory`): resolve on
+  positive healthy readings with hysteresis; if the filesystem/process
+  disappears from otherwise-fresh DUMB metrics for >10 min, resolve as
+  `obsolete` ("no longer reported"). A single absent frame never resolves.
+- **Mounts** (`mounts`): resolve after the configured number of healthy probe
+  rounds (default 2). Mount targets sync from settings on every housekeeping
+  tick; removing a target stops probing and retires its findings as
+  `obsolete` ("target removed").
+- **Symlinks** (`mounts.symlinks`): opening the systemic finding needs ≥8
+  sampled links AND ≥80% broken; recovery needs clean rounds (broken ratio
+  below the systemic threshold) — including rounds that sample fewer links or
+  none at all, which previously made recovery unreachable.
+- **Reconciliation** (`reconciliation`): complete-cycle open/close deltas —
+  anything previously detected but absent from a successful cycle resolves;
+  a failed or incomplete cycle (unreachable Arr, skipped diff) resolves
+  NOTHING. An integration deleted mid-incident is retired by the safety net.
+- **Media flow** (`media-flow`): a repeated acquisition request resolves when
+  the acquisition is no longer verifiably active — the item imported, left
+  the queue, the condition dropped out of Arr state, or the cluster went
+  silent beyond the acquiring grace. Item-level close-outs run only on
+  complete cycles (every enabled Arr answered); a failed Arr read resolves
+  nothing.
+- **Integrations** (`integration`): resolve after sustained successful
+  polling; deleting the integration retires the finding (`obsolete`).
+- **Memory anomalies** (`memory`): resolve through the tracker's existing
+  hysteresis (sustained at-or-below the recovery line).
+- **DUMBscope runtime** (`runtime`): self-monitoring findings resolve after a
+  sustained recovery window; disabling runtime monitoring retires them.
+- **Connection**: offline resolves only after a sustained live period;
+  credentials resolve on acceptance. Removing the DUMB configuration retires
+  stack findings via the safety net.
+
+### Stale-incident safety net
+
+A bounded pass (every 10 min) inspects open incidents against the currently
+registered detectors/targets: configured mount paths, registered
+integrations, enabled monitors, the managed service registry. Findings whose
+origin is gone resolve with an explicit `obsolete` reason recorded in the
+timeline ("target removed", "monitor disabled", "integration deleted"). The
+pass never resolves anything because an incident is merely old, and
+never while its data source is unavailable — "detector cannot verify" and
+"target removed" stay different states.
+
+### Operator controls
+
+Acknowledge (mutes, keeps evaluating), Unacknowledge, Archive (resolved
+only), and bulk "Clear resolved" (all / older than 24 h / 7 d / 30 d).
+Clearing is a soft archive — history stays queryable, and the header counts
+(Active · Acknowledged · Resolved) stay truthful.
+
+---
+
 ## Database & retention
 
 - Migration 5 (additive): `memory_samples(process, at, rss_bytes)` with
@@ -284,6 +379,27 @@ The thresholds apply on the next detection pass; no reload needed.
   retention-pruned at 26 h (~62k rows steady-state for a 40-process stack, a
   few MB).
 - Findings reuse the existing incident tables and retention — no new store.
+- Migration 9 (v0.8, additive): incident lifecycle metadata columns;
+  `runtime_samples` + `runtime_samples_5m` + `runtime_samples_30m`;
+  `memory_samples.instance_key` and the `memory_samples_5m`/`_30m` tiers.
+
+### Long-term tiers (v0.8) — predictable, bounded growth
+
+| Series                                                                | Tier           | Retention | Steady-state rows      |
+| --------------------------------------------------------------------- | -------------- | --------- | ---------------------- |
+| Runtime vitals (RSS, heap, lag, FDs, workers, SSE, DB/WAL, durations) | 1 min raw      | 26 h      | ~1.5k                  |
+| same                                                                  | 5 min avg+max  | 7 d       | ~2.0k                  |
+| same                                                                  | 30 min avg+max | 30 d      | ~1.4k                  |
+| Service memory                                                        | 1 min raw      | 26 h      | ~1.5k per 40 processes |
+| same                                                                  | 5 min avg+max  | 7 d       | ~2.0k per process      |
+| same                                                                  | 30 min avg+max | 30 d      | ~1.4k per process      |
+
+Aggregation keeps avg AND max per bucket (an average must not hide a leak
+spike), is idempotent per bucket (overlapping runs never duplicate), and a
+single hourly maintenance pass downsamples and prunes all tiers. Incident
+history itself is capped at 500 rows (`pruneHistory`, now actually wired).
+Total steady-state growth of the new tables is a few thousand fixed-width
+rows — well under 1 MB.
 
 ---
 
@@ -298,6 +414,15 @@ The thresholds apply on the next detection pass; no reload needed.
 - DB growth: see above (~a few MB/day worst case, pruned).
 - Failure isolation: a timed-out mount probe only costs that probe round; the
   DUMB connection, service registry and incident engine are untouched.
+- Runtime self-monitoring (v0.8): one sample pass per 15 s of `memoryUsage()`
+  - `/proc/self/fd` readdir + two stat calls + one SQLite row per minute.
+    Measured sync cost on the reference NAS: **≈15 µs per pass, ≈3.7 ms of
+    sync work per hour** (plus ~4 one-row inserts per minute). The hourly
+    maintenance pass (downsample + prune) is a handful of bounded SQL
+    statements over capped tables. Event-loop lag is measured by observing
+    drift of the sampler's own 1 s heartbeat — no busy work.
+- Safety net (v0.8): one pass per 10 min over the (few dozen) open incident
+  rows already in memory; no extra polling of DUMB or the filesystem.
 
 ---
 
@@ -315,8 +440,9 @@ The thresholds apply on the next detection pass; no reload needed.
 - `memory.percent` reflects DUMB's metrics scope (cgroup), so "host pressure"
   means the DUMB container's 6 GB budget — which is exactly the budget the
   4–5 GB complaint lives in.
-- Mount findings and memory findings are observation-only; remediation
-  (remount/restart) is deliberately out of scope in this phase.
+- Mount findings and memory findings are observation-only; the memory
+  remediation _recommendation_ (restart-managed-service) is operator-gated
+  and off by default (docs/REMEDIATION.md).
 
 ### Tests
 

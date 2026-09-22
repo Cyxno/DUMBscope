@@ -1,7 +1,8 @@
 # Security Policy
 
 DUMBscope is a self-hosted, network-exposed dashboard. This document explains
-the security model, the guarantees v0.1 makes, and how to report problems.
+the security model, the guarantees the current release makes, and how to
+report problems.
 
 ## Threat model
 
@@ -14,7 +15,7 @@ The design assumes:
 - An attacker with LAN access should not be able to read DUMB secrets, take
   over the dashboard, or pivot into DUMB.
 
-## Guarantees in v0.1
+## Guarantees
 
 ### DUMB credentials
 
@@ -65,13 +66,26 @@ The design assumes:
 - No `eval`, no shell endpoints, no filesystem browsing, no arbitrary command
   execution anywhere in the codebase.
 
-### Read-only towards DUMB
+### Controlled actions towards DUMB
 
-v0.1 has no endpoints that mutate DUMB state — no start/stop/restart, no
-config writes. The DUMB integration surface is limited to documented GET
-endpoints plus the three read-only WebSocket streams. Lifecycle controls, if
-ever added, will require explicit opt-in, capability detection, an allowlist
-and confirmation.
+Observation is the default and the bulk of the product, but DUMBscope is no
+longer strictly read-only: it ships a deliberately narrow control plane
+("Safe Actions", v0.7.0 — see docs/ACTIONS.md). Every guarantee below was
+part of the original read-only design and carries over:
+
+- **Allowlist only.** Three actions exist (search-again, refresh, restart for
+  a managed Sonarr/Radarr) plus DUMB's own single-service restart route for
+  remediation. There are no start/stop, config-write, or arbitrary endpoints;
+  the browser can never name a URL, command or path.
+- **Explicit operator intent.** Every action requires an authenticated admin
+  session, a same-origin check, per-session rate limiting and a confirmation
+  step in the UI.
+- **Audit-first.** The audit row is written before the upstream request goes
+  out; cooldowns and per-target attempt limits are enforced server-side.
+- **Capability detection.** Actions surface only when the target integration
+  exposes the capability.
+- Integration API keys never reach the browser, are encrypted at rest
+  (AES-256-GCM) and are never logged.
 
 ### Privacy
 

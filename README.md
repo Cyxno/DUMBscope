@@ -37,8 +37,10 @@ It answers, at a glance:
 - What happened around a past incident, and did it recover?
 
 DUMBscope is a companion to DUMB, not a replacement for its configuration UI.
-Towards your stack it is **read-only by default**; the single write action is
-an explicit, confirmed restart through DUMB's own management route.
+Towards your stack it is **observation-first**: the only write paths are three
+narrowly allowlisted Safe Actions (search-again, refresh, restart — always
+explicit, confirmed, audited and cooldown-guarded; see docs/ACTIONS.md) and a
+remediation _recommendation_ layer that stays off unless you enable it.
 
 ## Screenshots
 
@@ -74,7 +76,14 @@ logs, system, movies, subtitles, mobile).
 - **Incidents** — sustained-failure detection with grace periods and
   hysteresis (no flapping), fingerprint-based deduplication with occurrence
   counts, dependency correlation ("root cause: PostgreSQL"), timeline,
-  evidence, log context.
+  evidence, log context. Honest lifecycle: detectors prove recovery (or
+  retire findings whose target is gone — labelled, never disguised as
+  recovery), operators can acknowledge and archive, and the default view
+  answers "what needs attention right now?".
+- **Self-monitoring** — DUMBscope watches itself: RSS/heap, event-loop lag,
+  open FDs, worker threads, SSE clients, DB/WAL size, reconciliation and
+  probe runtimes — with rolling baselines, robust trend estimates and
+  sustained-evidence findings for its own leak/regression classes.
 - **Logs** — realtime stream from all DUMB services: level/service filters,
   search, pause/resume, incident deep-links, capped ring buffers.
 - **System** — CPU/memory/disk/network from DUMB, per-process metrics,

@@ -13,6 +13,7 @@
 	import { relativeTime } from '$lib/utils/format';
 	import { prefs } from '$lib/stores/prefs.svelte';
 	import OverviewReliability from '$lib/components/OverviewReliability.svelte';
+	import OverviewObservability from '$lib/components/OverviewObservability.svelte';
 
 	// Dashboard customization (DEEL 3): visibility + order from browser-local
 	// preferences; the Balanced preset reproduces the stock layout (§100).
@@ -240,6 +241,12 @@
 	{#if visible('reliability')}
 		<div style="order:{orderOf('reliability')}">
 			<OverviewReliability />
+		</div>
+	{/if}
+
+	{#if visible('observability')}
+		<div style="order:{orderOf('observability')}">
+			<OverviewObservability />
 		</div>
 	{/if}
 

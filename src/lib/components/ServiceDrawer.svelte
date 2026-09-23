@@ -5,7 +5,13 @@
 	import HealthBadge from './HealthBadge.svelte';
 	import Sparkline from './Sparkline.svelte';
 	import IntegrationPanel from './IntegrationPanel.svelte';
-	import { formatPercent, formatBytes, relativeTime, formatDateTime } from '$lib/utils/format';
+	import {
+		formatPercent,
+		formatBytes,
+		relativeTime,
+		formatDateTime,
+		formatDuration
+	} from '$lib/utils/format';
 	import { integrationRegistrySafeSummary } from '$lib/utils/summary';
 	import { pipelineModelFromLive, pipelineMetaForKey } from '$lib/pipeline/from-live';
 	import {
@@ -33,14 +39,24 @@
 	);
 
 	const uptimeLabel = $derived.by(() => {
-		if (!service?.restart?.lastRestartTime && service?.runState !== 'running') return '—';
 		if (!service) return '—';
-		// DUMB does not expose process start time directly; last restart is the
-		// closest observed fact.
+		// Honest process uptime straight from DUMB's start_time when the gateway
+		// provides it (metrics payload); fall back to the last observed restart.
+		const proc = live.metrics?.processes.find((p) => p.name === service.processName);
+		if (proc?.startedAtSeconds) {
+			return `up ${formatDuration(Math.max(0, Date.now() - proc.startedAtSeconds * 1000))}`;
+		}
+		if (!service.restart?.lastRestartTime && service.runState !== 'running') return '—';
 		return service.restart?.lastRestartTime
 			? `since ${relativeTime(service.restart.lastRestartTime)}`
 			: 'no restarts observed';
 	});
+
+	// Deep memory observability for this service (classification + baseline),
+	// when the Observability pipeline has enough history.
+	const memoryObs = $derived(
+		serviceKey ? live.observability?.services.find((s) => s.key === serviceKey) : undefined
+	);
 
 	// --- Safe Actions (docs/ACTIONS.md §2/§3): Open service + Restart service.
 	let integration = $state<IntegrationRef | null>(null);
@@ -229,6 +245,28 @@
 						CPU trend
 					</p>
 					<Sparkline data={cpuSeries} height={48} />
+				</div>
+			{/if}
+
+			{#if memoryObs && memoryObs.classification !== 'insufficient-history'}
+				<div class="rounded-xl border border-border-subtle bg-surface-2 p-3.5 text-xs">
+					<p class="mb-1.5 text-xs font-semibold text-text-secondary">Memory baseline</p>
+					<p class="text-text-muted">
+						24h p50 <span class="tnum text-text-primary">{formatBytes(memoryObs.p50Bytes)}</span>
+						· p95 <span class="tnum text-text-primary">{formatBytes(memoryObs.p95Bytes)}</span>
+						{#if memoryObs.delta24hBytes !== null}
+							· Δ24h <span class="tnum text-text-primary"
+								>{memoryObs.delta24hBytes >= 0 ? '+' : '−'}{formatBytes(
+									Math.abs(memoryObs.delta24hBytes)
+								)}</span
+							>
+						{/if}
+					</p>
+					<p class="mt-1 text-[11px] text-text-muted">
+						classification: <span class="font-medium text-text-primary"
+							>{memoryObs.classification}</span
+						>
+					</p>
 				</div>
 			{/if}
 

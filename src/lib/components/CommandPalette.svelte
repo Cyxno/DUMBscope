@@ -92,6 +92,13 @@
 			action: () => goto('/logs')
 		},
 		{
+			label: 'Observability',
+			hint: 'DUMB memory, routing, InfiniDysk, thermal, timeline',
+			icon: Activity,
+			keywords: 'cgroup memory leak repair infinidysk routing temperature timeline',
+			action: () => goto('/observability')
+		},
+		{
 			label: 'System',
 			hint: 'Open system metrics',
 			icon: Activity,

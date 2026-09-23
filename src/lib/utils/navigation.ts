@@ -19,6 +19,7 @@ export const NAV_ITEMS: readonly NavItemDef[] = [
 	{ href: '/', label: 'Overview', group: 'Monitor' },
 	{ href: '/pipeline', label: 'Pipeline', group: 'Monitor' },
 	{ href: '/services', label: 'Services', group: 'Monitor' },
+	{ href: '/observability', label: 'Observability', group: 'Monitor' },
 	{ href: '/library', label: 'Library', group: 'Monitor' },
 	{ href: '/incidents', label: 'Incidents', group: 'Operate' },
 	{ href: '/logs', label: 'Logs', group: 'Operate' },

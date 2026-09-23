@@ -57,10 +57,16 @@ describe('default navigation sections', () => {
 		}
 	});
 
-	it('renders Monitor with Overview..Library and Operate with Incidents..System (§3)', () => {
+	it('renders Monitor with Overview..Observability..Library and Operate with Incidents..System (§3)', () => {
 		const monitor = sections.find((section) => section.group === 'Monitor');
 		const operate = sections.find((section) => section.group === 'Operate');
-		expect(monitor?.items.map((i) => i.href)).toEqual(['/', '/pipeline', '/services', '/library']);
+		expect(monitor?.items.map((i) => i.href)).toEqual([
+			'/',
+			'/pipeline',
+			'/services',
+			'/observability',
+			'/library'
+		]);
 		expect(operate?.items.map((i) => i.href)).toEqual([
 			'/incidents',
 			'/logs',
@@ -84,6 +90,7 @@ describe('stored nav order normalization (§9/§10/§11/§12)', () => {
 			'/',
 			'/pipeline',
 			'/services',
+			'/observability',
 			'/library',
 			'/incidents'
 		]);

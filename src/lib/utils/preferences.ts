@@ -15,7 +15,8 @@ export type MotionPref = 'system' | 'reduced' | 'full';
 export type DensityPref = 'comfortable' | 'compact' | 'dense';
 export type ChartPalettePref = 'default' | 'colorblind' | 'monochrome';
 export type SidebarMode = 'expanded' | 'compact' | 'icons';
-export type LandingPage = '/' | '/pipeline' | '/library' | '/services' | '/incidents' | '/system';
+export type LandingPage =
+	'/' | '/pipeline' | '/library' | '/services' | '/observability' | '/incidents' | '/system';
 export type DashboardPreset = 'balanced' | 'media' | 'operations' | 'minimal' | 'custom';
 export type LibraryTab = 'overview' | 'tv' | 'movies' | 'subtitles' | 'queue';
 export type PosterSize = 'small' | 'medium' | 'large';
@@ -83,6 +84,7 @@ export const LANDING_OPTIONS: { value: LandingPage; label: string }[] = [
 	{ value: '/pipeline', label: 'Pipeline' },
 	{ value: '/library', label: 'Library' },
 	{ value: '/services', label: 'Services' },
+	{ value: '/observability', label: 'Observability' },
 	{ value: '/incidents', label: 'Incidents' },
 	{ value: '/system', label: 'System' }
 ];
@@ -93,6 +95,7 @@ export const DASHBOARD_WIDGETS = [
 	'integrations',
 	'library',
 	'reliability',
+	'observability',
 	'stackHealth',
 	'resources',
 	'incidents',
@@ -104,6 +107,7 @@ export const WIDGET_LABELS: Record<string, string> = {
 	integrations: 'Integrations',
 	library: 'Library summary',
 	reliability: 'Reliability',
+	observability: 'DUMB observability',
 	stackHealth: 'Stack health',
 	resources: 'System resources',
 	incidents: 'Recent incidents',

@@ -135,6 +135,15 @@ export class IncidentEngine {
 			this.state.byFingerprint.set(incident.fingerprint, incident);
 			const identity = incident.affectedServices[0];
 			if (identity) this.state.identityByFingerprint.set(incident.fingerprint, identity);
+			// Pre-v0.8 rows carry detector='': stamp the owning detector from
+			// the fingerprint so classification, correlation and the safety net
+			// treat them like native rows. lastEvaluatedAt stays null until a
+			// detector actually evaluates the row — null past the upgrade grace
+			// window is what marks a row as an unevaluable orphan.
+			if (incident.detector === '') {
+				incident.detector = detectorForFingerprint(incident.fingerprint);
+				incidentRepository.update(incident);
+			}
 			// Post-restart verification seed for log-error incidents: one clean
 			// window after boot resolves them (the detector watched and no
 			// errors arrived). Without the seed the burst map is empty and the
@@ -1019,6 +1028,20 @@ export class IncidentEngine {
 			const identity = input.identity ?? input.service ?? persisted.affectedServices[0];
 			if (identity && !this.state.identityByFingerprint.has(input.fingerprint)) {
 				this.state.identityByFingerprint.set(input.fingerprint, identity);
+			}
+			// v0.8 upgrade path: pre-v0.8 rows carry detector='' and
+			// lastEvaluatedAt=null. Adoption stamps the owning detector and the
+			// affected entity so lifecycle sweeps (safety net, obsolete
+			// retirements) can evaluate the row like any native one — and so the
+			// safety net's "legacy row never re-adopted" rule can distinguish
+			// evaluable findings from orphans.
+			if (persisted.detector === '' || persisted.lastEvaluatedAt === null) {
+				persisted.detector = detectorForFingerprint(input.fingerprint);
+				persisted.lastEvaluatedAt = now;
+				if (identity && persisted.affectedServices.length === 0) {
+					persisted.affectedServices = [identity];
+				}
+				incidentRepository.update(persisted);
 			}
 			this.events.onIncidentChange?.(persisted, 'updated');
 			return persisted;

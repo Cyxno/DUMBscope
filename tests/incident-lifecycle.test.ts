@@ -480,7 +480,8 @@ describe('stale-incident safety net', () => {
 			registeredIntegrationIds: [],
 			arrIntegrationsPresent: true,
 			dumbConfigured: true,
-			metricsFresh: true
+			metricsFresh: true,
+			legacyGraceElapsed: false
 		});
 		expect(resolved).toBe(1);
 		expect(engine.getActive()).toHaveLength(0);
@@ -508,7 +509,8 @@ describe('stale-incident safety net', () => {
 			registeredIntegrationIds: [],
 			arrIntegrationsPresent: true,
 			dumbConfigured: true,
-			metricsFresh: true
+			metricsFresh: true,
+			legacyGraceElapsed: false
 		});
 		expect(engine.getActive()).toHaveLength(0);
 		const row = getDb()
@@ -532,7 +534,8 @@ describe('stale-incident safety net', () => {
 			registeredIntegrationIds: ['sonarr-main'],
 			arrIntegrationsPresent: true,
 			dumbConfigured: true,
-			metricsFresh: true
+			metricsFresh: true,
+			legacyGraceElapsed: false
 		});
 		expect(engine.getActive()).toHaveLength(0);
 		const row = getDb()
@@ -566,7 +569,8 @@ describe('stale-incident safety net', () => {
 			registeredIntegrationIds: ['sonarr'],
 			arrIntegrationsPresent: true,
 			dumbConfigured: true,
-			metricsFresh: false
+			metricsFresh: false,
+			legacyGraceElapsed: false
 		});
 		expect(resolved).toBe(0);
 		expect(engine.getActive()).toHaveLength(1);
@@ -586,7 +590,8 @@ describe('stale-incident safety net', () => {
 			registeredIntegrationIds: ['sonarr'],
 			arrIntegrationsPresent: true,
 			dumbConfigured: false,
-			metricsFresh: false
+			metricsFresh: false,
+			legacyGraceElapsed: false
 		});
 		expect(engine.getActive()).toHaveLength(0);
 	});
@@ -637,5 +642,147 @@ describe('detector registry', () => {
 		expect(detectorForFingerprint('recon:plex-ghost:abc')).toBe('reconciliation');
 		expect(detectorForFingerprint('self:workers')).toBe('runtime');
 		expect(detectorForFingerprint('unknown:xyz')).toBe('legacy');
+	});
+});
+
+describe('pre-v0.8 legacy incident migration', () => {
+	function legacyRow(overrides: Partial<Incident> & { fingerprint: string }): Incident {
+		// Pre-v0.8 rows: detector='' (column default), no lifecycle metadata.
+		return persistedIncident({ detector: '', ...overrides });
+	}
+
+	it('legacy finding whose condition still holds is re-adopted and stays open (never UNKNOWN→recovered)', () => {
+		const fp = Fingerprints.memoryAnomaly('sonarr');
+		incidentRepository.create(
+			legacyRow({
+				fingerprint: fp,
+				title: 'sonarr memory use is unusually high',
+				affectedServices: [],
+				detector: '',
+				lastEvaluatedAt: null
+			})
+		);
+		const engine = new IncidentEngine({}, clock);
+		engine.hydrate();
+		expect(engine.getActive()).toHaveLength(1);
+
+		// The detector re-reports the same fingerprint: the row is adopted
+		// (detector stamped, identity recorded) and REMAINS open.
+		advance(1_000);
+		engine.onMemory({
+			process: 'sonarr',
+			level: 'warning',
+			currentBytes: 4.2e9,
+			baselineBytes: 1e9,
+			delta1hBytes: 512 * 1024 ** 2,
+			delta6hBytes: 2e9,
+			peak24hBytes: 4.2e9,
+			hostMemPercent: null,
+			reasons: ['still growing'],
+			samples: 30,
+			lastSampleAt: now
+		});
+		expect(engine.getActive().some((i) => i.fingerprint === fp)).toBe(true);
+		const row = incidentRepository.findLatestByFingerprint(fp)!;
+		expect(row.status).toBe('active');
+		expect(row.detector).toBe('memory');
+		expect(row.lastEvaluatedAt).toBe(now);
+		// The safety net must NOT retire the re-adopted (stamped) row.
+		const net = new IncidentSafetyNet(engine);
+		net.run({
+			now,
+			mountTargets: [],
+			mountMonitoringEnabled: true,
+			memoryMonitoringEnabled: true,
+			reconciliationEnabled: true,
+			runtimeMonitoringEnabled: true,
+			registeredIntegrationIds: ['sonarr'],
+			arrIntegrationsPresent: true,
+			dumbConfigured: true,
+			metricsFresh: false,
+			legacyGraceElapsed: true
+		});
+		expect(engine.getActive().some((i) => i.fingerprint === fp)).toBe(true);
+	});
+
+	it('legacy finding whose service recovered resolves as recovered after upgrade', () => {
+		const fp = Fingerprints.serviceUnhealthy('sonarr');
+		incidentRepository.create(
+			legacyRow({
+				fingerprint: fp,
+				title: 'sonarr is unhealthy',
+				affectedServices: ['sonarr'],
+				detector: ''
+			})
+		);
+		const engine = new IncidentEngine({}, clock);
+		engine.hydrate();
+		expect(engine.getActive()).toHaveLength(1);
+		const healthy = serviceStatus({ key: 'sonarr', health: 'healthy' });
+		for (let i = 0; i < 3; i++) {
+			advance(2_000);
+			engine.onStatus(new Map(), new Map([[healthy.key, healthy]]));
+		}
+		expect(engine.getActive()).toHaveLength(0);
+		const row = incidentRepository.findLatestByFingerprint(fp)!;
+		expect(row.status).toBe('resolved');
+		expect(row.resolutionKind).toBe('recovered');
+	});
+
+	it('orphaned legacy findings (no detector re-adopted) retire as obsolete after the grace window', () => {
+		// A mount finding for a target that no longer exists: detector='',
+		// no identity, and the mount probe can never re-adopt it (the
+		// fingerprint no longer matches any configured path).
+		const fp = Fingerprints.mountUnhealthy('/mnt/removed-long-ago');
+		incidentRepository.create(
+			legacyRow({
+				fingerprint: fp,
+				title: 'Old mount: unresponsive',
+				affectedServices: [],
+				detector: '',
+				lastEvaluatedAt: null
+			})
+		);
+		const engine = new IncidentEngine({}, clock);
+		engine.hydrate();
+		expect(engine.getActive()).toHaveLength(1);
+
+		const net = new IncidentSafetyNet(engine);
+		// Before the grace: nothing is retired (detectors still get their chance).
+		net.run({
+			now,
+			mountTargets: [],
+			mountMonitoringEnabled: true,
+			memoryMonitoringEnabled: true,
+			reconciliationEnabled: true,
+			runtimeMonitoringEnabled: true,
+			registeredIntegrationIds: [],
+			arrIntegrationsPresent: true,
+			dumbConfigured: true,
+			metricsFresh: true,
+			legacyGraceElapsed: false
+		});
+		expect(engine.getActive()).toHaveLength(1);
+
+		// After the grace: retired as explicitly OBSOLETE — not recovered.
+		advance(61 * 60_000);
+		net.run({
+			now,
+			mountTargets: [],
+			mountMonitoringEnabled: true,
+			memoryMonitoringEnabled: true,
+			reconciliationEnabled: true,
+			runtimeMonitoringEnabled: true,
+			registeredIntegrationIds: [],
+			arrIntegrationsPresent: true,
+			dumbConfigured: true,
+			metricsFresh: true,
+			legacyGraceElapsed: true
+		});
+		expect(engine.getActive()).toHaveLength(0);
+		const row = incidentRepository.findLatestByFingerprint(fp)!;
+		expect(row.status).toBe('resolved');
+		expect(row.resolutionKind).toBe('obsolete');
+		expect(row.resolutionReason).toContain('legacy (pre-v0.8)');
 	});
 });

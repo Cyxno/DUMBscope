@@ -31,6 +31,10 @@ export interface SafetyNetContext {
 	dumbConfigured: boolean;
 	/** True only when the metrics snapshot is recent — gates metrics-derived judgments. */
 	metricsFresh: boolean;
+	/** True once the post-upgrade grace window (default 60 min) has passed:
+	 *  pre-v0.8 rows no current detector re-adopted by then can no longer be
+	 *  evaluated and are retired as obsolete (never as recovered). */
+	legacyGraceElapsed: boolean;
 }
 
 const PREFIX = {
@@ -72,6 +76,22 @@ export class IncidentSafetyNet {
 			);
 			this.lastNote = 'dumb-unconfigured';
 			return resolved;
+		}
+
+		// Pre-v0.8 rows no detector re-adopted since the upgrade: their
+		// identity is unknown and no fingerprint matches them anymore, so they
+		// can never be evaluated again. After the grace window they retire with
+		// an explicit OBSOLETE reason — never presented as a recovery. Rows a
+		// detector DID re-adopt carry a stamped detector (engine adoption) and
+		// are evaluated like native findings; a legacy finding whose condition
+		// still holds stays open instead of being falsely resolved.
+		if (ctx.legacyGraceElapsed) {
+			resolved += engine.resolveWhere(
+				(i) => i.lastEvaluatedAt === null,
+				() =>
+					'Resolved: legacy (pre-v0.8) finding could no longer be evaluated by any current detector',
+				ctx.now
+			);
 		}
 
 		// Monitor disabled: its findings can no longer be evaluated.

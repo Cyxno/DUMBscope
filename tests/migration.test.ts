@@ -80,9 +80,9 @@ describe('v0.1.1 → v0.2 migration', () => {
 		db.close();
 	});
 
-	it('applies migration 3 and reports version 7 (media snapshots, memory samples, acquisition ledger, notifications)', () => {
+	it('applies migration 3 and reports the current version (media snapshots, memory samples, acquisition ledger, notifications)', () => {
 		const db = new DatabaseSync(file, { readOnly: true });
-		expect(currentVersion(db)).toBe(9);
+		expect(currentVersion(db)).toBe(10);
 		const tables = db
 			.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 			.all()
@@ -162,14 +162,14 @@ describe('v0.3.0 → current migration (release rehearsal)', () => {
 		db.close();
 	});
 
-	it('applies migration 4 exactly once and reports version 7', () => {
+	it('applies migration 4 exactly once and reports the current version', () => {
 		const db = new DatabaseSync(file, { readOnly: true });
-		expect(currentVersion(db)).toBe(9);
+		expect(currentVersion(db)).toBe(10);
 		const rows = db
 			.prepare('SELECT version, COUNT(*) c FROM schema_version GROUP BY version ORDER BY version')
 			.all() as { version: number; c: number }[];
 		db.close();
-		expect(rows.map((r) => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
+		expect(rows.map((r) => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
 		expect(rows.every((r) => r.c === 1)).toBe(true);
 	});
 
@@ -214,6 +214,25 @@ describe('v0.3.0 → current migration (release rehearsal)', () => {
 			enabled: 1
 		});
 	});
+
+	it('applies migration 10 (cgroup tiers + observability timeline)', () => {
+		const db = new DatabaseSync(file, { readOnly: true });
+		const tables = db
+			.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+			.all()
+			.map((r) => r.name);
+		const indexes = db
+			.prepare("SELECT name FROM sqlite_master WHERE type='index' ORDER BY name")
+			.all()
+			.map((r) => r.name);
+		db.close();
+		expect(tables).toContain('cgroup_samples');
+		expect(tables).toContain('cgroup_samples_5m');
+		expect(tables).toContain('cgroup_samples_30m');
+		expect(tables).toContain('observability_events');
+		expect(indexes).toContain('idx_observability_events_at');
+		expect(indexes).toContain('idx_observability_events_kind_at');
+	});
 });
 
 /**
@@ -244,6 +263,6 @@ describe('already-current schema is a no-op (idempotence)', () => {
 		db.close();
 		expect(objectsAfter).toEqual(objectsBefore);
 		expect(versionRowsAfter).toEqual(versionRowsBefore);
-		expect(version).toBe(9);
+		expect(version).toBe(10);
 	});
 });

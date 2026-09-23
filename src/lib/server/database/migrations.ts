@@ -444,6 +444,79 @@ const MIGRATIONS: Migration[] = [
 				PRIMARY KEY (process, instance_key, at)
 			);
 		`
+	},
+	{
+		version: 10,
+		name: 'cgroup memory observability and combined timeline events',
+		sql: `
+			-- DUMB container cgroup v2 memory samples (System → Observability).
+			-- One bounded 1-minute row plus two aggregate tiers, mirroring the
+			-- runtime_samples pattern: fixed-width rows pruned on a schedule
+			-- (~1.5k + ~2k + ~1.4k rows steady state, well under 1 MB total).
+			-- Counter columns are cumulative kernel counters (memory.events,
+			-- pgscan, refault); rate interpretation (soft reclaim / hard limit
+			-- pressure) happens over raw samples in code, never in SQL.
+			CREATE TABLE IF NOT EXISTS cgroup_samples (
+				at INTEGER PRIMARY KEY,
+				current_bytes INTEGER,
+				high_bytes INTEGER,
+				max_bytes INTEGER,
+				anon_bytes INTEGER,
+				file_bytes INTEGER,
+				shmem_bytes INTEGER,
+				slab_bytes INTEGER,
+				slab_reclaimable_bytes INTEGER,
+				kernel_bytes INTEGER,
+				events_high INTEGER,
+				events_max INTEGER,
+				events_oom INTEGER,
+				events_oom_kill INTEGER,
+				pgscan INTEGER,
+				pgscan_direct INTEGER,
+				refault_file INTEGER
+			);
+			CREATE TABLE IF NOT EXISTS cgroup_samples_5m (
+				at INTEGER PRIMARY KEY,
+				current_avg_bytes INTEGER, current_max_bytes INTEGER,
+				anon_avg_bytes INTEGER, anon_max_bytes INTEGER,
+				file_avg_bytes INTEGER, file_max_bytes INTEGER,
+				kernel_avg_bytes INTEGER, kernel_max_bytes INTEGER,
+				events_high_max INTEGER, events_max_max INTEGER,
+				oom_max INTEGER, oom_kill_max INTEGER,
+				pgscan_direct_max INTEGER, refault_file_max INTEGER,
+				samples INTEGER NOT NULL
+			);
+			CREATE TABLE IF NOT EXISTS cgroup_samples_30m (
+				at INTEGER PRIMARY KEY,
+				current_avg_bytes INTEGER, current_max_bytes INTEGER,
+				anon_avg_bytes INTEGER, anon_max_bytes INTEGER,
+				file_avg_bytes INTEGER, file_max_bytes INTEGER,
+				kernel_avg_bytes INTEGER, kernel_max_bytes INTEGER,
+				events_high_max INTEGER, events_max_max INTEGER,
+				oom_max INTEGER, oom_kill_max INTEGER,
+				pgscan_direct_max INTEGER, refault_file_max INTEGER,
+				samples INTEGER NOT NULL
+			);
+
+			-- Combined DUMB timeline (one place for restarts, repair loops, mount
+			-- failures, OOM, cgroup high/max bursts, thermal spikes, deploys and
+			-- download failures). Append-only, pruned to 30 days: correlation
+			-- display only — no causality is claimed and no alerting hangs off it.
+			CREATE TABLE IF NOT EXISTS observability_events (
+				id INTEGER PRIMARY KEY AUTOINCREMENT,
+				at INTEGER NOT NULL,
+				kind TEXT NOT NULL,
+				service TEXT,
+				severity TEXT,
+				title TEXT NOT NULL,
+				detail TEXT,
+				data TEXT
+			);
+			CREATE INDEX IF NOT EXISTS idx_observability_events_at
+				ON observability_events(at);
+			CREATE INDEX IF NOT EXISTS idx_observability_events_kind_at
+				ON observability_events(kind, at);
+		`
 	}
 ];
 export function currentVersion(db: DatabaseSync): number {

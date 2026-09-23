@@ -72,6 +72,7 @@ export const GET: RequestHandler = ({ locals }) => {
 			sendEvent('incidents', { active: hub.getActiveIncidents() });
 			sendEvent('topology', hub.topology());
 			sendEvent('reliability', hub.getReliability());
+			sendEvent('observability', hub.getObservability());
 
 			unsubscribe = hub.addSubscriber(
 				({ event, data }) => sendEvent(event, data),

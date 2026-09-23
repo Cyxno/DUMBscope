@@ -14,6 +14,7 @@ import type {
 	MediaFlowSnapshot,
 	MetricsHistoryPoint,
 	MetricsSnapshot,
+	ObservabilitySnapshot,
 	RemediationActionView,
 	ReliabilitySnapshot,
 	ServiceStatus,
@@ -95,6 +96,8 @@ class LiveStore {
 		recommendations: [],
 		actions: []
 	});
+	/** Deep DUMB observability (cgroup, per-service memory, InfiniDysk, …). */
+	observability = $state<ObservabilitySnapshot | null>(null);
 	capabilities = $state<Record<string, unknown>>({});
 	version = $state<string | null>(null);
 	feed = $state<FeedState>('connecting');
@@ -241,6 +244,9 @@ class LiveStore {
 			}
 		>('mediaFlow', (data) => {
 			this.mediaFlow = data;
+		});
+		on<ObservabilitySnapshot>('observability', (data) => {
+			this.observability = data;
 		});
 	}
 

@@ -54,6 +54,34 @@ import { IncidentSafetyNet } from '../incidents/safety-net';
 import { incidentRepository } from '../incidents/repository';
 import { getRuntimeMonitor } from '../runtime/monitor';
 import { detectDiskTrend, detectRestartStorms } from '../reliability/anomalies';
+import { CgroupMemoryMonitor, resolveContainerIdViaPrometheus } from '../reliability/cgroup';
+import { InfiniDyskAggregator, parseInfiniDyskLine } from '../reliability/infinidysk';
+import { ThermalMonitor } from '../reliability/thermal';
+import {
+	recordObservabilityEvent,
+	recordTimelineThrottled,
+	pruneTimeline
+} from '../reliability/timeline';
+import {
+	buildServiceMemoryObservability,
+	loadServiceMemoryPoints,
+	type MemoryPoint
+} from '../reliability/service-memory';
+import {
+	downsampleCgroupToFiveMinutes,
+	downsampleCgroupToThirtyMinutes,
+	pruneCgroupSamples
+} from '../metrics/cgroup-retention';
+import { getCachedData } from '../integrations/manager';
+import { listIntegrations } from '../integrations/store';
+import type {
+	ArrObservability,
+	InfiniDyskObservability,
+	ObservabilitySnapshot,
+	RoutingObservability,
+	ServiceMemoryObservability,
+	VersionInfo
+} from '$lib/types';
 
 const GIB = 1024 ** 3;
 
@@ -188,6 +216,30 @@ export class Hub {
 	private memoryTracker: MemoryAnomalyTracker;
 	private lastReliabilitySignature: string | null = null;
 
+	// -- deep observability (cgroup, InfiniDysk, thermal, timeline) ------------
+	private cgroupMonitor: CgroupMemoryMonitor;
+	private infinidysk = new InfiniDyskAggregator();
+	private thermalMonitor: ThermalMonitor;
+	private lastCgroupSampleAt = 0;
+	private lastThermalSampleAt = 0;
+	private lastInfinidyskPruneAt = 0;
+	private lastTimelinePruneAt = 0;
+	private lastCgroupRollupAt = 0;
+	private obsServices: ServiceMemoryObservability[] = [];
+	private obsServicesAt = 0;
+	/** Version registry (key → version + when first seen) for deploy events. */
+	private versionRegistry = new Map<string, { version: string; since: number }>();
+	/** Cached InfiniDysk metadata from the DUMB process registry. */
+	private infinidyskMeta: {
+		version: string | null;
+		commit: string | null;
+		baseVersion: string | null;
+		gcHeapHardLimitBytes: number | null;
+		autoUpdate: boolean | null;
+		pinnedVersion: string | null;
+	} | null = null;
+	private lastObservabilitySignature: string | null = null;
+
 	// -- lifecycle integrity + self-monitoring ---------------------------------
 	private safetyNet: IncidentSafetyNet;
 	private runtimeMonitor: ReturnType<typeof getRuntimeMonitor>;
@@ -263,8 +315,52 @@ export class Hub {
 			enabled: () => getSettings().memoryMonitoring,
 			warningBytes: () => getSettings().memoryWarningGb * GIB,
 			criticalBytes: () => getSettings().memoryCriticalGb * GIB,
-			onAssessment: (assessment) => this.engine.onMemory(assessment),
+			onAssessment: (assessment) => {
+				this.engine.onMemory(assessment);
+				// Timeline fact (display only): memory anomaly lifecycle.
+				if (assessment.level !== 'ok') {
+					recordTimelineThrottled({
+						at: Date.now(),
+						kind: 'memory-anomaly',
+						service: assessment.process,
+						severity: assessment.level === 'critical' ? 'critical' : 'warning',
+						title: `Memory anomaly on ${assessment.process}: ${assessment.level}`,
+						detail: assessment.reasons.join(' · ')
+					});
+				}
+			},
 			tuning: fast?.memory
+		});
+		this.cgroupMonitor = new CgroupMemoryMonitor({
+			now: clock,
+			path: () => this.resolveDumbCgroupPath(),
+			prometheusUrl: () => process.env.DUMBSCOPE_PROMETHEUS_URL ?? null,
+			containerName: () => process.env.DUMBSCOPE_DUMB_CONTAINER_NAME ?? 'DUMB'
+		});
+		this.thermalMonitor = new ThermalMonitor({
+			now: clock,
+			onSpike: (snapshot) => {
+				recordObservabilityEvent({
+					at: snapshot.at,
+					kind: 'thermal',
+					severity: snapshot.level >= 95 ? 'critical' : 'warning',
+					title: `Temperature crossed ${snapshot.level}°C (${snapshot.zoneType ?? 'zone'})`,
+					detail: `temp ${snapshot.tempC.toFixed(0)}°C · load ${snapshot.hostLoad?.toFixed(2) ?? '?'} · DUMB CPU ${snapshot.dumbCpuPercent?.toFixed(0) ?? '?'}% · repair active: ${snapshot.infiniDyskRepairActive ? 'yes' : 'no'}`,
+					data: snapshot
+				});
+				this.publishObservability();
+			},
+			onRecovery: (snapshot) => {
+				recordObservabilityEvent({
+					at: snapshot.recoveredAt ?? Date.now(),
+					kind: 'thermal',
+					severity: 'info',
+					title: `Temperature recovered below ${snapshot.level}°C`,
+					detail: `spike lasted ${snapshot.recoveredAt ? Math.round((snapshot.recoveredAt - snapshot.at) / 60_000) : '?'} min`,
+					data: snapshot
+				});
+				this.publishObservability();
+			}
 		});
 		this.mediaFlow = new MediaFlowCorrelator({
 			now: clock,
@@ -556,6 +652,8 @@ export class Hub {
 		}
 		this.discovered = discovered;
 		this.discoveredByProcess = byProcess;
+		this.trackVersions(discovered);
+		this.trackInfinidyskMeta(response);
 		// Reconcile: stopped incidents for processes outside the managed
 		// registry are ephemeral helpers, not failures.
 		this.engine.reconcileRegistryStops(new Set(byProcess.keys()));
@@ -568,6 +666,78 @@ export class Hub {
 			}
 		}
 		this.emitServices();
+	}
+
+	/**
+	 * Version/update awareness (brief §10): the registry already carries every
+	 * service's version + update verdict. Diffing it across discovery refreshes
+	 * yields deploy timeline events and "first seen at" stamps — without any
+	 * extra polling of DUMB.
+	 */
+	private trackVersions(discovered: DiscoveredService[]): void {
+		const now = Date.now();
+		for (const service of discovered) {
+			if (!service.enabled || !service.version) continue;
+			const known = this.versionRegistry.get(service.key);
+			if (!known) {
+				this.versionRegistry.set(service.key, { version: service.version, since: now });
+				continue;
+			}
+			if (known.version !== service.version) {
+				recordObservabilityEvent({
+					at: now,
+					kind: 'deploy',
+					service: service.key,
+					severity: 'info',
+					title: `${service.name} updated: ${known.version} → ${service.version}`,
+					detail: service.updateStatus
+						? `update status: ${service.updateStatus.status}${service.updateStatus.availableVersion ? ` (available: ${service.updateStatus.availableVersion})` : ''}`
+						: null
+				});
+				this.versionRegistry.set(service.key, { version: service.version, since: now });
+			}
+		}
+	}
+
+	/**
+	 * InfiniDysk-specific registry facts: runtime version, base NZBDAV version,
+	 * .NET GC heap hard limit and update policy — all straight from DUMB's own
+	 * registry entry (no config files mounted, no secrets read).
+	 */
+	private trackInfinidyskMeta(response: DumbProcessesResponse): void {
+		const entry = (response.processes ?? []).find((p) =>
+			/infinidysk/i.test(p.name ?? p.process_name ?? '')
+		);
+		if (!entry) {
+			this.infinidyskMeta = null;
+			return;
+		}
+		const env = (entry.config as { env?: Record<string, string> } | undefined)?.env ?? {};
+		const gcRaw = env['DOTNET_GCHeapHardLimit'];
+		let gcBytes: number | null = null;
+		if (typeof gcRaw === 'string' && /^0x[0-9a-f]+$/i.test(gcRaw)) {
+			const n = Number(gcRaw);
+			if (Number.isFinite(n)) gcBytes = n;
+		} else if (typeof gcRaw === 'string' && Number.isFinite(Number(gcRaw))) {
+			gcBytes = Number(gcRaw);
+		}
+		this.infinidyskMeta = {
+			version: entry.version ?? null,
+			commit:
+				typeof entry.config === 'object' && entry.config !== null
+					? ((entry.config as { commit_sha?: string }).commit_sha ?? null)
+					: null,
+			baseVersion: env['NZBDAV_VERSION'] ?? null,
+			gcHeapHardLimitBytes: gcBytes,
+			autoUpdate:
+				typeof entry.config === 'object' && entry.config !== null
+					? ((entry.config as { auto_update?: boolean }).auto_update ?? null)
+					: null,
+			pinnedVersion:
+				typeof entry.config === 'object' && entry.config !== null
+					? ((entry.config as { pinned_version?: string | null }).pinned_version ?? null)
+					: null
+		};
 	}
 
 	// -------------------------------------------------------------------------
@@ -621,9 +791,38 @@ export class Hub {
 					);
 					if (status.runState === 'running' && prev.runState !== 'running') {
 						recordActivity('service-started', `${status.name} started`, status.key);
+						recordTimelineThrottled({
+							at: now,
+							kind: 'restart',
+							service: status.key,
+							severity: prev.runState === 'stopped' ? 'info' : 'warning',
+							title: `${status.name} restarted`,
+							detail:
+								prev.health !== status.health ? `health: ${prev.health} → ${status.health}` : null
+						});
 					}
 					if (prev.runState === 'running' && status.runState === 'stopped') {
 						recordActivity('service-stopped', `${status.name} stopped`, status.key);
+						recordTimelineThrottled({
+							at: now,
+							kind: 'restart',
+							service: status.key,
+							severity: 'warning',
+							title: `${status.name} stopped`
+						});
+					}
+					if (
+						status.health === 'unhealthy' ||
+						(status.health === 'degraded' && prev.health === 'healthy')
+					) {
+						recordTimelineThrottled({
+							at: now,
+							kind: 'health',
+							service: status.key,
+							severity: status.health === 'unhealthy' ? 'critical' : 'warning',
+							title: `${status.name} is ${status.health}`,
+							detail: status.healthReason
+						});
 					}
 				}
 				if (prev) {
@@ -731,9 +930,35 @@ export class Hub {
 			this.logBuffer.push(logLine);
 			this.engine.onLogLine(logLine);
 			this.broadcast('log', logLine);
+			this.feedInfiniDyskLogLine(logLine);
 		}
 		if (this.logBuffer.length > LOG_RING_SIZE) {
 			this.logBuffer = this.logBuffer.slice(-LOG_RING_SIZE);
+		}
+	}
+
+	/**
+	 * InfiniDysk observability rides the existing log stream (brief §4): the
+	 * aggregator only watches InfiniDysk lines and keeps bounded aggregates.
+	 * Repair-loop starts become timeline facts; nothing here alerts.
+	 */
+	private feedInfiniDyskLogLine(line: LogLine): void {
+		const isInfiniDysk =
+			/infinidysk/i.test(line.process) || /infinidysk subprocess/i.test(line.message);
+		if (!isInfiniDysk) return;
+		const parsed = parseInfiniDyskLine(line.message, line.ts ?? Date.now());
+		if (!parsed) return;
+		this.infinidysk.onEvent(parsed);
+		if (parsed.kind === 'repair-start' && parsed.file) {
+			const recorded = recordTimelineThrottled({
+				at: parsed.at,
+				kind: 'repair-loop',
+				service: 'infinidysk',
+				severity: parsed.segments !== null && parsed.segments > 0 ? 'warning' : 'info',
+				title: `InfiniDysk repair started: ${parsed.file}`,
+				detail: `${parsed.segments ?? '?'} missing/corrupt segments`
+			});
+			if (recorded) this.publishObservability();
 		}
 	}
 
@@ -984,6 +1209,7 @@ export class Hub {
 			});
 		const hostMemPercent = this.metricsLatest?.memory?.percent ?? null;
 		this.memoryTracker.evaluate(hostMemPercent);
+		this.runObservabilityPasses();
 
 		// DEEL 2: media-state correlation (throttled internally to its own
 		// cycle) + remediation verification passes. Both failure-isolated and
@@ -1002,6 +1228,365 @@ export class Hub {
 		this.remediation.verifyPending();
 
 		this.publishReliability();
+	}
+
+	/**
+	 * Deep observability passes (brief §2/§3/§4/§7/§8), all failure-isolated
+	 * and driven by the same 10s housekeeping tick with per-pass gates:
+	 * cgroup sample (60s), thermal sample (60s), per-service memory views
+	 * (60s), InfiniDysk aggregate prune (30 min), cgroup rollups (hourly,
+	 * mirroring the runtime monitor's maintenance pass) and timeline prune
+	 * (daily, sharing the history-prune cadence).
+	 */
+	private runObservabilityPasses(): void {
+		const now = Date.now();
+		if (now - this.lastCgroupSampleAt >= 60_000) {
+			this.lastCgroupSampleAt = now;
+			void this.cgroupMonitor
+				.sample()
+				.then((snapshot) => {
+					if (snapshot.interpretation.softReclaimActive) {
+						const recorded = recordTimelineThrottled({
+							at: now,
+							kind: 'cgroup-high',
+							service: 'dumb',
+							severity: 'info',
+							title: 'DUMB cgroup soft-limit reclaim active (memory.high)',
+							detail: `current ${((snapshot.breakdown.currentBytes ?? 0) / 1024 ** 3).toFixed(2)} GiB of high ${(snapshot.highBytes ?? 0) / 1024 ** 3} GiB`
+						});
+						if (recorded) this.publishObservability();
+					}
+					this.publishObservability();
+				})
+				.catch(() => {});
+		}
+		if (now - this.lastThermalSampleAt >= 60_000) {
+			this.lastThermalSampleAt = now;
+			try {
+				const processes = [...(this.metricsLatest?.processes ?? [])]
+					.filter((p) => p.cpuPercent !== null)
+					.sort((a, b) => (b.cpuPercent ?? 0) - (a.cpuPercent ?? 0));
+				this.thermalMonitor.sample({
+					hostLoad: this.metricsLatest?.loadAvg?.[0] ?? null,
+					dumbCpuPercent: this.metricsLatest?.cpuPercent ?? null,
+					topProcesses: processes.slice(0, 3).map((p) => ({
+						name: p.name,
+						cpuPercent: p.cpuPercent
+					})),
+					infiniDyskRepairActive: this.infinidysk.isRepairActive()
+				});
+			} catch {
+				// thermal observability must never break the hub
+			}
+		}
+		if (now - this.obsServicesAt >= 60_000) {
+			this.obsServicesAt = now;
+			try {
+				this.obsServices = this.buildServiceMemoryViews(now);
+				this.publishObservability();
+			} catch {
+				// isolated
+			}
+		}
+		if (now - this.lastInfinidyskPruneAt >= 30 * 60_000) {
+			this.lastInfinidyskPruneAt = now;
+			try {
+				this.infinidysk.prune(now);
+			} catch {
+				// isolated
+			}
+		}
+		if (now - this.lastCgroupRollupAt >= 60 * 60_000) {
+			this.lastCgroupRollupAt = now;
+			try {
+				downsampleCgroupToFiveMinutes(now);
+				downsampleCgroupToThirtyMinutes(now);
+				pruneCgroupSamples(now);
+			} catch {
+				// isolated
+			}
+		}
+		if (now - this.lastTimelinePruneAt >= 24 * 60 * 60_000) {
+			this.lastTimelinePruneAt = now;
+			try {
+				pruneTimeline(now);
+			} catch {
+				// isolated
+			}
+		}
+	}
+	/**
+	 * Per-service memory observability (brief §2): classify every discovered
+	 * managed service from its stored RSS series. Heavy lift (SQL + Theil–Sen)
+	 * runs on the 60s gate; failures degrade to an honest empty list.
+	 */
+	private buildServiceMemoryViews(now: number): ServiceMemoryObservability[] {
+		const views: ServiceMemoryObservability[] = [];
+		const live = new Map((this.metricsLatest?.processes ?? []).map((p) => [p.name, p]));
+		for (const service of this.discovered) {
+			if (!service.enabled) continue;
+			try {
+				const proc = live.get(service.processName);
+				const points: MemoryPoint[] = loadServiceMemoryPoints(
+					service.processName,
+					service.key,
+					now - 7 * 24 * 60 * 60_000,
+					now
+				);
+				const view = buildServiceMemoryObservability({
+					key: service.key,
+					name: service.name,
+					processName: service.processName,
+					threads: proc?.threads ?? null,
+					uptimeSeconds:
+						proc?.startedAtSeconds !== null && proc?.startedAtSeconds !== undefined
+							? Math.max(0, Math.round(now / 1000 - proc.startedAtSeconds))
+							: null,
+					version: service.version,
+					points,
+					now
+				});
+				views.push(view);
+			} catch {
+				// one bad series must never abort the rest
+			}
+		}
+		views.sort((a, b) => (b.currentBytes ?? 0) - (a.currentBytes ?? 0));
+		return views;
+	}
+
+	/** Current deep-observability picture for the API/SSE/UI (read-only). */
+	getObservability(): ObservabilitySnapshot {
+		return {
+			cgroup: this.cgroupMonitor.getSnapshot(),
+			services: this.obsServices,
+			baselineShifts: this.obsServices.filter((s) => s.baselineShift !== null),
+			infiniDysk: this.buildInfinidyskObservability(),
+			thermal: this.thermalMonitor.getSnapshot(),
+			ars: this.buildArrObservability(),
+			routing: this.buildRoutingObservability(),
+			versions: this.buildVersionInfo()
+		};
+	}
+
+	/**
+	 * Resolve the DUMB container's cgroup directory (read-only source):
+	 * explicit path (DUMBSCOPE_DUMB_CGROUP_PATH) wins; else a mounted parent
+	 * (DUMBSCOPE_DUMB_CGROUP_PARENT) plus a container id — either from
+	 * DUMBSCOPE_DUMB_CONTAINER_ID or resolved via Prometheus cadvisor's id
+	 * label (cached 10 min) so the path survives DUMB container recreations.
+	 */
+	private dumbCgroupIdResolvedAt = 0;
+	private dumbCgroupId: string | null = null;
+	private resolveDumbCgroupPath(): string | null {
+		const explicit = process.env.DUMBSCOPE_DUMB_CGROUP_PATH ?? null;
+		if (explicit) return explicit;
+		const parent = process.env.DUMBSCOPE_DUMB_CGROUP_PARENT ?? null;
+		if (!parent) return null;
+		const envId = process.env.DUMBSCOPE_DUMB_CONTAINER_ID ?? null;
+		if (envId) return parent + '/' + envId;
+		const now = Date.now();
+		if (this.dumbCgroupId !== null && now - this.dumbCgroupIdResolvedAt < 10 * 60_000) {
+			return parent + '/' + this.dumbCgroupId;
+		}
+		const prom = process.env.DUMBSCOPE_PROMETHEUS_URL ?? null;
+		if (!prom) return null;
+		const name = process.env.DUMBSCOPE_DUMB_CONTAINER_NAME ?? 'DUMB';
+		this.dumbCgroupIdResolvedAt = now;
+		void resolveContainerIdViaPrometheus(prom, name)
+			.then((id) => {
+				this.dumbCgroupId = id;
+			})
+			.catch(() => {});
+		return this.dumbCgroupId !== null ? parent + '/' + this.dumbCgroupId : null;
+	}
+
+	/** In-memory thermal series for the Observability history charts. */
+	observabilityThermalSeries(): { at: number; maxC: number | null; packageC: number | null }[] {
+		return this.thermalMonitor.getSeries();
+	}
+
+	private buildInfinidyskObservability(): InfiniDyskObservability {
+		const counters = this.infinidysk.counters();
+		const files = this.infinidysk.getFiles();
+		const live = (this.metricsLatest?.processes ?? []).find((p) => /infinidysk/i.test(p.name));
+		const mount = this.mountMonitor
+			.getReports()
+			.find((r) => /infinidysk|debrid/i.test(r.target.path));
+		const meta = this.infinidyskMeta;
+		const registryEntry = this.discovered.find((d) => /infinidysk/i.test(d.processName));
+		return {
+			available: meta !== null,
+			unavailableReason: meta === null ? 'InfiniDysk is not in the DUMB process registry' : null,
+			version: meta?.version ?? registryEntry?.version ?? null,
+			baseVersion: meta?.baseVersion ?? null,
+			commit: meta?.commit ?? null,
+			gcHeapHardLimitBytes: meta?.gcHeapHardLimitBytes ?? null,
+			autoUpdate: meta?.autoUpdate ?? null,
+			pinnedVersion: meta?.pinnedVersion ?? null,
+			rss: live?.memoryBytes ?? null,
+			threads: live?.threads ?? null,
+			cpuPercent: live?.cpuPercent ?? null,
+			uptimeSeconds:
+				live?.startedAtSeconds !== null && live?.startedAtSeconds !== undefined
+					? Math.max(0, Math.round(Date.now() / 1000 - live.startedAtSeconds))
+					: null,
+			growthBytesPerHour:
+				this.obsServices.find((s) => /infinidysk/i.test(s.processName))?.slopeBytesPerHour ?? null,
+			repairActive: this.infinidysk.isRepairActive(),
+			lastRepairAt: counters.lastRepairAt,
+			repairs1h: counters.repairs1h,
+			repairs24h: counters.repairs24h,
+			article430_1h: counters.article430_1h,
+			article430_24h: counters.article430_24h,
+			missingSegments1h: counters.missingSegments1h,
+			missingSegments24h: counters.missingSegments24h,
+			providerFallbacks24h: counters.providerFallbacks24h,
+			mountState: mount?.state ?? null,
+			restarts24h: this.restarts24h('infinidysk'),
+			lastRestartAt: this.lastRestartAt('infinidysk'),
+			files
+		};
+	}
+
+	private restarts24h(keyPart: string): number {
+		const key = [...this.services.keys()].find((k) => k.includes(keyPart));
+		if (!key) return 0;
+		const status = this.services.get(key);
+		return status?.restart?.attempts ?? 0;
+	}
+
+	private lastRestartAt(keyPart: string): number | null {
+		const key = [...this.services.keys()].find((k) => k.includes(keyPart));
+		if (!key) return null;
+		const status = this.services.get(key);
+		const raw = status?.restart?.lastRestartTime ?? null;
+		if (raw === null) return null;
+		const ms = typeof raw === 'number' ? (raw < 1e12 ? raw * 1000 : raw) : Date.parse(raw);
+		return Number.isFinite(ms) ? ms : null;
+	}
+
+	private buildArrObservability(): ArrObservability[] {
+		const out: ArrObservability[] = [];
+		try {
+			const integrations = listIntegrations().filter(
+				(c) => c.enabled !== false && (c.type === 'sonarr' || c.type === 'radarr')
+			);
+			for (const integration of integrations) {
+				const stack = getCachedData<ArrObservability>(integration.id, 'stack-observability');
+				if (stack) {
+					out.push(stack);
+					continue;
+				}
+				out.push({
+					type: integration.type as 'sonarr' | 'radarr',
+					integrationId: integration.id,
+					connected: false,
+					unavailableReason: 'no successful poll yet',
+					version: null,
+					uptimeSeconds: null,
+					dbBytes: null,
+					queue: null,
+					queueWarnings: null,
+					queueFailures: null,
+					blocklistSize: null,
+					historyEvents: null,
+					imports24h: 0,
+					failures24h: 0,
+					grabs24h: 0,
+					rssSync: { lastAt: null, count24h: 0 },
+					searches: { count24h: 0, recent: [] },
+					fetchedAt: null
+				});
+			}
+		} catch {
+			// integrations not initialized — empty list
+		}
+		return out;
+	}
+
+	private buildRoutingObservability(): RoutingObservability {
+		const merged: RoutingObservability = {
+			windowHours: 24,
+			clients: [],
+			preferredProtocol: { sonarr: null, radarr: null },
+			fetchedAt: null,
+			stale: true
+		};
+		try {
+			for (const integration of listIntegrations()) {
+				if (integration.enabled === false) continue;
+				if (integration.type !== 'sonarr' && integration.type !== 'radarr') continue;
+				const view = getCachedData<{
+					windowHours: number;
+					clients: RoutingObservability['clients'];
+					preferredProtocol: string | null;
+					fetchedAt: number;
+				}>(integration.id, 'routing');
+				if (!view) continue;
+				merged.clients.push(...view.clients);
+				merged.preferredProtocol[integration.type] = view.preferredProtocol;
+				merged.windowHours = view.windowHours;
+				merged.fetchedAt = Math.max(merged.fetchedAt ?? 0, view.fetchedAt);
+				merged.stale = false;
+			}
+		} catch {
+			// integrations not initialized
+		}
+		return merged;
+	}
+
+	private buildVersionInfo(): VersionInfo[] {
+		const out: VersionInfo[] = [];
+		for (const service of this.discovered) {
+			if (!service.enabled) continue;
+			const known = this.versionRegistry.get(service.key);
+			out.push({
+				key: service.key,
+				name: service.name,
+				version: service.version,
+				commit: /infinidysk/i.test(service.processName)
+					? (this.infinidyskMeta?.commit ?? null)
+					: null,
+				since: known?.since ?? null,
+				updateAvailable:
+					service.updateStatus !== null
+						? service.updateStatus.status === 'update_available' ||
+							(service.updateStatus.availableVersion !== null &&
+								service.updateStatus.availableVersion !== service.updateStatus.currentVersion)
+						: null,
+				availableVersion: service.updateStatus?.availableVersion ?? null,
+				updateStatus: service.updateStatus?.status ?? null,
+				autoUpdate: /infinidysk/i.test(service.processName)
+					? (this.infinidyskMeta?.autoUpdate ?? null)
+					: null,
+				pinned: /infinidysk/i.test(service.processName)
+					? (this.infinidyskMeta?.pinnedVersion ?? null) !== null ||
+						this.infinidyskMeta?.autoUpdate === false
+					: false
+			});
+		}
+		return out;
+	}
+
+	/** Fan observability state out when something visible changed (throttled). */
+	publishObservability(): void {
+		try {
+			const snapshot = this.getObservability();
+			const signature = JSON.stringify([
+				snapshot.cgroup,
+				snapshot.thermal.spikeLevel,
+				snapshot.infiniDysk.repairActive,
+				snapshot.infiniDysk.repairs1h,
+				snapshot.routing.clients.map((c) => [c.client, c.grabs, c.imports, c.failures]),
+				snapshot.services.map((s) => [s.key, s.classification])
+			]);
+			if (signature === this.lastObservabilitySignature) return;
+			this.lastObservabilitySignature = signature;
+			this.broadcast('observability', snapshot);
+		} catch {
+			// isolated
+		}
 	}
 
 	/**

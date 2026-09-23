@@ -33,14 +33,50 @@ const TUNING = {
 	/** First backoff after an Arr fetch failure. */
 	fetchBackoffBaseMs: 60_000,
 	/** Backoff ceiling: an unreachable Arr is retried at most every 10 min. */
-	fetchBackoffMaxMs: 10 * 60_000
+	fetchBackoffMaxMs: 10 * 60_000,
+	/**
+	 * Hard deadline for one full cycle. A cycle exceeding it is presumed
+	 * wedged and aborted (AbortController + race) so the runner recovers and
+	 * the next cycle starts normally — no process restart needed. 16 min sits
+	 * deliberately BEYOND the ~15 min self:recon-stuck watchdog threshold, so
+	 * the finding always opens before recovery and auto-resolves afterwards.
+	 */
+	cycleDeadlineMs: 16 * 60_000
 } as const;
+
+/** A cycle aborted by its hard deadline (run() records it as 'timeout'). */
+class CycleAbortedError extends Error {
+	constructor(readonly detail: string) {
+		super(detail);
+		this.name = 'CycleAbortedError';
+	}
+}
+
+/** Reject as soon as `signal` fires — makes long awaits cooperatively cancellable. */
+function raceAbort<T>(work: Promise<T>, signal: AbortSignal, what: string): Promise<T> {
+	if (signal.aborted) {
+		return Promise.reject(new CycleAbortedError(what));
+	}
+	return new Promise<T>((resolve, reject) => {
+		const onAbort = () => reject(new CycleAbortedError(what));
+		const onSettle = (value: T) => {
+			signal.removeEventListener('abort', onAbort);
+			resolve(value);
+		};
+		const onFail = (err: unknown) => {
+			signal.removeEventListener('abort', onAbort);
+			reject(err);
+		};
+		signal.addEventListener('abort', onAbort, { once: true });
+		work.then(onSettle, onFail);
+	});
+}
 
 /** Observer-visible record of one reconciliation attempt (System panel). */
 export interface ReconciliationRunInfo {
 	/** Epoch ms the attempt started. */
 	at: number;
-	status: 'ok' | 'failed' | 'skipped-incomplete' | 'disabled';
+	status: 'ok' | 'failed' | 'skipped-incomplete' | 'disabled' | 'timeout';
 	durationMs: number;
 	/** Item verdict counts from the reconcile pass (null when it never ran). */
 	stats: ReconcileStats | null;
@@ -219,6 +255,12 @@ export interface ReconciliationRunnerOptions {
 	 * store (which drags the database into unit tests). Defaults to the store.
 	 */
 	resolveArrTargets?: () => Promise<ArrTarget[]> | ArrTarget[];
+	/**
+	 * Hard deadline for one full cycle (ms). Defaults to
+	 * TUNING.cycleDeadlineMs (16 min); tests inject small values (possibly
+	 * per-cycle via a function).
+	 */
+	cycleDeadlineMs?: number | (() => number);
 }
 
 /** One enabled Sonarr/Radarr the runner should poll. */
@@ -243,6 +285,9 @@ export class ReconciliationRunner {
 	private history: ReconciliationRunInfo[] = [];
 	/** Epoch ms the in-flight cycle started (null when idle) — stuck-run watchdog. */
 	private currentRunStartedAt: number | null = null;
+	/** Aborts the in-flight cycle when its hard deadline fires. */
+	private currentAbort: AbortController | null = null;
+	private deadlineTimer: NodeJS.Timeout | null = null;
 
 	constructor(private readonly options: ReconciliationRunnerOptions) {}
 
@@ -289,12 +334,24 @@ export class ReconciliationRunner {
 		if (this.startupTimer) clearTimeout(this.startupTimer);
 		this.timer = null;
 		this.startupTimer = null;
+		this.cancelActiveCycle('runner stopped');
 		this.prober?.dispose();
 		this.prober = null;
 	}
 
+	/**
+	 * Abort the in-flight cycle (hard deadline or shutdown). Cooperative:
+	 * long awaits race the signal and the findings delta is skipped, so the
+	 * abandoned continuation can never resolve library findings on stale
+	 * data. The next scheduled cycle runs normally — no process restart.
+	 */
+	cancelActiveCycle(reason: string): void {
+		if (!this.currentAbort || !this.running) return;
+		this.currentAbort.abort(new CycleAbortedError(reason));
+	}
+
 	async run(): Promise<void> {
-		if (this.running) return;
+		if (this.running) return; // overlap guard: one cycle at a time, ever
 		const settings = this.options.getSettings();
 		if (!settings.enabled) {
 			this.recordRun({
@@ -309,225 +366,308 @@ export class ReconciliationRunner {
 		this.running = true;
 		this.currentRunStartedAt = Date.now();
 		const startedAt = Date.now();
+		const abort = new AbortController();
+		this.currentAbort = abort;
+		const deadlineOption = this.options.cycleDeadlineMs;
+		const deadlineMs =
+			(typeof deadlineOption === 'function' ? deadlineOption() : deadlineOption) ??
+			TUNING.cycleDeadlineMs;
+		this.deadlineTimer = setTimeout(() => {
+			const reason = `cycle exceeded its ${Math.round(deadlineMs / 60_000)} minute hard deadline`;
+			console.warn(`[reconciliation] ${reason} — aborting; the next cycle will run normally`);
+			abort.abort(new CycleAbortedError(reason));
+		}, deadlineMs);
+		this.deadlineTimer.unref?.();
+		const deadline = new Promise<never>((_, reject) => {
+			abort.signal.addEventListener(
+				'abort',
+				() =>
+					reject(
+						abort.signal.reason instanceof Error
+							? abort.signal.reason
+							: new CycleAbortedError('cycle aborted')
+					),
+				{ once: true }
+			);
+		});
 		try {
-			let targets: ArrTarget[];
-			if (this.options.resolveArrTargets) {
-				targets = await this.options.resolveArrTargets();
+			// The deadline race is the hard stop: whatever wedged inside the
+			// cycle, run() settles, state is cleared in `finally`, and the next
+			// scheduled cycle runs normally. The abandoned continuation is
+			// bounded by cooperative signal checks and per-op deadlines and can
+			// no longer touch findings (delta guard in `cycle`).
+			await Promise.race([this.cycle(settings, startedAt, abort.signal), deadline]);
+		} catch (err) {
+			const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+			if (abort.signal.aborted) {
+				this.recordRun({
+					at: startedAt,
+					status: 'timeout',
+					durationMs: Date.now() - startedAt,
+					stats: null,
+					error: detail
+				});
 			} else {
-				const { listIntegrations, getApiKey } = await import('../integrations/store');
-				targets = listIntegrations()
-					.filter((c) => c.enabled !== false && (c.type === 'sonarr' || c.type === 'radarr'))
-					.flatMap((c) => {
-						const apiKey = getApiKey(c.id);
-						return apiKey
-							? [{ id: c.id, type: c.type as 'sonarr' | 'radarr', url: c.url, apiKey }]
-							: [];
-					});
+				// Last-resort guard: a reconciliation bug must degrade the feature,
+				// never the process (an escaped rejection exits Node ≥15).
+				console.error('[reconciliation] cycle failed unexpectedly:', detail);
+				this.recordRun({
+					at: startedAt,
+					status: 'failed',
+					durationMs: Date.now() - startedAt,
+					stats: null,
+					error: detail
+				});
 			}
-			const now = this.options.now?.() ?? Date.now();
-			const arrFiles: ArrFileRecord[] = [];
-			let arrIncomplete = false; // an enabled Arr contributed no data at all
+		} finally {
+			// ALWAYS cleared, on every exit path: success, failure, timeout,
+			// cancellation. The next cycle cannot start until this runs — and
+			// cannot fail to run.
+			if (this.deadlineTimer) {
+				clearTimeout(this.deadlineTimer);
+				this.deadlineTimer = null;
+			}
+			this.running = false;
+			this.currentRunStartedAt = null;
+			this.currentAbort = null;
+		}
+	}
 
-			for (const config of targets) {
-				// Error isolation (production lesson 2026-09-17): one unreachable
-				// Arr must never crash the process (unhandled rejection → exit →
-				// restart → full library resnapshot storm). A failure marks the
-				// integration degraded, backs off, and the cycle degrades with it.
-				let state = this.fetchStates.get(config.id);
-				if (!state) {
-					state = { files: null, lastGoodAt: 0, consecutiveFailures: 0, nextAttemptAt: 0 };
-					this.fetchStates.set(config.id, state);
-				}
+	/**
+	 * One reconciliation attempt. `signal` is aborted by run()'s hard
+	 * deadline (or stop()); every long await races it and the findings delta
+	 * is skipped on an aborted signal, so an abandoned continuation can never
+	 * resolve library findings on stale data.
+	 */
+	private async cycle(
+		settings: ReconcileSettings,
+		startedAt: number,
+		signal: AbortSignal
+	): Promise<void> {
+		let targets: ArrTarget[];
+		if (this.options.resolveArrTargets) {
+			targets = await this.options.resolveArrTargets();
+		} else {
+			const { listIntegrations, getApiKey } = await import('../integrations/store');
+			targets = listIntegrations()
+				.filter((c) => c.enabled !== false && (c.type === 'sonarr' || c.type === 'radarr'))
+				.flatMap((c) => {
+					const apiKey = getApiKey(c.id);
+					return apiKey
+						? [{ id: c.id, type: c.type as 'sonarr' | 'radarr', url: c.url, apiKey }]
+						: [];
+				});
+		}
+		const now = this.options.now?.() ?? Date.now();
+		const arrFiles: ArrFileRecord[] = [];
+		let arrIncomplete = false; // an enabled Arr contributed no data at all
 
-				if (now < state.nextAttemptAt) {
-					// Backoff gate: keep serving last-good (stale) data, no request.
-					if (state.files) arrFiles.push(...state.files);
-					else arrIncomplete = true;
-					continue;
-				}
+		for (const config of targets) {
+			// Error isolation (production lesson 2026-09-17): one unreachable
+			// Arr must never crash the process (unhandled rejection → exit →
+			// restart → full library resnapshot storm). A failure marks the
+			// integration degraded, backs off, and the cycle degrades with it.
+			let state = this.fetchStates.get(config.id);
+			if (!state) {
+				state = { files: null, lastGoodAt: 0, consecutiveFailures: 0, nextAttemptAt: 0 };
+				this.fetchStates.set(config.id, state);
+			}
 
-				try {
-					const { files } = await fetchArrFiles(
+			if (now < state.nextAttemptAt) {
+				// Backoff gate: keep serving last-good (stale) data, no request.
+				if (state.files) arrFiles.push(...state.files);
+				else arrIncomplete = true;
+				continue;
+			}
+
+			if (signal.aborted) return; // deadline hit mid-cycle: stop quietly
+			try {
+				const { files } = await raceAbort(
+					fetchArrFiles(
 						{ id: config.id, type: config.type, url: config.url },
 						config.apiKey,
 						config.type
-					);
-					const wasDown = state.consecutiveFailures > 0;
-					state.files = files;
-					state.lastGoodAt = now;
-					state.consecutiveFailures = 0;
-					state.nextAttemptAt = 0;
-					arrFiles.push(...files);
-					// Sustained recovery: clear the degraded incident. It resolves
-					// either here (dedupe fingerprint below) or via the active-set
-					// sweep when a diff cycle runs.
-					if (wasDown) {
-						console.log(`[reconciliation] ${config.type} "${config.id}" recovered (backoff reset)`);
-						this.options.resolveFinding(arrUnavailableFingerprint(config.id));
-					}
-				} catch (err) {
-					state.consecutiveFailures += 1;
-					const attempt = state.consecutiveFailures;
-					const backoff = Math.min(
-						TUNING.fetchBackoffBaseMs * 2 ** (attempt - 1),
-						TUNING.fetchBackoffMaxMs
-					);
-					state.nextAttemptAt = now + backoff;
-					const errorClass = err instanceof Error ? err.name : typeof err;
-					const detail = err instanceof Error ? err.message : String(err);
-					// Compact one-liner: no stack trace spam, no secrets (API key
-					// never enters the message; URL is deliberately omitted).
-					console.warn(
-						`[reconciliation] ${config.type} "${config.id}" fetch failed (${errorClass}: ${detail}); attempt ${attempt}, retrying in ${Math.round(backoff / 1000)}s`
-					);
-					if (state.files) {
-						// Degrade to last-good data rather than presenting an empty
-						// library as ground truth (which would mass-report false
-						// plex-file-not-in-sonarr findings).
-						arrFiles.push(...state.files);
-					} else {
-						arrIncomplete = true;
-						// Deduped by the incident engine on fingerprint: repeated
-						// failures refresh the summary, they never open new incidents.
-						this.options.reportFinding({
-							kind: 'backend-unavailable',
-							fingerprint: arrUnavailableFingerprint(config.id),
-							severity: 'warning',
-							title: `${config.id} unreachable (${config.type})`,
-							summary: `Reconciliation cannot read ${config.type}; Arr-vs-Plex checks are suspended for this integration. Retry in ${Math.round(backoff / 1000)}s.`,
-							evidence: [`${errorClass}: ${detail}`],
-							resolvable: true
-						});
-					}
+					),
+					signal,
+					`arr fetch ${config.id}`
+				);
+				const wasDown = state.consecutiveFailures > 0;
+				state.files = files;
+				state.lastGoodAt = now;
+				state.consecutiveFailures = 0;
+				state.nextAttemptAt = 0;
+				arrFiles.push(...files);
+				// Sustained recovery: clear the degraded incident. It resolves
+				// either here (dedupe fingerprint below) or via the active-set
+				// sweep when a diff cycle runs.
+				if (wasDown) {
+					console.log(`[reconciliation] ${config.type} "${config.id}" recovered (backoff reset)`);
+					this.options.resolveFinding(arrUnavailableFingerprint(config.id));
+				}
+			} catch (err) {
+				if (err instanceof CycleAbortedError) throw err; // deadline, not an Arr failure
+				state.consecutiveFailures += 1;
+				const attempt = state.consecutiveFailures;
+				const backoff = Math.min(
+					TUNING.fetchBackoffBaseMs * 2 ** (attempt - 1),
+					TUNING.fetchBackoffMaxMs
+				);
+				state.nextAttemptAt = now + backoff;
+				const errorClass = err instanceof Error ? err.name : typeof err;
+				const detail = err instanceof Error ? err.message : String(err);
+				// Compact one-liner: no stack trace spam, no secrets (API key
+				// never enters the message; URL is deliberately omitted).
+				console.warn(
+					`[reconciliation] ${config.type} "${config.id}" fetch failed (${errorClass}: ${detail}); attempt ${attempt}, retrying in ${Math.round(backoff / 1000)}s`
+				);
+				if (state.files) {
+					// Degrade to last-good data rather than presenting an empty
+					// library as ground truth (which would mass-report false
+					// plex-file-not-in-sonarr findings).
+					arrFiles.push(...state.files);
+				} else {
+					arrIncomplete = true;
+					// Deduped by the incident engine on fingerprint: repeated
+					// failures refresh the summary, they never open new incidents.
+					this.options.reportFinding({
+						kind: 'backend-unavailable',
+						fingerprint: arrUnavailableFingerprint(config.id),
+						severity: 'warning',
+						title: `${config.id} unreachable (${config.type})`,
+						summary: `Reconciliation cannot read ${config.type}; Arr-vs-Plex checks are suspended for this integration. Retry in ${Math.round(backoff / 1000)}s.`,
+						evidence: [`${errorClass}: ${detail}`],
+						resolvable: true
+					});
 				}
 			}
+		}
 
-			// Safety valve: without data from every enabled Arr, the Arr-vs-Plex
-			// diff would compare Plex against a partial library and mass-report
-			// false positives. Skip the diff this cycle (findings stay untouched,
-			// nothing is resolved on stale evidence); the backoff gate retries.
-			if (arrIncomplete) {
-				this.recordRun({
-					at: startedAt,
-					status: 'skipped-incomplete',
-					durationMs: Date.now() - startedAt,
-					stats: null,
-					error: 'an enabled Arr contributed no data; Arr-vs-Plex diff skipped'
-				});
-				return;
-			}
-
-			// Synthetic production self-test fixtures: classified like any
-			// other item, but never sourced from (or written to) the real
-			// libraries. See ReconcileSettings.selftest* docs.
-			if (settings.selftestBrokenPath) {
-				arrFiles.push({
-					source: 'sonarr',
-					key: 'recon-selftest:broken-symlink',
-					label: 'Reconciliation selftest (broken symlink)',
-					path: settings.selftestBrokenPath,
-					// Always within the plex-stale grace: the selftest fixture has
-					// no Plex counterpart by design and must not trip plex-stale.
-					addedAt: this.options.now?.() ?? Date.now()
-				});
-			}
-
-			let plexParts: PlexPartRecord[] = [];
-			if (settings.plexDbPath) {
-				const { readPlexLibrarySnapshot } = await import('./plex');
-				try {
-					plexParts = readPlexLibrarySnapshot(settings.plexDbPath).parts;
-				} catch {
-					plexParts = []; // snapshot unreadable: Plex dimension skipped this cycle
-				}
-			}
-			if (settings.selftestGhostPath) {
-				plexParts.push({
-					key: 'recon-selftest:ghost',
-					label: 'Reconciliation selftest (plex ghost)',
-					path: settings.selftestGhostPath,
-					sectionId: null,
-					size: null
-				});
-			}
-
-			if (!this.prober) {
-				this.prober = new WorkerLibraryProber();
-			}
-
-			const result = await reconcileLibrary({
-				mounts: settings.mounts,
-				aliases: settings.aliases.length ? settings.aliases : DEFAULT_SETTINGS.aliases,
-				arrFiles,
-				plexParts,
-				prober: this.prober,
-				staleGraceMs: TUNING.staleGraceMs,
-				now: this.options.now
-			});
-
-			// Stateless open/close against the incident store: the currently
-			// active recon fingerprints come from the engine every cycle, so
-			// findings opened by a previous incarnation resolve too.
-			const active = new Set(this.options.getActiveFingerprints?.() ?? []);
-			const seen = new Set<string>();
-			for (const finding of result.findings) {
-				seen.add(finding.fingerprint);
-				if (!active.has(finding.fingerprint)) {
-					this.options.reportFinding(finding);
-				}
-			}
-			for (const fp of active) {
-				if (!seen.has(fp)) this.options.resolveFinding(fp);
-			}
-			this.options.onStats?.(result.stats);
+		// Safety valve: without data from every enabled Arr, the Arr-vs-Plex
+		// diff would compare Plex against a partial library and mass-report
+		// false positives. Skip the diff this cycle (findings stay untouched,
+		// nothing is resolved on stale evidence); the backoff gate retries.
+		// (An aborted cycle must not record here either — run() owns the
+		// 'timeout' record; the abandoned continuation stops quietly.)
+		if (signal.aborted) return;
+		if (arrIncomplete) {
 			this.recordRun({
 				at: startedAt,
-				status: 'ok',
-				durationMs: Date.now() - startedAt,
-				stats: result.stats,
-				error: null
-			});
-
-			// Opt-in remediation: when Plex shows ghosts or lags behind the
-			// Arrs, ask Plex to rescan the affected sections. Never default:
-			// without explicit opt-in DUMBscope stays observe-only.
-			if (settings.plexAutoRefresh && settings.plexUrl && settings.plexToken) {
-				const needsRefresh = result.stats.plexGhosts > 0 || result.stats.plexStale > 0;
-				if (needsRefresh && plexParts.length > 0) {
-					const { refreshPlexSection } = await import('./plex');
-					const sectionIds = new Set<number>();
-					for (const finding of result.findings) {
-						if (finding.kind !== 'plex-ghost' && finding.kind !== 'plex-stale') continue;
-						const part = plexParts.find((p) => finding.fingerprint.endsWith(p.key));
-						if (part?.sectionId) sectionIds.add(part.sectionId);
-					}
-					for (const id of sectionIds) {
-						try {
-							await refreshPlexSection(settings.plexUrl, settings.plexToken, id);
-						} catch (err) {
-							// Remediation is best-effort; never let it kill the cycle.
-							console.warn(
-								`[reconciliation] Plex section ${id} refresh failed: ${err instanceof Error ? err.message : String(err)}`
-							);
-						}
-					}
-				}
-			}
-		} catch (err) {
-			// Last-resort guard: a reconciliation bug must degrade the feature,
-			// never the process (an escaped rejection exits Node ≥15).
-			const detail = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-			console.error('[reconciliation] cycle failed unexpectedly:', detail);
-			this.recordRun({
-				at: startedAt,
-				status: 'failed',
+				status: 'skipped-incomplete',
 				durationMs: Date.now() - startedAt,
 				stats: null,
-				error: detail
+				error: 'an enabled Arr contributed no data; Arr-vs-Plex diff skipped'
 			});
-		} finally {
-			this.running = false;
-			this.currentRunStartedAt = null;
+			return;
+		}
+
+		// Synthetic production self-test fixtures: classified like any
+		// other item, but never sourced from (or written to) the real
+		// libraries. See ReconcileSettings.selftest* docs.
+		if (settings.selftestBrokenPath) {
+			arrFiles.push({
+				source: 'sonarr',
+				key: 'recon-selftest:broken-symlink',
+				label: 'Reconciliation selftest (broken symlink)',
+				path: settings.selftestBrokenPath,
+				// Always within the plex-stale grace: the selftest fixture has
+				// no Plex counterpart by design and must not trip plex-stale.
+				addedAt: this.options.now?.() ?? Date.now()
+			});
+		}
+
+		let plexParts: PlexPartRecord[] = [];
+		if (settings.plexDbPath) {
+			const { readPlexLibrarySnapshot } = await import('./plex');
+			try {
+				plexParts = readPlexLibrarySnapshot(settings.plexDbPath).parts;
+			} catch {
+				plexParts = []; // snapshot unreadable: Plex dimension skipped this cycle
+			}
+		}
+		if (settings.selftestGhostPath) {
+			plexParts.push({
+				key: 'recon-selftest:ghost',
+				label: 'Reconciliation selftest (plex ghost)',
+				path: settings.selftestGhostPath,
+				sectionId: null,
+				size: null
+			});
+		}
+
+		if (!this.prober) {
+			this.prober = new WorkerLibraryProber();
+		}
+
+		const result = await reconcileLibrary({
+			mounts: settings.mounts,
+			aliases: settings.aliases.length ? settings.aliases : DEFAULT_SETTINGS.aliases,
+			arrFiles,
+			plexParts,
+			prober: this.prober,
+			staleGraceMs: TUNING.staleGraceMs,
+			now: this.options.now
+		});
+
+		// An aborted (deadline) cycle must NEVER touch findings: its data is
+		// potentially stale and resolving on it would hide real problems.
+		if (signal.aborted) {
+			console.warn('[reconciliation] cycle aborted before findings were applied — deltas skipped');
+			return;
+		}
+
+		// Stateless open/close against the incident store: the currently
+		// active recon fingerprints come from the engine every cycle, so
+		// findings opened by a previous incarnation resolve too.
+		const active = new Set(this.options.getActiveFingerprints?.() ?? []);
+		const seen = new Set<string>();
+		for (const finding of result.findings) {
+			seen.add(finding.fingerprint);
+			if (!active.has(finding.fingerprint)) {
+				this.options.reportFinding(finding);
+			}
+		}
+		for (const fp of active) {
+			if (!seen.has(fp)) this.options.resolveFinding(fp);
+		}
+		this.options.onStats?.(result.stats);
+		this.recordRun({
+			at: startedAt,
+			status: 'ok',
+			durationMs: Date.now() - startedAt,
+			stats: result.stats,
+			error: null
+		});
+
+		// Opt-in remediation: when Plex shows ghosts or lags behind the
+		// Arrs, ask Plex to rescan the affected sections. Never default:
+		// without explicit opt-in DUMBscope stays observe-only.
+		if (settings.plexAutoRefresh && settings.plexUrl && settings.plexToken) {
+			const needsRefresh = result.stats.plexGhosts > 0 || result.stats.plexStale > 0;
+			if (needsRefresh && plexParts.length > 0) {
+				const { refreshPlexSection } = await import('./plex');
+				const sectionIds = new Set<number>();
+				for (const finding of result.findings) {
+					if (finding.kind !== 'plex-ghost' && finding.kind !== 'plex-stale') continue;
+					const part = plexParts.find((p) => finding.fingerprint.endsWith(p.key));
+					if (part?.sectionId) sectionIds.add(part.sectionId);
+				}
+				for (const id of sectionIds) {
+					if (signal.aborted) return;
+					try {
+						await raceAbort(
+							refreshPlexSection(settings.plexUrl, settings.plexToken, id),
+							signal,
+							`plex refresh ${id}`
+						);
+					} catch (err) {
+						if (err instanceof CycleAbortedError) return;
+						// Remediation is best-effort; never let it kill the cycle.
+						console.warn(
+							`[reconciliation] Plex section ${id} refresh failed: ${err instanceof Error ? err.message : String(err)}`
+						);
+					}
+				}
+			}
 		}
 	}
 

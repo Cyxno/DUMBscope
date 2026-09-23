@@ -162,6 +162,7 @@
 	const reconStatusColor: Record<string, string> = {
 		ok: 'var(--healthy)',
 		failed: 'var(--critical)',
+		timeout: 'var(--critical)',
 		'skipped-incomplete': 'var(--degraded)',
 		disabled: 'var(--unknown)'
 	};
@@ -169,6 +170,7 @@
 	const statusLabel: Record<string, string> = {
 		ok: 'successful',
 		failed: 'failed',
+		timeout: 'aborted at the hard deadline',
 		'skipped-incomplete': 'skipped — incomplete Arr data',
 		disabled: 'disabled'
 	};

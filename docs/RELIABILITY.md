@@ -386,8 +386,14 @@ things they watch:
 - **Stuck reconciliation** (`self:recon-stuck`, warning): a reconciliation
   cycle running longer than 15 minutes — safely beyond the worst legitimate
   cycle (~13 min: 400-series cap, 8 s per-request deadline, 8 concurrent
-  fetchers) — is presumed wedged and reported; new cycles cannot start until
-  it finishes. It resolves when the cycle finishes or restarts.
+  fetchers) — is presumed wedged and reported. The runner aborts the cycle
+  itself at its 16-minute hard deadline (AbortController + cooperative
+  signal checks; the findings delta is skipped on an aborted cycle, so
+  stale data can never resolve real findings), state is cleared in a
+  `finally`, and the next scheduled cycle runs normally — no process
+  restart required. The finding auto-resolves when the cycle ends. The
+  timeout is recorded in reconciliation observability (`status:
+"timeout"`) alongside the subsequent successful recovery.
 
 **External supervision boundary (documented, not an accident):** total
 process death and a fully starved event loop stop this sampler along with

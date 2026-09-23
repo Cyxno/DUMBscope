@@ -234,7 +234,10 @@ function normalizeProcesses(lists: (DumbProcessMetric[] | undefined)[]): Process
 				name,
 				pid: asNumber(proc.pid),
 				cpuPercent: asNumber(proc.cpu_percent),
-				memoryBytes: asNumber(proc.rss)
+				memoryBytes: asNumber(proc.rss),
+				threads: asNumber(proc.threads),
+				vmsBytes: asNumber(proc.vms),
+				startedAtSeconds: asNumber(proc.start_time)
 			});
 		}
 	}

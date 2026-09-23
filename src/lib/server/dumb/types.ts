@@ -79,6 +79,10 @@ export interface DumbProcessMetric {
 	process_name?: string;
 	cpu_percent?: number;
 	rss?: number;
+	vms?: number;
+	threads?: number;
+	/** Epoch seconds when the process started (newer gateways). */
+	start_time?: number;
 }
 
 export interface DumbFilesystem {

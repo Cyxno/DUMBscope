@@ -103,6 +103,12 @@ export interface ProcessMetric {
 	pid: number | null;
 	cpuPercent: number | null;
 	memoryBytes: number | null;
+	/** Thread count as reported by DUMB (null on older gateways). */
+	threads?: number | null;
+	/** Virtual memory size in bytes (null when the payload omits it). */
+	vmsBytes?: number | null;
+	/** Process start time (epoch seconds) — enables honest uptime. */
+	startedAtSeconds?: number | null;
 }
 
 export interface MetricsSnapshot {
@@ -684,4 +690,298 @@ export interface ReliabilitySnapshot {
 		/** Processes currently sampled for memory. */
 		memoryTracked: number;
 	};
+}
+
+// ---------------------------------------------------------------------------
+// Observability — DUMB stack deep monitoring
+// ---------------------------------------------------------------------------
+
+/** Deterministic per-service memory classification (Observability page). */
+export type ServiceMemoryClass =
+	| 'stable'
+	| 'elevated-plateau'
+	| 'workload-driven'
+	| 'sawtooth'
+	| 'possible-leak'
+	| 'insufficient-history';
+
+/** Deep per-service memory view (class, deltas, baselines, shift). */
+export interface ServiceMemoryObservability {
+	key: string;
+	name: string;
+	processName: string;
+	/** Most recent RSS. */
+	currentBytes: number | null;
+	/** Rolling median over the trailing 24h (5-minute tier). */
+	baseline24hBytes: number | null;
+	/** p50/p95 over the trailing 24h. */
+	p50Bytes: number | null;
+	p95Bytes: number | null;
+	/** Rolling median over days 2–7 of the 30-minute tier (lagged 7d baseline). */
+	baseline7dBytes: number | null;
+	delta1hBytes: number | null;
+	delta6hBytes: number | null;
+	delta24hBytes: number | null;
+	/** Robust (Theil–Sen) growth rate over the trailing 24h in bytes/hour. */
+	slopeBytesPerHour: number | null;
+	slopeConfidence: number | null;
+	classification: ServiceMemoryClass;
+	/** Evidence lines backing the classification (plain language). */
+	reasons: string[];
+	/** Threads reported by DUMB (null when the payload omits them). */
+	threads: number | null;
+	/** Process uptime seconds derived from DUMB's start_time (null when unknown). */
+	uptimeSeconds: number | null;
+	version: string | null;
+	/** Detected baseline shift, if any (§9 of the observability spec). */
+	baselineShift: BaselineShift | null;
+}
+
+export interface BaselineShift {
+	/** p50 before the shift (days-2..7 of the 30-minute tier). */
+	fromBytes: number;
+	/** p50 over the most recent 24h. */
+	toBytes: number;
+	/** toBytes / fromBytes − 1. */
+	percent: number;
+	/** Epoch ms of the first bucket that crossed the shift line. */
+	startedAt: number | null;
+	/** 'rising' keeps drifting up; 'plateau' shifted and stabilised. */
+	direction: 'rising' | 'plateau' | 'declining';
+}
+
+export interface CgroupMemoryBreakdown {
+	/** Applications + anon (the part that must be actively reclaimed). */
+	applicationsBytes: number;
+	/** Shared/tmpfs memory (charged to file, not reclaimable like cache). */
+	sharedBytes: number;
+	/** Reclaimable file page cache (file − shmem). */
+	cacheBytes: number;
+	/** Kernel allocations: slab (split into reclaimable below) + stack + sock + misc. */
+	kernelBytes: number;
+	slabReclaimableBytes: number;
+	/** memory.current as reported by the kernel. */
+	currentBytes: number | null;
+}
+
+/** Interpretation flags for the DUMB cgroup (never "high memory = problem"). */
+export interface CgroupMemoryInterpretation {
+	/** Soft-limit (memory.high) reclaim events since the previous sample. */
+	softReclaimActive: boolean;
+	/** Hard-limit (memory.max) events since the previous sample. */
+	hardLimitHit: boolean;
+	/** Genuine pressure: direct reclaim + refaulting under the soft limit. */
+	pressure: boolean;
+	/** OOM / OOM-kill counters moved since the previous sample. */
+	oom: boolean;
+	/** Cumulative counters for display (never rate-limit alerts on these). */
+	events: {
+		high: number | null;
+		max: number | null;
+		oom: number | null;
+		oomKill: number | null;
+	};
+	/** Kernel pressure counters for display. */
+	pgscanDirect: number | null;
+	refaultFile: number | null;
+}
+
+export interface CgroupMemorySnapshot {
+	/** Epoch ms of the sample; null when no source is available. */
+	at: number | null;
+	/** Which source produced the sample. */
+	source: 'cgroupfs' | 'prometheus' | null;
+	/** Unavailable ⇒ explain why (no mount, bad path, Prometheus unreachable). */
+	unavailableReason: string | null;
+	highBytes: number | null;
+	maxBytes: number | null;
+	breakdown: CgroupMemoryBreakdown;
+	interpretation: CgroupMemoryInterpretation;
+	/** memory.peak, when the kernel exposes it. */
+	peakBytes: number | null;
+}
+
+export interface CgroupHistoryPoint {
+	t: number;
+	currentAvg: number | null;
+	currentMax: number | null;
+	anonAvg: number | null;
+	fileAvg: number | null;
+	kernelAvg: number | null;
+}
+
+/** Aggregated repair/article facts for one media file (InfiniDysk page). */
+export interface InfiniDyskFileRecord {
+	file: string;
+	/** Repair starts within the trailing 1h/24h windows. */
+	repairs1h: number;
+	repairs24h: number;
+	lastRepairAt: number | null;
+	lastError: string | null;
+	/** Distinct days (UTC) with at least one repair — recurrence signal. */
+	activeDays: number;
+	missingSegments24h: number;
+}
+
+export interface InfiniDyskObservability {
+	available: boolean;
+	unavailableReason: string | null;
+	version: string | null;
+	/** Base NZBDAV version when DUMB exposes it via the service env. */
+	baseVersion: string | null;
+	commit: string | null;
+	/** .NET GC heap hard limit parsed from the service env (bytes). */
+	gcHeapHardLimitBytes: number | null;
+	autoUpdate: boolean | null;
+	pinnedVersion: string | null;
+	rss: number | null;
+	threads: number | null;
+	cpuPercent: number | null;
+	uptimeSeconds: number | null;
+	/** RSS growth over the trailing hour (bytes/hour, Theil–Sen). */
+	growthBytesPerHour: number | null;
+	/** Repair currently in flight (started within the quiet window). */
+	repairActive: boolean;
+	lastRepairAt: number | null;
+	repairs1h: number;
+	repairs24h: number;
+	article430_1h: number;
+	article430_24h: number;
+	missingSegments1h: number;
+	missingSegments24h: number;
+	providerFallbacks24h: number;
+	mountState: string | null;
+	restarts24h: number;
+	lastRestartAt: number | null;
+	files: InfiniDyskFileRecord[];
+}
+
+export interface ThermalZoneSample {
+	zone: string;
+	type: string;
+	tempC: number | null;
+}
+
+export interface ThermalSnapshot {
+	available: boolean;
+	unavailableReason: string | null;
+	zones: ThermalZoneSample[];
+	/** Hottest zone right now (the spike-detection input). */
+	maxTempC: number | null;
+	maxZoneType: string | null;
+	/** Package temperature when an x86_pkg_temp zone exists. */
+	packageTempC: number | null;
+	/** Currently active spike level, if any. */
+	spikeLevel: 90 | 95 | 100 | null;
+	spikeSince: number | null;
+	lastSpike: ThermalCorrelationSnapshot | null;
+}
+
+/** Correlation snapshot captured when a temperature threshold is crossed. */
+export interface ThermalCorrelationSnapshot {
+	at: number;
+	level: 90 | 95 | 100;
+	tempC: number;
+	zoneType: string | null;
+	hostLoad: number | null;
+	dumbCpuPercent: number | null;
+	topProcesses: { name: string; cpuPercent: number | null }[];
+	infiniDyskRepairActive: boolean;
+	recoveredAt: number | null;
+}
+
+export interface TimelineEvent {
+	id: number;
+	at: number;
+	kind:
+		| 'restart'
+		| 'memory-anomaly'
+		| 'repair-loop'
+		| 'mount'
+		| 'oom'
+		| 'cgroup-high'
+		| 'cgroup-max'
+		| 'thermal'
+		| 'deploy'
+		| 'download-failure'
+		| 'health';
+	service: string | null;
+	severity: 'info' | 'warning' | 'critical' | null;
+	title: string;
+	detail: string | null;
+}
+
+/** Download routing window aggregate for one client. */
+export interface RoutingClientStats {
+	client: string;
+	/** 'usenet' | 'torrent' as the Arr download client reports it. */
+	protocol: string | null;
+	priority: number | null;
+	enabled: boolean;
+	grabs: number;
+	imports: number;
+	failures: number;
+	/** imports / (imports + failures) over the window; null when no completions. */
+	successRate: number | null;
+	/** True when this client is the Arr-configured primary for its protocol. */
+	primary: boolean;
+}
+
+export interface RoutingObservability {
+	windowHours: number;
+	clients: RoutingClientStats[];
+	/** Preferred protocol from the Arr delay profile, per Arr. */
+	preferredProtocol: { sonarr: string | null; radarr: string | null };
+	fetchedAt: number | null;
+	stale: boolean;
+}
+
+/** Per-Arr stack facts (Observability → Sonarr/Radarr). */
+export interface ArrObservability {
+	type: 'sonarr' | 'radarr';
+	integrationId: string;
+	connected: boolean;
+	unavailableReason: string | null;
+	version: string | null;
+	uptimeSeconds: number | null;
+	dbBytes: number | null;
+	queue: number | null;
+	queueWarnings: number | null;
+	queueFailures: number | null;
+	blocklistSize: number | null;
+	historyEvents: number | null;
+	imports24h: number;
+	failures24h: number;
+	grabs24h: number;
+	/** RSS-sync and search activity (recent commands). */
+	rssSync: { lastAt: number | null; count24h: number };
+	searches: { count24h: number; recent: string[] };
+	fetchedAt: number | null;
+}
+
+export interface ObservabilitySnapshot {
+	cgroup: CgroupMemorySnapshot;
+	services: ServiceMemoryObservability[];
+	baselineShifts: ServiceMemoryObservability[];
+	infiniDysk: InfiniDyskObservability;
+	thermal: ThermalSnapshot;
+	ars: ArrObservability[];
+	routing: RoutingObservability;
+	versions: VersionInfo[];
+}
+
+export interface VersionInfo {
+	key: string;
+	name: string;
+	version: string | null;
+	commit: string | null;
+	/** Epoch ms when DUMB first reported this version (deploy marker). */
+	since: number | null;
+	updateAvailable: boolean | null;
+	availableVersion: string | null;
+	/** DUMB's own update-check verdict ('updated', 'update_available', …). */
+	updateStatus: string | null;
+	autoUpdate: boolean | null;
+	/** Runtime is persistent/pinned — it does not move with DUMB:latest. */
+	pinned: boolean;
 }

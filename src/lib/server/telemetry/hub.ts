@@ -1514,6 +1514,10 @@ export class Hub {
 			stale: true
 		};
 		try {
+			// Both Arrs usually declare the same clients (Decypharr, InfiniDysk):
+			// merge by client name, summing window counts and keeping the minimum
+			// priority; a client is primary when any Arr runs it as primary.
+			const byName = new Map<string, RoutingObservability['clients'][number]>();
 			for (const integration of listIntegrations()) {
 				if (integration.enabled === false) continue;
 				if (integration.type !== 'sonarr' && integration.type !== 'radarr') continue;
@@ -1524,12 +1528,32 @@ export class Hub {
 					fetchedAt: number;
 				}>(integration.id, 'routing');
 				if (!view) continue;
-				merged.clients.push(...view.clients);
 				merged.preferredProtocol[integration.type] = view.preferredProtocol;
 				merged.windowHours = view.windowHours;
 				merged.fetchedAt = Math.max(merged.fetchedAt ?? 0, view.fetchedAt);
 				merged.stale = false;
+				for (const client of view.clients) {
+					const existing = byName.get(client.client);
+					if (!existing) {
+						byName.set(client.client, { ...client });
+						continue;
+					}
+					existing.grabs += client.grabs;
+					existing.imports += client.imports;
+					existing.failures += client.failures;
+					existing.enabled = existing.enabled || client.enabled;
+					existing.priority =
+						existing.priority !== null && client.priority !== null
+							? Math.min(existing.priority, client.priority)
+							: (existing.priority ?? client.priority);
+					existing.primary = existing.primary || client.primary;
+					const completions = existing.imports + existing.failures;
+					existing.successRate = completions > 0 ? existing.imports / completions : null;
+				}
 			}
+			merged.clients = [...byName.values()].sort(
+				(a, b) => b.grabs + b.imports - (a.grabs + a.imports) || a.client.localeCompare(b.client)
+			);
 		} catch {
 			// integrations not initialized
 		}

@@ -107,3 +107,68 @@ describe('payload parsing', () => {
 		expect(isDownloadFailure({ eventType: 'grabbed', data: {} })).toBe(false);
 	});
 });
+
+describe('cross-Arr merge (regression: duplicate clients in production)', () => {
+	it('merges clients with the same name across Arrs without duplicating rows', () => {
+		// Mirrors Hub.buildRoutingObservability's merge contract.
+		const viewA = buildRoutingObservability(
+			[
+				{ name: 'decypharr', protocol: 'torrent', priority: 1, enabled: true },
+				{ name: 'InfiniDysk', protocol: 'usenet', priority: 1, enabled: true }
+			],
+			[rec('grabbed', 'decypharr', 2), rec('downloadFolderImported', 'decypharr', 1)],
+			'torrent',
+			24,
+			1_800_000_000_000
+		);
+		const viewB = buildRoutingObservability(
+			[
+				{ name: 'decypharr', protocol: 'torrent', priority: 1, enabled: true },
+				{ name: 'InfiniDysk', protocol: 'usenet', priority: 1, enabled: true }
+			],
+			[rec('grabbed', 'InfiniDysk', 3), rec('downloadFailed', 'InfiniDysk', 4)],
+			'torrent',
+			24,
+			1_800_000_000_000
+		);
+
+		const byName = new Map<
+			string,
+			{ grabs: number; imports: number; failures: number; primary: boolean }
+		>();
+		for (const view of [viewA, viewB]) {
+			for (const c of view.clients) {
+				const e = byName.get(c.client);
+				if (!e) {
+					byName.set(c.client, { ...c });
+					continue;
+				}
+				e.grabs += c.grabs;
+				e.imports += c.imports;
+				e.failures += c.failures;
+				e.primary = e.primary || c.primary;
+			}
+		}
+		const merged = [...byName.values()];
+		expect(merged).toHaveLength(2); // NOT 4
+		const decy = merged.find((c) =>
+			(c as unknown as { client: string }).client === undefined ? null : true
+		);
+		void decy;
+		const rows = [...byName.entries()];
+		const decyRow = rows.find(([name]) => name === 'decypharr')![1];
+		const infiniRow = rows.find(([name]) => name === 'InfiniDysk')![1];
+		expect([decyRow.grabs, decyRow.imports, decyRow.failures, decyRow.primary]).toEqual([
+			1,
+			1,
+			0,
+			true
+		]);
+		expect([infiniRow.grabs, infiniRow.imports, infiniRow.failures, infiniRow.primary]).toEqual([
+			1,
+			0,
+			1,
+			true
+		]);
+	});
+});

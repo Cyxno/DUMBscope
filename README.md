@@ -117,13 +117,13 @@ health report is shown as **Running (unverified)** — never as healthy.
 Compact matrix (full table with per-service support levels and evidence in
 [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md)):
 
-| Service                                                                                                     | Monitoring                   | Deep integration                        | Verified        |
-| ----------------------------------------------------------------------------------------------------------- | ---------------------------- | --------------------------------------- | --------------- |
-| DUMB Frontend / DUMB API                                                                                    | Full                         | —                                       | Real tested     |
-| Sonarr · Radarr · Bazarr                                                                                    | Full                         | Library browsers, subtitles, media flow | Real tested     |
-| Prowlarr · Plex · Seerr · Tautulli                                                                          | Full + deep health poller    | —                                       | Real tested     |
-| Decypharr · InfiniDysk                                                                                      | Full + deep observability    | Repair loops, 430s, routing, GC limit   | Real tested     |
-| Jellyfin · Emby · Lidarr · Whisparr · AltMount · CLI Debrid · Zurg · rclone · Traefik · Authelia · and more | Full generic monitoring      | Not yet implemented                     | Contract tested |
+| Service                                                                                                     | Monitoring                | Deep integration                        | Verified        |
+| ----------------------------------------------------------------------------------------------------------- | ------------------------- | --------------------------------------- | --------------- |
+| DUMB Frontend / DUMB API                                                                                    | Full                      | —                                       | Real tested     |
+| Sonarr · Radarr · Bazarr                                                                                    | Full                      | Library browsers, subtitles, media flow | Real tested     |
+| Prowlarr · Plex · Seerr · Tautulli                                                                          | Full + deep health poller | —                                       | Real tested     |
+| Decypharr · InfiniDysk                                                                                      | Full + deep observability | Repair loops, 430s, routing, GC limit   | Real tested     |
+| Jellyfin · Emby · Lidarr · Whisparr · AltMount · CLI Debrid · Zurg · rclone · Traefik · Authelia · and more | Full generic monitoring   | Not yet implemented                     | Contract tested |
 
 Multi-instance services (Sonarr Default + "Sonarr Anime", Radarr 4K, …) are
 rendered per instance with a qualifier and never collide. Deep integration
@@ -278,21 +278,21 @@ Runtime state lives under `/config`:
 
 Environment variables:
 
-| Variable                  | Default              | Purpose                                                                |
-| ------------------------- | -------------------- | ---------------------------------------------------------------------- |
-| `PORT`                    | `8091`               | web UI + API port                                                      |
-| `PUID` / `PGID` / `UMASK` | `99` / `100` / `022` | runtime identity for `/config`                                         |
-| `DUMB_URL`                | —                    | optional seed for the wizard's DUMB URL                                |
-| `DUMBSCOPE_TRUST_PROXY`   | `false`              | trust `X-Forwarded-Proto` for Secure cookies (behind HTTPS proxy only) |
-| `DUMBSCOPE_HTTPS`         | `false`              | force Secure cookies when serving real HTTPS directly                  |
-| `DUMBSCOPE_CONFIG_DIR`    | `/config`            | config location                                                        |
-| `DUMBSCOPE_SETUP_CODE`    | —                    | pre-set setup code instead of the random one                           |
-| `DUMBSCOPE_MOUNTS`        | —                    | optional JSON list of mount targets for Reliability monitoring         |
-| `DUMBSCOPE_DUMB_CGROUP_PATH` | —               | read-only mounted cgroup v2 dir of the DUMB container (Observability)  |
-| `DUMBSCOPE_DUMB_CGROUP_PARENT` | —              | parent dir of container cgroups; the id resolves via Prometheus below  |
-| `DUMBSCOPE_DUMB_CONTAINER_ID` | —               | explicit DUMB container id (64 hex) under the parent above             |
-| `DUMBSCOPE_DUMB_CONTAINER_NAME` | `DUMB`       | container name for the Prometheus id lookup / fallback queries         |
-| `DUMBSCOPE_PROMETHEUS_URL`  | —                    | Prometheus base URL — cadvisor fallback for the cgroup memory picture  |
+| Variable                        | Default              | Purpose                                                                |
+| ------------------------------- | -------------------- | ---------------------------------------------------------------------- |
+| `PORT`                          | `8091`               | web UI + API port                                                      |
+| `PUID` / `PGID` / `UMASK`       | `99` / `100` / `022` | runtime identity for `/config`                                         |
+| `DUMB_URL`                      | —                    | optional seed for the wizard's DUMB URL                                |
+| `DUMBSCOPE_TRUST_PROXY`         | `false`              | trust `X-Forwarded-Proto` for Secure cookies (behind HTTPS proxy only) |
+| `DUMBSCOPE_HTTPS`               | `false`              | force Secure cookies when serving real HTTPS directly                  |
+| `DUMBSCOPE_CONFIG_DIR`          | `/config`            | config location                                                        |
+| `DUMBSCOPE_SETUP_CODE`          | —                    | pre-set setup code instead of the random one                           |
+| `DUMBSCOPE_MOUNTS`              | —                    | optional JSON list of mount targets for Reliability monitoring         |
+| `DUMBSCOPE_DUMB_CGROUP_PATH`    | —                    | read-only mounted cgroup v2 dir of the DUMB container (Observability)  |
+| `DUMBSCOPE_DUMB_CGROUP_PARENT`  | —                    | parent dir of container cgroups; the id resolves via Prometheus below  |
+| `DUMBSCOPE_DUMB_CONTAINER_ID`   | —                    | explicit DUMB container id (64 hex) under the parent above             |
+| `DUMBSCOPE_DUMB_CONTAINER_NAME` | `DUMB`               | container name for the Prometheus id lookup / fallback queries         |
+| `DUMBSCOPE_PROMETHEUS_URL`      | —                    | Prometheus base URL — cadvisor fallback for the cgroup memory picture  |
 
 Reliability mount monitoring is **opt-in and configurable** — define the mount
 roots and symlink roots you care about and toggle mount/memory monitoring in

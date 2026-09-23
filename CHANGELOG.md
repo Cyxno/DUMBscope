@@ -29,7 +29,7 @@ always: nothing in this release sends notifications — external alerting
   deltas, 24h p50/p95 baseline, lagged 7-day baseline and a deterministic
   classification: `stable`, `elevated plateau`, `workload-driven`,
   `sawtooth/GC`, `possible leak`, `insufficient history`. A high but flat
-  process is explicitly *not* a leak.
+  process is explicitly _not_ a leak.
 - **Baseline shift detection** — trailing 24h p50 vs lagged days-2..7 p50;
   reports old → new baseline, the percentage, when the shift started and the
   direction (`rising` / `plateau` / `declining`).
@@ -57,12 +57,12 @@ always: nothing in this release sends notifications — external alerting
   version, auto-update/pinned policy and "this version since" per service;
   InfiniDysk's pinned runtime (does not follow `DUMB:latest`) is explicit.
   Deploy events land on the timeline when registry versions change.
-- **UI** — new *Observability* page (nav group Monitor): headline tiles (DUMB
+- **UI** — new _Observability_ page (nav group Monitor): headline tiles (DUMB
   memory state, anon vs cache, thermal, InfiniDysk), cgroup breakdown +
   history chart, per-service classification table with shift annotations,
   InfiniDysk card with repair-loop table, routing table, Arr stack cards,
   thermal chart + last-spike snapshot, versions table and the timeline.
-  Compact new *DUMB observability* overview widget (orderable/hideable) and a
+  Compact new _DUMB observability_ overview widget (orderable/hideable) and a
   memory-baseline block in the service drawer.
 - **API** — `GET /api/observability`, `/api/observability/history`,
   `/api/observability/timeline` and a signature-diffed SSE `observability`

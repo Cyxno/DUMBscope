@@ -11,16 +11,16 @@ for the incident classes it already owns.
 
 Everything rides sources that already exist:
 
-| Source                                   | Used for                                                                    |
-| ---------------------------------------- | --------------------------------------------------------------------------- |
-| DUMB `/ws/metrics` (existing stream)      | per-process RSS, CPU, **threads**, **vms**, **start_time** (uptime), host load |
-| DUMB `/ws/logs` (existing stream)         | InfiniDysk repair loops, `430 No Such Article`, missing segments, provider fallbacks |
-| DUMB `/api/process/processes` (existing)  | versions, update status, pinned/auto-update policy, GC heap hard limit (env) |
-| DUMB cgroup v2 directory (read-only mount)| `memory.current/high/max/peak`, `memory.stat` (anon/file/shmem/slab), `memory.events`, `pgscan`, `workingset_refault_file` |
-| Prometheus/cadvisor (optional fallback)   | container memory usage/rss/cache/kernel/oom when no cgroup mount exists      |
-| Sonarr/Radarr REST (existing integrations)| queue, blocklist, history, download clients, delay profiles, backups (DB size) |
-| `/sys/class/thermal` (readable in-container) | host temperature zones + spike detection (90/95/100 °C)                  |
-| DUMBscope's own `memory_samples` tiers    | per-service 24h p50/p95, 1h/6h/24h deltas, 7d lagged baseline               |
+| Source                                       | Used for                                                                                                                   |
+| -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| DUMB `/ws/metrics` (existing stream)         | per-process RSS, CPU, **threads**, **vms**, **start_time** (uptime), host load                                             |
+| DUMB `/ws/logs` (existing stream)            | InfiniDysk repair loops, `430 No Such Article`, missing segments, provider fallbacks                                       |
+| DUMB `/api/process/processes` (existing)     | versions, update status, pinned/auto-update policy, GC heap hard limit (env)                                               |
+| DUMB cgroup v2 directory (read-only mount)   | `memory.current/high/max/peak`, `memory.stat` (anon/file/shmem/slab), `memory.events`, `pgscan`, `workingset_refault_file` |
+| Prometheus/cadvisor (optional fallback)      | container memory usage/rss/cache/kernel/oom when no cgroup mount exists                                                    |
+| Sonarr/Radarr REST (existing integrations)   | queue, blocklist, history, download clients, delay profiles, backups (DB size)                                             |
+| `/sys/class/thermal` (readable in-container) | host temperature zones + spike detection (90/95/100 °C)                                                                    |
+| DUMBscope's own `memory_samples` tiers       | per-service 24h p50/p95, 1h/6h/24h deltas, 7d lagged baseline                                                              |
 
 PSS / Private Dirty / per-process fd counts require host-PID visibility into
 the DUMB container, which DUMBscope deliberately does not have (non-privileged,
@@ -35,11 +35,11 @@ DUMB runs in one container with `memory.high` and `memory.max` (production:
   (file − shmem), kernel (slab + stack + sock + percpu + remainder).
 - **Limits** — current as % of `memory.high` and `memory.max`, `memory.peak`.
 - **Interpretation flags**, rate-based over the previous sample:
-  - *soft reclaim active* — `memory.events.high` moved;
-  - *hard limit hit* — `memory.events.max` moved;
-  - *memory pressure* — heavy `pgscan_direct` / file refaults while at or over
+  - _soft reclaim active_ — `memory.events.high` moved;
+  - _hard limit hit_ — `memory.events.max` moved;
+  - _memory pressure_ — heavy `pgscan_direct` / file refaults while at or over
     a limit;
-  - *OOM* — `memory.events.oom` / `oom_kill` moved.
+  - _OOM_ — `memory.events.oom` / `oom_kill` moved.
 - **History** — 1-minute raw samples (26h) with 5-minute (7d) and 30-minute
   (30d) rollups, mirroring the runtime samples tiers.
 
@@ -55,10 +55,10 @@ Mount the DUMB container's cgroup directory read-only:
 services:
   dumbscope:
     environment:
-      - DUMBSCOPE_DUMB_CGROUP_PATH=/dumb-cgroup        # explicit path, or:
+      - DUMBSCOPE_DUMB_CGROUP_PATH=/dumb-cgroup # explicit path, or:
       # - DUMBSCOPE_DUMB_CGROUP_PARENT=/mnt/cgroup-docker
       # - DUMBSCOPE_DUMB_CONTAINER_ID=<64-hex id>
-      - DUMBSCOPE_PROMETHEUS_URL=http://192.168.1.2:9090  # optional fallback + id resolver
+      - DUMBSCOPE_PROMETHEUS_URL=http://192.168.1.2:9090 # optional fallback + id resolver
     volumes:
       - /sys/fs/cgroup/docker/<DUMB container id>:/dumb-cgroup:ro
       # or the whole parent: /sys/fs/cgroup/docker:/mnt/cgroup-docker:ro
@@ -76,14 +76,14 @@ used if `DUMBSCOPE_PROMETHEUS_URL` is configured.
 Every enabled managed service gets a deterministic class, computed from its
 stored RSS series (first matching rule wins):
 
-| Class                  | Rule (summarised)                                                          |
-| ---------------------- | -------------------------------------------------------------------------- |
-| `insufficient-history` | < 6h of samples                                                            |
-| `sawtooth`             | ≥ 3 ramped drops (≥ 25 % from the running peak) in 24h — GC/workload cycle |
+| Class                  | Rule (summarised)                                                              |
+| ---------------------- | ------------------------------------------------------------------------------ |
+| `insufficient-history` | < 6h of samples                                                                |
+| `sawtooth`             | ≥ 3 ramped drops (≥ 25 % from the running peak) in 24h — GC/workload cycle     |
 | `possible-leak`        | Theil–Sen slope ≥ 16 MB/h with confidence ≥ 0.7 **and** ≥ 1.4× its own 24h p50 |
-| `workload-driven`      | p95/p50 ≥ 1.8 without a confident trend                                    |
-| `elevated-plateau`     | ≥ 1.3× the lagged 7-day baseline while flat — **high is not a leak**       |
-| `stable`               | everything else                                                            |
+| `workload-driven`      | p95/p50 ≥ 1.8 without a confident trend                                        |
+| `elevated-plateau`     | ≥ 1.3× the lagged 7-day baseline while flat — **high is not a leak**           |
+| `stable`               | everything else                                                                |
 
 Views also carry current, 24h p50/p95, lagged 7d baseline, Δ1h/6h/24h, the
 robust trend (bytes/hour with confidence), threads, honest uptime (from
@@ -121,10 +121,10 @@ Dedicated card fed from the existing log stream — no extra polling:
 
 Two low-frequency pollers extend the existing Arr integrations (read-only):
 
-- *stack* (5 min): queue (+warnings/failures), blocklist size, history total,
+- _stack_ (5 min): queue (+warnings/failures), blocklist size, history total,
   DB size proxy (latest scheduled backup), uptime, version, 24h
   grabs/imports/failures, RSS-sync and search activity from the command journal.
-- *routing* (10 min): download clients (protocol, priority, enabled), delay
+- _routing_ (10 min): download clients (protocol, priority, enabled), delay
   profile preferred protocol, and a 24h grab/import/failure aggregate per
   client with success rate and a **primary** badge (lowest priority among
   enabled clients).
@@ -138,7 +138,7 @@ Reads `/sys/class/thermal/thermal_zone*` (readable inside the container) once
 per minute. Spike levels: 90 / 95 / 100 °C with 5 °C recovery hysteresis. At a
 crossing a **correlation snapshot** is captured — timestamp, temperature,
 host load, DUMB CPU, top DUMB services by CPU, InfiniDysk repair active — plus
-a recovery marker. Snapshots are correlation *display*; no causality is
+a recovery marker. Snapshots are correlation _display_; no causality is
 claimed and nothing is sent to Telegram/Discord.
 
 ## Combined incident timeline
@@ -159,21 +159,21 @@ move with `DUMB:latest`.
 
 ## API
 
-| Endpoint                        | Purpose                                                       |
-| ------------------------------- | ------------------------------------------------------------- |
-| `GET /api/observability`        | full snapshot (cgroup, services, InfiniDysk, Arrs, routing, thermal, versions) |
-| `GET /api/observability/history?hours=` | cgroup history across tiers + in-memory thermal series |
-| `GET /api/observability/timeline?hours=&kinds=&service=&limit=` | merged timeline |
-| SSE `observability` event       | signature-diffed live updates (replayed on connect)           |
+| Endpoint                                                        | Purpose                                                                        |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `GET /api/observability`                                        | full snapshot (cgroup, services, InfiniDysk, Arrs, routing, thermal, versions) |
+| `GET /api/observability/history?hours=`                         | cgroup history across tiers + in-memory thermal series                         |
+| `GET /api/observability/timeline?hours=&kinds=&service=&limit=` | merged timeline                                                                |
+| SSE `observability` event                                       | signature-diffed live updates (replayed on connect)                            |
 
 ## Storage & retention (migration v10)
 
-| Table                 | Retention | Notes                                  |
-| --------------------- | --------- | -------------------------------------- |
-| `cgroup_samples`      | 26h       | 1/minute, fixed-width rows             |
-| `cgroup_samples_5m`   | 7d        | avg/max per bucket, idempotent upserts |
-| `cgroup_samples_30m`  | 30d       | avg/max per bucket                     |
-| `observability_events`| 30d       | append-only + 20 000-row hard cap      |
+| Table                  | Retention | Notes                                  |
+| ---------------------- | --------- | -------------------------------------- |
+| `cgroup_samples`       | 26h       | 1/minute, fixed-width rows             |
+| `cgroup_samples_5m`    | 7d        | avg/max per bucket, idempotent upserts |
+| `cgroup_samples_30m`   | 30d       | avg/max per bucket                     |
+| `observability_events` | 30d       | append-only + 20 000-row hard cap      |
 
 Steady-state growth is bounded (same shape as `runtime_samples`). The timeline
 replaces nothing: `service_events` (activity) and incidents keep working as

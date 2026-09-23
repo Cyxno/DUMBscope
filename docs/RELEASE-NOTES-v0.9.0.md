@@ -6,8 +6,8 @@ correlation. No new alerts exist: external incident detection/correlation/
 Telegram (Hermes) keeps its exclusive role, and DUMBscope's own notification
 engine keeps serving the incident classes it already owned — nothing doubled.
 
-New page: **Observability** (Monitor section). New overview widget: *DUMB
-observability*. Migration **v10** (additive).
+New page: **Observability** (Monitor section). New overview widget: _DUMB
+observability_. Migration **v10** (additive).
 
 ## DUMB cgroup memory analysis (spec §3)
 
@@ -46,7 +46,7 @@ Guarantees that matter in production:
 
 - **A high but flat process is never a leak** (`elevated plateau`): the
   level-blind rules use trend evidence (Theil–Sen ≥ 16 MB/h at ≥ 0.7
-  confidence *and* ≥ 1.4× the own 24h p50) — not the absolute level. A 1.28 GB
+  confidence _and_ ≥ 1.4× the own 24h p50) — not the absolute level. A 1.28 GB
   Sonarr against a 1.25 GB baseline reads
   `1.28 GB | baseline 1.25 GB | +2% | stable plateau`.
 - **Sawtooth/GC cycles are their own class**: ≥ 3 ramped drops (≥ 25 %) in
@@ -65,7 +65,7 @@ which DUMBscope deliberately lacks — they render as "—".
 Fed entirely by the **existing** `/ws/logs` stream (zero extra polling) plus
 the existing mount monitor and metrics:
 
-- repair starts (1h/24h) with an *repair active* state (start within 15 min);
+- repair starts (1h/24h) with an _repair active_ state (start within 15 min);
 - **per-file repair loops**: counts 1h/24h, last error, last event and
   recurrence (distinct UTC days) — repeated repairs of the same media file
   become directly visible;
@@ -114,8 +114,8 @@ is explicitly labelled — it does **not** automatically follow `DUMB:latest`.
 ## UI (spec §12)
 
 No redesign: dark mode, tokens, components and mobile behaviour unchanged.
-Additions: the Observability page (Monitor nav), the compact *DUMB
-observability* overview widget (orderable/hideable like every dashboard
+Additions: the Observability page (Monitor nav), the compact _DUMB
+observability_ overview widget (orderable/hideable like every dashboard
 widget), and a memory-baseline block in the service drawer. All charts reuse
 the existing AreaChart/Sparkline components; the page is responsive
 (grid-cols-1 → sm/lg/xl).

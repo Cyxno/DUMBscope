@@ -64,6 +64,15 @@ logs, system, movies, subtitles, mobile).
   Unknown services appear as generic nodes; nothing is hardcoded to one layout.
 - **Services** — auto-discovered from DUMB: health, run state, CPU/RAM,
   restart statistics, deep-dive drawer, card & compact views, search.
+- **Observability** — DUMB cgroup v2 memory breakdown with rate-based
+  interpretation (soft-limit reclaim, hard-limit hits, pressure, OOM — high
+  memory alone is never a problem), per-service memory classification
+  (stable / elevated plateau / workload-driven / sawtooth / possible leak)
+  with 24h p50/p95 baselines, deltas and baseline-shift detection, InfiniDysk
+  repair-loop and 430-article aggregation, Sonarr/Radarr stack facts,
+  download-routing statistics (Decypharr vs InfiniDysk, primary badge,
+  preferred protocols), thermal spike correlation and a combined incident
+  timeline. See [docs/OBSERVABILITY.md](docs/OBSERVABILITY.md).
 - **Library** — unified read-only browser: Sonarr TV, Radarr movies, Bazarr
   subtitles; missing/upgrades/queue intelligence; per-item drawers (seasons,
   episodes, quality, subtitle coverage); media-flow correlation
@@ -113,7 +122,7 @@ Compact matrix (full table with per-service support levels and evidence in
 | DUMB Frontend / DUMB API                                                                                    | Full                         | —                                       | Real tested     |
 | Sonarr · Radarr · Bazarr                                                                                    | Full                         | Library browsers, subtitles, media flow | Real tested     |
 | Prowlarr · Plex · Seerr · Tautulli                                                                          | Full + deep health poller    | —                                       | Real tested     |
-| Decypharr · InfiniDysk                                                                                      | Full + mount/memory findings | —                                       | Real tested     |
+| Decypharr · InfiniDysk                                                                                      | Full + deep observability    | Repair loops, 430s, routing, GC limit   | Real tested     |
 | Jellyfin · Emby · Lidarr · Whisparr · AltMount · CLI Debrid · Zurg · rclone · Traefik · Authelia · and more | Full generic monitoring      | Not yet implemented                     | Contract tested |
 
 Multi-instance services (Sonarr Default + "Sonarr Anime", Radarr 4K, …) are
@@ -279,6 +288,11 @@ Environment variables:
 | `DUMBSCOPE_CONFIG_DIR`    | `/config`            | config location                                                        |
 | `DUMBSCOPE_SETUP_CODE`    | —                    | pre-set setup code instead of the random one                           |
 | `DUMBSCOPE_MOUNTS`        | —                    | optional JSON list of mount targets for Reliability monitoring         |
+| `DUMBSCOPE_DUMB_CGROUP_PATH` | —               | read-only mounted cgroup v2 dir of the DUMB container (Observability)  |
+| `DUMBSCOPE_DUMB_CGROUP_PARENT` | —              | parent dir of container cgroups; the id resolves via Prometheus below  |
+| `DUMBSCOPE_DUMB_CONTAINER_ID` | —               | explicit DUMB container id (64 hex) under the parent above             |
+| `DUMBSCOPE_DUMB_CONTAINER_NAME` | `DUMB`       | container name for the Prometheus id lookup / fallback queries         |
+| `DUMBSCOPE_PROMETHEUS_URL`  | —                    | Prometheus base URL — cadvisor fallback for the cgroup memory picture  |
 
 Reliability mount monitoring is **opt-in and configurable** — define the mount
 roots and symlink roots you care about and toggle mount/memory monitoring in
@@ -352,7 +366,7 @@ everything down afterwards. No running QA containers or production data are
 required. CI runs lint, typecheck, unit and e2e plus a Docker smoke test.
 
 Deeper docs: [architecture](docs/architecture.md) ·
-[reliability](docs/RELIABILITY.md) · [media correlation](docs/MEDIA-CORRELATION.md) ·
+[reliability](docs/RELIABILITY.md) · [observability](docs/OBSERVABILITY.md) · [media correlation](docs/MEDIA-CORRELATION.md) ·
 [remediation](docs/REMEDIATION.md) · [customization](docs/CUSTOMIZATION.md) ·
 [compatibility](docs/COMPATIBILITY.md) · [ADR log](docs/adr.md)
 

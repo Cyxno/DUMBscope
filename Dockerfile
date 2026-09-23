@@ -42,8 +42,12 @@ ENV NODE_ENV=production \
 EXPOSE 8091
 VOLUME ["/config"]
 
+# Liveness only: "is the process/event loop answering?" Docker restarts on
+# failure, so this must never depend on the database or DUMB connectivity.
+# Readiness (db + scheduler + hub) is exposed separately at
+# /api/health/ready for reverse proxies and orchestrators.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
-	CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 8091) + '/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+	CMD node -e "fetch('http://127.0.0.1:' + (process.env.PORT || 8091) + '/api/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
 
 ENTRYPOINT ["/sbin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]
 CMD ["node", "build/index.js"]

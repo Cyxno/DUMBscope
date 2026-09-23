@@ -27,6 +27,7 @@ import { getDb } from '../src/lib/server/database/db';
 import { MemoryAnomalyTracker } from '../src/lib/server/reliability/memory';
 import { fsProbeWorkerStats } from '../src/lib/server/reliability/fsprobe';
 import { detectRestartStorms, ANOMALY_TUNING } from '../src/lib/server/reliability/anomalies';
+import { RuntimeMonitor } from '../src/lib/server/runtime/monitor';
 import type { MetricsSnapshot } from '$lib/types';
 
 const HOUR = 3_600_000;
@@ -313,5 +314,92 @@ describe('worker counters and restart storms', () => {
 		expect(hits).toHaveLength(1);
 		expect(hits[0]!.identity).toBe('radarr');
 		expect(hits[0]!.summary).toContain('7 restarts');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Scheduler watchdogs (v0.8.1): stale housekeeping + stuck reconciliation
+// ---------------------------------------------------------------------------
+
+describe('runtime watchdogs', () => {
+	function makeMonitor(_nowFn: () => number, providers: Record<string, unknown>) {
+		const findings: { fingerprint: string; summary: string }[] = [];
+		const resolved: { fingerprint: string; message: string }[] = [];
+		const monitor = new RuntimeMonitor({
+			onFinding: (f: { fingerprint: string; summary: string }) => findings.push(f),
+			onResolve: (fp: string, message: string) => resolved.push({ fingerprint: fp, message })
+		});
+		monitor.setProviders({
+			sseClients: () => 0,
+			reconDurationMs: () => null,
+			probeDurationMs: () => null,
+			jobsActive: () => 0,
+			reconWorkersActive: () => 0,
+			housekeepingHeartbeatMs: () => (providers as { hb?: number | null }).hb ?? null,
+			schedulerStarted: () => (providers as { started?: boolean }).started === true,
+			reconciliationRun: () =>
+				(providers as { run?: { running: boolean; startedAt: number | null } }).run ?? {
+					running: false,
+					startedAt: null
+				},
+			...providers
+		});
+		return { monitor, findings, resolved };
+	}
+
+	it('opens self:housekeeping after sustained heartbeat staleness and resolves on recovery', () => {
+		let hb: number | null = 5_000;
+		const { monitor, findings, resolved } = makeMonitor(() => now, {
+			started: true,
+			get hb() {
+				return hb;
+			}
+		});
+		monitor.sample();
+		monitor.sample();
+		expect(findings.some((f) => f.fingerprint === 'self:housekeeping')).toBe(false);
+
+		// The heartbeat goes silent (two consecutive stale samples = 30s apart).
+		hb = 90_000;
+		monitor.sample();
+		monitor.sample();
+		expect(findings.some((f) => f.fingerprint === 'self:housekeeping')).toBe(true);
+
+		// A single fresh sample does not resolve (hysteresis)…
+		hb = 2_000;
+		monitor.sample();
+		expect(resolved.some((r) => r.fingerprint === 'self:housekeeping')).toBe(false);
+		// …but sustained freshness does.
+		monitor.sample();
+		expect(resolved.some((r) => r.fingerprint === 'self:housekeeping')).toBe(true);
+	});
+
+	it('opens self:recon-stuck only beyond the expected maximum duration', () => {
+		let run: { running: boolean; startedAt: number | null } = {
+			running: true,
+			startedAt: Date.now() - 5 * 60_000
+		};
+		const { monitor, findings, resolved } = makeMonitor(() => now, {
+			started: true,
+			hb: 1_000,
+			get run() {
+				return run;
+			}
+		});
+		// 5 minutes in: within expectations, no finding.
+		monitor.sample();
+		monitor.sample();
+		expect(findings.some((f) => f.fingerprint === 'self:recon-stuck')).toBe(false);
+
+		// 16 minutes in: stuck beyond the ~15 min worst-case cycle.
+		run = { running: true, startedAt: Date.now() - 16 * 60_000 };
+		monitor.sample();
+		monitor.sample();
+		expect(findings.some((f) => f.fingerprint === 'self:recon-stuck')).toBe(true);
+
+		// Cycle finishes: the finding resolves.
+		run = { running: false, startedAt: null };
+		monitor.sample();
+		expect(resolved.some((r) => r.fingerprint === 'self:recon-stuck')).toBe(true);
 	});
 });

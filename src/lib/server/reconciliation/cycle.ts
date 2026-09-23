@@ -241,6 +241,8 @@ export class ReconciliationRunner {
 	private lastSuccess: ReconciliationRunInfo | null = null;
 	/** Bounded history of recent attempts (newest last). */
 	private history: ReconciliationRunInfo[] = [];
+	/** Epoch ms the in-flight cycle started (null when idle) — stuck-run watchdog. */
+	private currentRunStartedAt: number | null = null;
 
 	constructor(private readonly options: ReconciliationRunnerOptions) {}
 
@@ -250,6 +252,8 @@ export class ReconciliationRunner {
 		lastSuccess: ReconciliationRunInfo | null;
 		nextRunAt: number | null;
 		running: boolean;
+		/** Epoch ms the in-flight cycle started (null when idle). */
+		currentRunStartedAt: number | null;
 		recent: ReconciliationRunInfo[];
 	} {
 		const timer = this.timer;
@@ -263,6 +267,7 @@ export class ReconciliationRunner {
 			lastSuccess: this.lastSuccess,
 			nextRunAt,
 			running: this.running,
+			currentRunStartedAt: this.currentRunStartedAt,
 			recent: this.history.slice(-10)
 		};
 	}
@@ -302,6 +307,7 @@ export class ReconciliationRunner {
 			return;
 		}
 		this.running = true;
+		this.currentRunStartedAt = Date.now();
 		const startedAt = Date.now();
 		try {
 			let targets: ArrTarget[];
@@ -521,6 +527,7 @@ export class ReconciliationRunner {
 			});
 		} finally {
 			this.running = false;
+			this.currentRunStartedAt = null;
 		}
 	}
 

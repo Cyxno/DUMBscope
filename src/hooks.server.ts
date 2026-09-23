@@ -8,10 +8,23 @@ import { SESSION_COOKIE, getSessionUser, hasAdminUser } from '$lib/server/securi
 import { getSettings } from '$lib/server/config/settings';
 import { issueSetupCode, setupNeeded } from '$lib/server/setup';
 import { getDb } from '$lib/server/database/db';
+import { getHub } from '$lib/server/telemetry/hub';
 import { installShutdownHooks } from '$lib/server/lifecycle';
 import { ensureIntegrationsUp } from '$lib/server/integrations/register';
 
 installShutdownHooks();
+
+// Boot the telemetry hub eagerly with the server module (once per process):
+// monitoring must start with the process, not with the first UI request —
+// an instance nobody has opened yet still has to watch the stack. The
+// liveness probe itself stays side-effect-free; this module-level boot runs
+// on the first request of any kind, as it did before v0.8.1 via
+// /api/health calling getHub().
+try {
+	getHub();
+} catch (err) {
+	console.error('[dumbscope] hub startup failed:', err instanceof Error ? err.message : err);
+}
 
 const PUBLIC_PATHS = new Set<string>([
 	'/api/health',
@@ -71,7 +84,8 @@ export const handle: Handle = async ({ event, resolve }) => {
 		issueSetupCode();
 	}
 
-	const isPublic = PUBLIC_PATHS.has(pathname) || pathname === '/api/health';
+	const isPublic =
+		PUBLIC_PATHS.has(pathname) || pathname === '/api/health' || pathname.startsWith('/api/health/');
 
 	let response: Response;
 	if (pathname.startsWith('/api/')) {

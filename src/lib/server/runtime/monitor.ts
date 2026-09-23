@@ -48,7 +48,27 @@ export interface RuntimeProviders {
 	jobsActive: () => number;
 	/** Active reconciliation prober workers (0/1). */
 	reconWorkersActive: () => number;
+	/** Ms since the last completed housekeeping tick (null = never ticked). */
+	housekeepingHeartbeatMs: () => number | null;
+	/** True once the hub's schedulers have been armed. */
+	schedulerStarted: () => boolean;
+	/** In-flight reconciliation cycle, if any (stuck-run watchdog). */
+	reconciliationRun: () => { running: boolean; startedAt: number | null };
 }
+
+/** Watchdog tuning: independent monitor beats watching scheduler heartbeats. */
+export const WATCHDOG_TUNING = {
+	/** Housekeeping interval is 10s; stale beyond this many ms is a finding. */
+	housekeepingStaleMs: 60_000,
+	/** Consecutive stale samples (15s each) before the finding opens. */
+	staleConsecutive: 2,
+	/** Consecutive fresh samples before a watchdog finding resolves. */
+	cleanConsecutive: 2,
+	/** A reconciliation cycle running longer than this is stuck. The worst
+	 *  legitimate cycle is ~13 min (400 series, 8s per-request deadline, 8
+	 *  concurrent fetchers), so 15 min is safely beyond expected. */
+	reconciliationStuckMs: 15 * 60_000
+} as const;
 
 export class RuntimeMonitor {
 	private timer: NodeJS.Timeout | null = null;
@@ -58,15 +78,27 @@ export class RuntimeMonitor {
 	private lastSample: RuntimeSample | null = null;
 	private readonly lag = new LagMonitor();
 	private anomaly: SelfAnomalyMonitor;
+	private options: {
+		onFinding: (finding: SelfAnomalyFinding) => void;
+		onResolve: (fingerprint: string, message: string) => void;
+	};
 	private providers: RuntimeProviders | null = null;
 	/** Cumulative counters for the panel (workers spawned/timed out etc). */
 	readonly startedAt = Date.now();
+	// Watchdog hysteresis state (independent monitor beats): housekeeping
+	// staleness and a reconciliation cycle stuck past its expected maximum.
+	private housekeepingStaleStreak = 0;
+	private housekeepingCleanStreak = 0;
+	private housekeepingOpen = false;
+	private reconStuckStreak = 0;
+	private reconStuckOpen = false;
 
 	constructor(options: {
 		onFinding: (finding: SelfAnomalyFinding) => void;
 		onResolve: (fingerprint: string, message: string) => void;
 		enabled?: () => boolean;
 	}) {
+		this.options = options;
 		this.anomaly = new SelfAnomalyMonitor({
 			onFinding: options.onFinding,
 			onResolve: options.onResolve,
@@ -148,7 +180,111 @@ export class RuntimeMonitor {
 		} catch {
 			// never disturb the sampler
 		}
+		// Scheduler watchdogs: this sampler is an INDEPENDENT interval (15s) —
+		// it keeps beating even when the hub's housekeeper or the
+		// reconciliation runner wedges, which is exactly what it watches for.
+		try {
+			this.runWatchdogs(now);
+		} catch {
+			// never disturb the sampler
+		}
 		return sample;
+	}
+
+	/**
+	 * Two watchdog findings, both with hysteresis (N consecutive stale
+	 * samples before opening, M consecutive clean before resolving) and both
+	 * through the ONE incident engine:
+	 * - `self:housekeeping` — the 10s housekeeping heartbeat went silent.
+	 * - `self:recon-stuck` — a reconciliation cycle exceeded its expected
+	 *   maximum duration and is presumed wedged.
+	 * Scope note (documented, not an accident): a TOTAL process death or a
+	 * fully starved event loop stops this sampler too — that failure class is
+	 * supervised externally by the Docker liveness HEALTHCHECK.
+	 */
+	private runWatchdogs(now: number): void {
+		const providers = this.providers;
+		if (!providers) return;
+
+		// --- housekeeping heartbeat -----------------------------------------
+		const hb = providers.housekeepingHeartbeatMs();
+		const stale =
+			providers.schedulerStarted() && hb !== null && hb > WATCHDOG_TUNING.housekeepingStaleMs;
+		if (stale) {
+			this.housekeepingStaleStreak++;
+			this.housekeepingCleanStreak = 0;
+			if (
+				this.housekeepingStaleStreak >= WATCHDOG_TUNING.staleConsecutive &&
+				!this.housekeepingOpen
+			) {
+				this.housekeepingOpen = true;
+				this.options.onFinding({
+					fingerprint: 'self:housekeeping',
+					severity: 'critical',
+					title: 'DUMBscope housekeeping loop has stalled',
+					summary: `No housekeeping tick for ${Math.round(hb / 1000)}s (interval 10s) — incident evaluation, safety net and telemetry freshness checks are not running`,
+					evidence: `heartbeat age=${Math.round(hb / 1000)}s · observed stale on ${this.housekeepingStaleStreak} consecutive samples`
+				});
+			} else if (this.housekeepingOpen) {
+				this.options.onFinding({
+					fingerprint: 'self:housekeeping',
+					severity: 'critical',
+					title: 'DUMBscope housekeeping loop has stalled',
+					summary: `No housekeeping tick for ${Math.round(hb / 1000)}s (interval 10s) — incident evaluation, safety net and telemetry freshness checks are not running`,
+					evidence: `heartbeat age=${Math.round(hb / 1000)}s`
+				});
+			}
+		} else {
+			this.housekeepingStaleStreak = 0;
+			if (
+				this.housekeepingOpen &&
+				++this.housekeepingCleanStreak >= WATCHDOG_TUNING.cleanConsecutive
+			) {
+				this.housekeepingOpen = false;
+				this.housekeepingCleanStreak = 0;
+				this.options.onResolve(
+					'self:housekeeping',
+					`Housekeeping is ticking again (last tick ${hb === null ? 'pending' : `${Math.round(hb / 1000)}s ago`})`
+				);
+			}
+		}
+
+		// --- reconciliation stuck -------------------------------------------
+		const run = providers.reconciliationRun();
+		const stuck =
+			run.running &&
+			run.startedAt !== null &&
+			now - run.startedAt > WATCHDOG_TUNING.reconciliationStuckMs;
+		if (stuck && run.startedAt !== null) {
+			this.reconStuckStreak++;
+			if (this.reconStuckStreak >= WATCHDOG_TUNING.staleConsecutive && !this.reconStuckOpen) {
+				this.reconStuckOpen = true;
+				this.options.onFinding({
+					fingerprint: 'self:recon-stuck',
+					severity: 'warning',
+					title: 'Library reconciliation appears stuck',
+					summary: `The reconciliation cycle has been running for ${Math.round((now - run.startedAt) / 60_000)} min — beyond the expected maximum (~15 min). New cycles cannot start until it finishes.`,
+					evidence: `startedAt=${new Date(run.startedAt).toISOString()} · runtime=${Math.round((now - run.startedAt) / 1000)}s`
+				});
+			} else if (this.reconStuckOpen) {
+				this.options.onFinding({
+					fingerprint: 'self:recon-stuck',
+					severity: 'warning',
+					title: 'Library reconciliation appears stuck',
+					summary: `The reconciliation cycle has been running for ${Math.round((now - run.startedAt) / 60_000)} min — beyond the expected maximum (~15 min). New cycles cannot start until it finishes.`,
+					evidence: `runtime=${Math.round((now - run.startedAt) / 1000)}s`
+				});
+			}
+		} else {
+			this.reconStuckStreak = 0;
+			if (this.reconStuckOpen) {
+				this.reconStuckOpen = false;
+				this.options.onResolve(
+					'self:recon-stuck',
+					'Reconciliation finished or restarted within the expected duration'
+				);
+			}
+		}
 	}
 
 	latest(): RuntimeSample | null {

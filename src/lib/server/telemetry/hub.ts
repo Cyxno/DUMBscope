@@ -201,7 +201,7 @@ export class Hub {
 	private remediation: RemediationManager;
 	private lastMediaSignature: string | null = null;
 
-	// ----- infrastructure ----------------------------------------------------
+	// -- infrastructure ----------------------------------------------------
 	private client: DumbClient | null = null;
 	private streams: DumbStream[] = [];
 	private engine: IncidentEngine;
@@ -209,6 +209,12 @@ export class Hub {
 	private subscribers = new Map<number, Subscriber>();
 	private nextSubscriberId = 1;
 	private housekeeper: ReturnType<typeof setInterval> | null = null;
+	/** One-shot first housekeeping tick shortly after start (readiness). */
+	private startupTick: ReturnType<typeof setTimeout> | null = null;
+	/** Heartbeat for the readiness probe and the stale-scheduler watchdog. */
+	private lastHousekeepAt: number | null = null;
+	/** Epoch ms of the last (re)start; null before the first start(). */
+	private startedAt: number | null = null;
 	/** True once the REST bootstrap applied the service registry. Status
 	 *  frames are only evaluated after this: pre-discovery frames would
 	 *  create services under slug keys that discovery never matches again. */
@@ -331,7 +337,13 @@ export class Hub {
 			reconDurationMs: () => this.reconciliation.observability().lastAttempt?.durationMs ?? null,
 			probeDurationMs: () => this.mountMonitor.stats().lastRoundMs,
 			jobsActive: () => this.scheduledJobCount(),
-			reconWorkersActive: () => 0 // the prober worker is idle-cycled; tracked via fsprobe counters
+			reconWorkersActive: () => 0, // the prober worker is idle-cycled; tracked via fsprobe counters
+			housekeepingHeartbeatMs: () => this.housekeepingHeartbeatMs,
+			schedulerStarted: () => this.isStarted,
+			reconciliationRun: () => {
+				const o = this.reconciliation.observability();
+				return { running: o.running, startedAt: o.currentRunStartedAt };
+			}
 		});
 	}
 
@@ -341,6 +353,7 @@ export class Hub {
 	 */
 	start(): void {
 		this.stopped = false;
+		this.startedAt = Date.now();
 		const settings = getSettings();
 		this.configured = Boolean(settings.dumbUrl);
 		this.stopStreams();
@@ -349,6 +362,7 @@ export class Hub {
 
 		if (!settings.dumbUrl) {
 			this.publishConnection();
+			this.ensureSchedulers();
 			return;
 		}
 
@@ -361,10 +375,28 @@ export class Hub {
 		void this.bootstrapRest();
 
 		this.startStreams(settings);
-		this.housekeeper ??= setInterval(() => this.housekeep(), 10_000);
+		this.ensureSchedulers();
 		this.reconciliation.start();
-		this.runtimeMonitor.start();
 		this.publishConnection();
+	}
+
+	/**
+	 * Housekeeping + self-monitoring schedulers run regardless of whether a
+	 * DUMB gateway is configured: an unconfigured instance must still be
+	 * *ready* (it serves the setup wizard) and still watches itself. The first
+	 * housekeeping tick fires shortly after start so readiness converges in
+	 * ~1s instead of one full interval.
+	 */
+	private ensureSchedulers(): void {
+		if (!this.startupTick) {
+			this.startupTick = setTimeout(() => {
+				this.startupTick = null;
+				this.housekeep();
+			}, 1_000);
+			this.startupTick.unref?.();
+		}
+		this.housekeeper ??= setInterval(() => this.housekeep(), 10_000);
+		this.runtimeMonitor.start();
 	}
 
 	private startStreams(settings: { statusInterval: number; metricsInterval: number }): void {
@@ -414,6 +446,11 @@ export class Hub {
 		this.stopStreams();
 		this.reconciliation.stop();
 		this.runtimeMonitor.stop();
+		this.lastHousekeepAt = null;
+		if (this.startupTick) {
+			clearTimeout(this.startupTick);
+			this.startupTick = null;
+		}
 		if (this.housekeeper) {
 			clearInterval(this.housekeeper);
 			this.housekeeper = null;
@@ -732,6 +769,9 @@ export class Hub {
 	housekeep(): void {
 		if (this.stopped) return;
 		const now = Date.now();
+		// Heartbeat: readiness probe and the stale-scheduler watchdog both read
+		// this — it is stamped on every completed tick, configured or not.
+		this.lastHousekeepAt = now;
 		// Keep the notification engine's outbound deep links in sync with settings.
 		setPublicBaseUrl(getSettings().notificationPublicBaseUrl);
 		const connection = this.tracker.snapshot();
@@ -845,7 +885,10 @@ export class Hub {
 						),
 						dumbConfigured: this.configured,
 						metricsFresh:
-							this.metricsLatest !== null && now - this.metricsLatest.receivedAt < 5 * 60_000
+							this.metricsLatest !== null && now - this.metricsLatest.receivedAt < 5 * 60_000,
+						// Pre-v0.8 rows get one hour to be re-adopted by a detector
+						// before the legacy retirement rule applies.
+						legacyGraceElapsed: now - this.bootAt > 60 * 60_000
 					});
 				});
 			} catch {
@@ -1115,6 +1158,21 @@ export class Hub {
 
 	get isConfigured(): boolean {
 		return this.configured;
+	}
+
+	/** True once start() has armed the schedulers at least once. */
+	get isStarted(): boolean {
+		return this.startedAt !== null;
+	}
+
+	/** Ms since the last completed housekeeping tick (null before the first). */
+	get housekeepingHeartbeatMs(): number | null {
+		return this.lastHousekeepAt === null ? null : Date.now() - this.lastHousekeepAt;
+	}
+
+	/** Epoch ms of the process boot as observed by the hub's monitor. */
+	get bootAt(): number {
+		return this.runtimeMonitor.startedAt;
 	}
 
 	/** Load persisted active incidents so restarts can't orphan them. */

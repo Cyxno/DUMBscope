@@ -8,6 +8,15 @@ import type { ActivityEvent, IntegrationConfig } from '../types';
 import type { PollContext, PollerSpec } from '../manager';
 import { ArrAuthError, ArrBaseClient, type ArrQueueSnapshot } from './base';
 import { arrLibraryPollers, arrBrowsePollers } from '../media';
+import {
+	ARR_OBS_TUNING,
+	buildRoutingObservability,
+	isDownloadFailure,
+	parseDownloadClients,
+	parsePreferredProtocol,
+	type ArrHistoryRecord
+} from './routing';
+import { recordTimelineThrottled } from '../../reliability/timeline';
 
 interface ClientWithKind extends ArrBaseClient {
 	kind: 'sonarr' | 'radarr';
@@ -206,6 +215,164 @@ function arrPollers(integrationId: string): PollerSpec[] {
 				const client = makeClient(ctx.config, ctx.apiKey);
 				const status = await client.status();
 				ctx.cache.set('status', status, 2 * 60 * 60_000);
+			}
+		},
+		{
+			name: 'stack-observability',
+			intervalMs: 5 * 60_000,
+			run: async (ctx: PollContext) => {
+				const client = makeClient(ctx.config, ctx.apiKey);
+				const started = Date.now();
+				// Blocklist + history totals via pageSize=1 counts.
+				const blocklistSize = await client.countTotal('/api/v3/blocklist').catch(() => null);
+				const historyEvents = await client.countTotal('/api/v3/history').catch(() => null);
+				// DB size proxy: the instance's own scheduled backups carry the
+				// compressed DB size — good enough for a trend, honest as a proxy.
+				let dbBytes: number | null = null;
+				try {
+					const backups = await client.request<{ size?: number }[]>('/api/v3/system/backup');
+					dbBytes = Array.isArray(backups) && backups[0]?.size ? Number(backups[0]!.size) : null;
+				} catch {
+					dbBytes = null;
+				}
+				// Uptime: system/status startime (ms epoch) when the instance exposes it.
+				let uptimeSeconds: number | null = null;
+				let version: string | null = null;
+				try {
+					const st = await client.request<{ version?: string; starttime?: string }>(
+						'/api/v3/system/status'
+					);
+					version = st.version ?? null;
+					const startedAt = st.starttime ? Date.parse(st.starttime) : NaN;
+					uptimeSeconds = Number.isFinite(startedAt)
+						? Math.max(0, Math.round((Date.now() - startedAt) / 1000))
+						: null;
+				} catch {
+					version = null;
+				}
+				// Recent history window for the 24h counts + failure timeline.
+				const recent = (await client
+					.request<{ records?: Record<string, unknown>[] }>('/api/v3/history', {
+						page: '1',
+						pageSize: String(ARR_OBS_TUNING.maxHistoryRecords),
+						sortKey: 'date',
+						sortDirection: 'descending'
+					})
+					.catch(() => ({ records: [] as Record<string, unknown>[] }))) as {
+					records?: Record<string, unknown>[];
+				};
+				const records = (recent.records ?? []) as ArrHistoryRecord[];
+				const cutoff = Date.now() - 24 * 3_600_000;
+				const inWindow = records.filter((r) => {
+					const at = r.date ? Date.parse(r.date) : NaN;
+					return Number.isFinite(at) && at >= cutoff;
+				});
+				// RSS-sync + search activity from the command journal.
+				let rssLastAt: number | null = null;
+				let rssCount24h = 0;
+				const searchNames: string[] = [];
+				try {
+					const commands = await client.request<
+						{ commandName?: string; lastExecutionTime?: string; status?: string }[]
+					>('/api/v3/command', {
+						page: '1',
+						pageSize: '100',
+						sortKey: 'lastExecutionTime',
+						sortDirection: 'descending'
+					});
+					const dayCutoff = Date.now() - 24 * 3_600_000;
+					for (const c of commands ?? []) {
+						const name = c.commandName ?? '';
+						const at = c.lastExecutionTime ? Date.parse(c.lastExecutionTime) : NaN;
+						if (/rss/i.test(name) && Number.isFinite(at)) {
+							rssCount24h++;
+							if (rssLastAt === null || at > rssLastAt) rssLastAt = at;
+						}
+						if (
+							/search/i.test(name) &&
+							Number.isFinite(at) &&
+							at >= dayCutoff &&
+							searchNames.length < 8
+						) {
+							searchNames.push(name);
+						}
+					}
+				} catch {
+					// command journal optional
+				}
+				// Queue counts come from the existing queue poller's cache.
+				const cachedQueue = ctx.cache.get<{ total: number; warnings: number; failures: number }>(
+					'queue'
+				);
+				const payload = {
+					type: ctx.config.type as 'sonarr' | 'radarr',
+					integrationId: ctx.config.id,
+					connected: true,
+					unavailableReason: null,
+					version,
+					uptimeSeconds,
+					dbBytes,
+					queue: cachedQueue?.total ?? null,
+					queueWarnings: cachedQueue?.warnings ?? null,
+					queueFailures: cachedQueue?.failures ?? null,
+					blocklistSize,
+					historyEvents,
+					imports24h: inWindow.filter((r) =>
+						[
+							'downloadFolderImported',
+							'episodeImported',
+							'movieImported',
+							'trackImported'
+						].includes(r.eventType ?? '')
+					).length,
+					failures24h: inWindow.filter((r) => isDownloadFailure(r)).length,
+					grabs24h: inWindow.filter((r) => r.eventType === 'grabbed').length,
+					rssSync: { lastAt: rssLastAt, count24h: rssCount24h },
+					searches: { count24h: searchNames.length, recent: searchNames },
+					fetchedAt: Date.now()
+				};
+				ctx.cache.set('stack-observability', payload, 10 * 60_000);
+				ctx.ok(version ?? undefined, Date.now() - started);
+				// Download failures are timeline facts (Observability page).
+				for (const r of inWindow.slice(0, 20)) {
+					if (!isDownloadFailure(r)) continue;
+					recordTimelineThrottled({
+						at: r.date ? Date.parse(r.date) : Date.now(),
+						kind: 'download-failure',
+						service: ctx.config.type,
+						severity: 'warning',
+						title: `Download failed: ${r.data?.downloadClient ?? 'unknown client'}`,
+						detail: typeof r.data?.reason === 'string' ? r.data.reason : null
+					});
+				}
+			}
+		},
+		{
+			name: 'routing',
+			intervalMs: 10 * 60_000,
+			run: async (ctx: PollContext) => {
+				const client = makeClient(ctx.config, ctx.apiKey);
+				const started = Date.now();
+				const rawClients = await client
+					.request<unknown[]>('/api/v3/downloadclient')
+					.catch(() => [] as unknown[]);
+				const rawProfiles = await client.request<unknown>('/api/v3/delayprofile').catch(() => null);
+				const history = await client
+					.request<{ records?: Record<string, unknown>[] }>('/api/v3/history', {
+						page: '1',
+						pageSize: String(ARR_OBS_TUNING.maxHistoryRecords),
+						sortKey: 'date',
+						sortDirection: 'descending'
+					})
+					.catch(() => ({ records: [] as Record<string, unknown>[] }));
+				const view = buildRoutingObservability(
+					parseDownloadClients(Array.isArray(rawClients) ? rawClients : []),
+					(history.records ?? []) as ArrHistoryRecord[],
+					parsePreferredProtocol(rawProfiles),
+					ARR_OBS_TUNING.windowHours
+				);
+				ctx.cache.set('routing', view, 15 * 60_000);
+				ctx.ok(undefined, Date.now() - started);
 			}
 		}
 	];

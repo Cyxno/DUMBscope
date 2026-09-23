@@ -65,8 +65,11 @@ services:
 ```
 
 When `DUMBSCOPE_DUMB_CGROUP_PARENT` is set without an id, DUMBscope resolves
-the DUMB container id through Prometheus/cadvisor's `id` label (cached 10
-minutes), so the path survives DUMB container recreations. Without any cgroup
+the DUMB container id through Prometheus/cadvisor's `name` label (cached 10
+minutes) — this depends on your cadvisor build exposing that label. Where it
+does not (older cadvisor releases), set `DUMBSCOPE_DUMB_CONTAINER_ID`
+explicitly and update it when the DUMB container is recreated; until then the
+cgroup panel degrades honestly to "unavailable". Without any cgroup
 source, the section degrades to an honest "unavailable" and the optional
 Prometheus fallback (`container_memory_*`, `container_oom_events_total`) is
 used if `DUMBSCOPE_PROMETHEUS_URL` is configured.

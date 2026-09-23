@@ -37,9 +37,11 @@ boundaries; behavior verified against the documented API bundled with DUMB.
 Everything it shows derives from DUMB's own API (process state, health probes,
 restart counters, metrics, logs).
 
-**Consequence:** No container-restart/stop features in v0.1 — a deliberate
-read-only posture. Host-level Docker integration would be an explicit,
-opt-in future feature.
+**Consequence:** DUMBscope holds no container-level control plane: it can
+never restart, stop or inspect other containers. The narrow in-app action
+surface (docs/ACTIONS.md) targets services through DUMB's own API, not the
+Docker daemon. Host-level Docker integration would be an explicit, opt-in
+future feature.
 
 ## ADR-004 — Backend proxy; DUMB credentials never reach the browser
 

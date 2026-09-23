@@ -242,6 +242,22 @@ First start: open `http://HOST:8091`, copy the **setup code** from
 `docker logs dumbscope`, follow the wizard (DUMB URL → credentials → admin
 account).
 
+## Health checks
+
+Two unauthenticated endpoints describe DUMBscope's own state — neither fails
+because your DUMB gateway is offline:
+
+| Endpoint                | Meaning                                                                                                                                                                                              | Fails when                                                                                      |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| `GET /api/health/live`  | **Liveness** — the process is up and its event loop answers. The image's Docker `HEALTHCHECK` probes this; Docker restarts the container when it stops answering.                                    | Never, short of a wedged/stopped process.                                                       |
+| `GET /api/health/ready` | **Readiness** — DUMBscope can serve requests: SQLite answers, the telemetry hub is initialized, and the 10 s housekeeping heartbeat is fresh (≤45 s). Returns 503 with the failing checks otherwise. | Its own dependencies are broken — never DUMB connectivity (reported informationally as `dumb`). |
+
+Self-observed regressions (housekeeping stall, a reconciliation cycle stuck
+past its expected maximum, memory/FD/worker growth) surface as incidents in
+the app. What self-monitoring fundamentally **cannot** see is total process
+death or a fully starved event loop — that is exactly what the Docker
+liveness probe (and `restart: unless-stopped`) supervises externally.
+
 ## Configuration
 
 Runtime state lives under `/config`:

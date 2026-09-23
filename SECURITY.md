@@ -61,8 +61,11 @@ The design assumes:
   framework-hashed ones, no third-party code.
 - Input validation everywhere (Zod schemas + URL validation). The DUMB URL
   must be http(s), may not embed credentials or query strings.
-- `/api/health` is the only unauthenticated endpoint and exposes nothing but
-  `status`/`dumb`/`version`.
+- `/api/health` (+ `/live`, `/ready`) are the only unauthenticated
+  endpoints. They expose operational booleans only — liveness, readiness
+  checks (database/hub/scheduler heartbeat), the DUMB connection state class
+  and the app version. No configuration, credentials, service inventory or
+  incident data.
 - No `eval`, no shell endpoints, no filesystem browsing, no arbitrary command
   execution anywhere in the codebase.
 
@@ -108,3 +111,7 @@ version/commit. Do not open public issues for exploitable findings.
   not against an attacker with root on the host — nothing can.
 - The setup code and session store live in one process; there is no cluster
   mode by design (see ADR-001).
+- The readiness endpoint (`/api/health/ready`) reveals _whether_ internal
+  subsystems (SQLite, scheduler) are healthy to anyone who can reach the
+  port; it exposes no further detail. Restrict network access if that
+  matters for your environment.

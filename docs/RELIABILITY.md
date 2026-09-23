@@ -372,6 +372,34 @@ Clearing is a soft archive — history stays queryable, and the header counts
 
 ---
 
+## Scheduler watchdogs (v0.8.1)
+
+DUMBscope's self-monitoring includes two independent watchdogs, both running
+on the runtime sampler's own 15 s interval — deliberately separate from the
+things they watch:
+
+- **Housekeeping heartbeat** (`self:housekeeping`, critical): the hub stamps
+  a heartbeat on every completed 10 s housekeeping tick. If the heartbeat is
+  older than 60 s for two consecutive samples, the finding opens (incident
+  evaluation, safety net and telemetry-freshness checks are not running). It
+  resolves after two consecutive fresh samples.
+- **Stuck reconciliation** (`self:recon-stuck`, warning): a reconciliation
+  cycle running longer than 15 minutes — safely beyond the worst legitimate
+  cycle (~13 min: 400-series cap, 8 s per-request deadline, 8 concurrent
+  fetchers) — is presumed wedged and reported; new cycles cannot start until
+  it finishes. It resolves when the cycle finishes or restarts.
+
+**External supervision boundary (documented, not an accident):** total
+process death and a fully starved event loop stop this sampler along with
+everything else — no in-process monitor can observe them. That failure class
+is supervised externally by the Docker liveness `HEALTHCHECK`
+(`GET /api/health/live`, process/event-loop answering only) plus the
+container restart policy. Readiness (`GET /api/health/ready`: SQLite +
+initialized hub + fresh housekeeping heartbeat) is exposed for reverse
+proxies and orchestrators, and never fails merely because DUMB is offline.
+
+---
+
 ## Database & retention
 
 - Migration 5 (additive): `memory_samples(process, at, rss_bytes)` with

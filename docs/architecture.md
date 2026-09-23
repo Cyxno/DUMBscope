@@ -115,6 +115,29 @@ src/
   Each requires an admin session, same-origin and confirmation, and is
   audit-first; everything else stays read-only.
 
+## Health semantics
+
+Two public probes with distinct contracts (v0.8.1):
+
+- `GET /api/health/live` — **liveness**. The handler running _is_ the check:
+  process up, event loop answering. It consults no dependency, so a broken
+  database or an offline DUMB can never fail it. The Docker `HEALTHCHECK`
+  uses this endpoint; Docker restarts the container when it stops answering.
+- `GET /api/health/ready` — **readiness**. Answers "can this instance serve
+  requests": SQLite answers a trivial query, the telemetry hub is
+  initialized, and the housekeeping heartbeat (10 s interval) is fresh
+  within 45 s. Returns 503 with the failing checks. DUMB connectivity is
+  reported informationally and never gates readiness — a DUMB outage must
+  degrade what DUMBscope _shows_, not whether it serves.
+
+The hub stamps a heartbeat on every housekeeping tick; the runtime sampler
+(15 s, independent interval) watches that heartbeat and the reconciliation
+runner's in-flight cycle, opening `self:housekeeping` / `self:recon-stuck`
+incidents through the normal engine with hysteresis. What this watchdog
+layer cannot observe is total process death or a fully starved event loop —
+by then its own timer is dead too; that failure class belongs to external
+supervision (the liveness HEALTHCHECK + container restart policy).
+
 ## Database schema
 
 `settings`, `users`, `sessions`, `incidents` (lifecycle metadata:

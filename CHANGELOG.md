@@ -4,6 +4,22 @@ All notable changes to DUMBscope are documented here. Releases follow
 [semver](https://semver.org/); database migrations are additive, versioned and
 run transactionally on startup.
 
+## [0.9.5] — 2026-09-25
+
+Release-pipeline fix. v0.9.4's image was built, pushed and is content-correct
+(verified against the registry: all three tags resolve to the same digest,
+both platforms present), but its post-publish verification step failed
+instantly with an unattributable exit-255 and the release stopped there —
+per policy the exact tag stays as-is and a new patch version ships instead.
+
+### Fixed
+
+- **Post-publish verification is failure-attributable** — every registry
+  inspection and runtime assertion now emits an explicit marker and a
+  `::error::` annotation before failing, and the step no longer hard-depends
+  on the build step's digest output (an absent digest downgrades to a
+  registry-only verification with a warning instead of an opaque abort).
+
 ## [0.9.4] — 2026-09-25
 
 Rate-based repeat-acquisition detection: severity now follows the request rate

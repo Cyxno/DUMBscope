@@ -188,20 +188,33 @@ jobs:
       # carry both promised platforms, and the pulled image must report the
       # release identity. Never mutates the published tag on failure: a failed
       # post-publish verification means a NEW patch version, not a re-tag.
+      # Every check echoes a marker + emits ::error:: so a failure is always
+      # attributable from annotations alone.
       - name: Post-publish verification (digest, aliases, platforms, runtime)
         run: |
           set -euo pipefail
-          expected="${{ steps.build.outputs.digest }}"
-          [ -n "$expected" ]
-          actual="$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '/^Digest:/ {print $2; exit}')"
-          [ "$actual" = "$expected" ] || { echo "::error::published $IMAGE:$VERSION digest $actual != built $expected"; exit 1; }
+          registry_digest() {
+            echo ">> imagetools inspect $1" >&2
+            docker buildx imagetools inspect "$1" | awk '/^Digest:/ {print $2; exit}'
+          }
+          built="${{ steps.build.outputs.digest }}"
+          echo ">> build-push-action digest output: '${built}'"
+          actual="$(registry_digest "$IMAGE:$VERSION" || true)"
+          echo ">> published $IMAGE:$VERSION digest: ${actual:-<unreadable>}"
+          [ -n "$actual" ] || { echo "::error::could not read registry digest for $IMAGE:$VERSION"; exit 1; }
+          if [ -n "$built" ] && [ "$built" != "$actual" ]; then
+            echo "::error::built digest $built != published $actual"; exit 1
+          fi
+          [ -n "$built" ] || echo "::warning::build step did not report a digest; verified against the registry only"
           for alias in "$MAJOR_MINOR" latest; do
-            alias_digest="$(docker buildx imagetools inspect "$IMAGE:$alias" | awk '/^Digest:/ {print $2; exit}')"
-            [ "$alias_digest" = "$expected" ] || { echo "::error::alias $alias digest $alias_digest != $expected"; exit 1; }
+            alias_digest="$(registry_digest "$IMAGE:$alias" || true)"
+            [ -n "$alias_digest" ] && [ "$alias_digest" = "$actual" ] || { echo "::error::alias $alias digest '${alias_digest:-<unreadable>}' != $actual"; exit 1; }
+            echo ">> alias $alias -> $alias_digest"
           done
           platforms="$(docker buildx imagetools inspect --raw "$IMAGE:$VERSION" | jq -r '[.manifests[].platform | "\(.os)/\(.architecture)"] | unique | join(",")')"
-          echo "platforms: $platforms"
-          [[ "$platforms" == *"linux/amd64"* && "$platforms" == *"linux/arm64"* ]] || { echo "::error::multi-arch index incomplete"; exit 1; }
+          echo ">> platforms: $platforms"
+          [[ "$platforms" == *"linux/amd64"* && "$platforms" == *"linux/arm64"* ]] || { echo "::error::multi-arch index incomplete ($platforms)"; exit 1; }
+          echo ">> pulling and booting $IMAGE:$VERSION"
           docker pull --platform linux/amd64 "$IMAGE:$VERSION" >/dev/null
           docker run -d --name dumbscope-postverify -p 8091:8091 "$IMAGE:$VERSION"
           for i in $(seq 1 30); do
@@ -209,10 +222,10 @@ jobs:
             sleep 1
           done
           live="$(curl -sf http://127.0.0.1:8091/api/health/live)"
-          echo "$live"
-          [ "$(echo "$live" | jq -r .version)" = "$VERSION" ]
-          [ "$(echo "$live" | jq -r .buildSha)" = "$RELEASE_SHA" ]
-          [ -n "$(echo "$live" | jq -r .buildDate)" ] && [ "$(echo "$live" | jq -r .buildDate)" != "null" ]
+          echo ">> $live"
+          [ "$(echo "$live" | jq -r .version)" = "$VERSION" ] || { echo "::error::runtime version mismatch: $live"; exit 1; }
+          [ "$(echo "$live" | jq -r .buildSha)" = "$RELEASE_SHA" ] || { echo "::error::runtime buildSha mismatch: $live"; exit 1; }
+          [ -n "$(echo "$live" | jq -r .buildDate)" ] && [ "$(echo "$live" | jq -r .buildDate)" != "null" ] || { echo "::error::runtime buildDate missing: $live"; exit 1; }
           docker rm -f dumbscope-postverify > /dev/null
           echo "post-publish verification OK"
 

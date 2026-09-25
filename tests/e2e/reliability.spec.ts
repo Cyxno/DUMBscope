@@ -60,10 +60,15 @@ test('mount health: broken symlink warning opens on System and resolves after re
 	});
 	await expect(page.getByText(/links \d+ sampled/)).toBeVisible({ timeout: 30_000 });
 
-	// Break 11 of 12 links (stale debrid targets — the production failure).
+	// Break 11 of 12 links: stale targets INSIDE the walked mount root (a
+	// genuinely missing file, e.g. a removed release). Targets behind a mount
+	// this container lacks (the old `/nonexistent/debrid/...` fixture) are
+	// classified unresolvable — never broken — by the symlink namespace guard
+	// (unit-tested in symlink-namespace-guard.test.ts), so the systemic
+	// broken-symlink signal needs conclusive broken links here.
 	const real = path.join(fixture.mountRoot, 'real.txt');
 	rewriteLinks(fixture.mountRoot, (show, link) =>
-		show * 6 + link < 11 ? `/nonexistent/debrid/${show}/${link}` : real
+		show * 6 + link < 11 ? path.join(fixture.mountRoot, 'gone', `${show}-${link}.mkv`) : real
 	);
 
 	// The System card shows the broken sample…

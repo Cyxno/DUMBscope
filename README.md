@@ -376,6 +376,17 @@ Issues and PRs are welcome. Keep the priorities in order: **data correctness →
 security → stability → UI/UX → simplicity → performance**. Ask before adding
 dependencies, and keep the one-container constraint.
 
+**Release rule:** a version tag is only cut from `main`, and only while every
+`fix/*`, `hardening/*` and `release-blocker/*` branch is fully merged into
+`main` — or explicitly listed in
+[`.github/release-allowlist`](.github/release-allowlist) as intentionally
+unmerged. The release workflow enforces this via
+`scripts/check-release-branches.sh` _before_ building or publishing anything;
+a failure lists the blocking branch, its missing commit SHAs and subjects.
+This exists because v0.9.1/v0.9.2 shipped without the hardening branch merged
+and regressed production. The build-provenance check (the image must report
+the exact release commit) runs after it and is unaffected.
+
 ## License
 
 [MIT](LICENSE)

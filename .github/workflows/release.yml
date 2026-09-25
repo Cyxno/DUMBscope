@@ -12,7 +12,19 @@ jobs:
   release:
     runs-on: ubuntu-latest
     steps:
+      # Full history + all remote branches: the release guard needs to compare
+      # the fix/hardening branches against main before anything is published.
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Release guard (v0.9.3): fail before ANY build/publish step while a
+      # fix/*, hardening/* or release-blocker/* branch carries commits that
+      # never reached main — that is how v0.9.1/v0.9.2 shipped without the
+      # symlink namespace-guard and regressed production. Additive: the
+      # provenance check below stays in place.
+      - name: Release guard — fix/hardening branches merged or allowlisted
+        run: scripts/check-release-branches.sh
 
       - name: Gather build metadata
         id: meta

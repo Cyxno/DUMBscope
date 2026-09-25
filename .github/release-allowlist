@@ -1,0 +1,13 @@
+# Release-guard allowlist — branches listed here do NOT block a release even
+# though they carry commits not reachable from main. Use this ONLY for
+# intentionally parked or experimental work that is knowingly kept out of
+# releases. Anything that should ship eventually must be merged instead.
+#
+# Format: one branch name or glob per line (matched without the origin/
+# prefix, e.g. `experiment/*`), '#' starts a comment. Every active entry
+# must carry a date and a reason so the list stays auditable.
+#
+# Example (remove the leading '#' to activate):
+#   experiment/ui-rewrite   # 2026-01-15: parked design spike, never releases
+#
+# Current active entries: none.

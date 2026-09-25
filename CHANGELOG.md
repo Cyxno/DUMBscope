@@ -4,6 +4,20 @@ All notable changes to DUMBscope are documented here. Releases follow
 [semver](https://semver.org/); database migrations are additive, versioned and
 run transactionally on startup.
 
+## [0.9.6] — 2026-09-25
+
+Release-pipeline resilience. v0.9.5's image verified and published correctly,
+but the follow-up manifest step died on a second registry read: `docker
+buildx imagetools` calls intermittently fail on hosted runners (transient
+registry/network errors surface as buildx exit 255).
+
+### Fixed
+
+- **Registry reads in the release pipeline retry with backoff** (4 attempts),
+  and the post-publish verification exports the verified digest as a step
+  output — the release manifest now consumes that authoritative digest
+  instead of issuing a second, flake-exposed registry call.
+
 ## [0.9.5] — 2026-09-25
 
 Release-pipeline fix. v0.9.4's image was built, pushed and is content-correct

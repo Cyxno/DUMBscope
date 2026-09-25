@@ -1,6 +1,6 @@
 {
 	"name": "dumbscope",
-	"version": "0.9.5",
+	"version": "0.9.6",
 	"private": true,
 	"description": "Observability control center for the DUMB media stack",
 	"license": "MIT",

@@ -189,13 +189,24 @@ jobs:
       # release identity. Never mutates the published tag on failure: a failed
       # post-publish verification means a NEW patch version, not a re-tag.
       # Every check echoes a marker + emits ::error:: so a failure is always
-      # attributable from annotations alone.
+      # attributable from annotations alone. Registry reads retry with
+      # backoff: imagetools calls intermittently fail (transient registry /
+      # network errors surface as buildx exit 255).
       - name: Post-publish verification (digest, aliases, platforms, runtime)
+        id: verify
         run: |
           set -euo pipefail
           registry_digest() {
-            echo ">> imagetools inspect $1" >&2
-            docker buildx imagetools inspect "$1" | awk '/^Digest:/ {print $2; exit}'
+            local ref="$1" attempt digest
+            for attempt in 1 2 3 4; do
+              echo ">> imagetools inspect $ref (attempt $attempt)" >&2
+              if digest="$(docker buildx imagetools inspect "$ref" | awk '/^Digest:/ {print $2; exit}')" && [ -n "$digest" ]; then
+                echo "$digest"
+                return 0
+              fi
+              sleep 2
+            done
+            return 1
           }
           built="${{ steps.build.outputs.digest }}"
           echo ">> build-push-action digest output: '${built}'"
@@ -227,23 +238,26 @@ jobs:
           [ "$(echo "$live" | jq -r .buildSha)" = "$RELEASE_SHA" ] || { echo "::error::runtime buildSha mismatch: $live"; exit 1; }
           [ -n "$(echo "$live" | jq -r .buildDate)" ] && [ "$(echo "$live" | jq -r .buildDate)" != "null" ] || { echo "::error::runtime buildDate missing: $live"; exit 1; }
           docker rm -f dumbscope-postverify > /dev/null
+          echo "digest=$actual" >> "$GITHUB_OUTPUT"
           echo "post-publish verification OK"
 
       # Machine-readable answer to "what exact source produced this image?" —
-      # generated from workflow-authoritative values only.
+      # generated from workflow-authoritative values only: the digest comes
+      # from the post-publish verification (registry-read, retried), never
+      # from a second registry call here.
       - name: Write release manifest
         run: |
           set -euo pipefail
-          registry_digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '/^Digest:/ {print $2; exit}')"
-          [ -n "$registry_digest" ]
+          digest="${{ steps.verify.outputs.digest }}"
+          [ -n "$digest" ] || { echo "::error::no verified digest from post-publish verification"; exit 1; }
           jq -n \
             --arg version "$VERSION" --arg tag "${GITHUB_REF_NAME}" --arg commit "$RELEASE_SHA" \
-            --arg buildDate "$RELEASE_DATE" --arg image "$IMAGE:$VERSION" --arg digest "$registry_digest" \
+            --arg buildDate "$RELEASE_DATE" --arg image "$IMAGE:$VERSION" --arg digest "$digest" \
             --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             '{version: $version, tag: $tag, commit: $commit, buildDate: $buildDate, image: $image, digest: $digest, generatedAt: $generatedAt}' \
             > release-manifest.json
           jq -e '.version == $v and .tag == $t and .digest == $d' \
-            --arg v "$VERSION" --arg t "${GITHUB_REF_NAME}" --arg d "$registry_digest" \
+            --arg v "$VERSION" --arg t "${GITHUB_REF_NAME}" --arg d "$digest" \
             release-manifest.json >/dev/null
           cat release-manifest.json
 

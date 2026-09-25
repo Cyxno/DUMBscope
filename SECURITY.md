@@ -97,6 +97,25 @@ DUMBscope makes outbound connections to exactly one host: your DUMB gateway.
 Log content passes through DUMB's own redaction before DUMBscope receives it,
 and DUMBscope does not persist log contents at all.
 
+### Public health payloads (deliberate disclosure)
+
+Three endpoints are intentionally unauthenticated so Docker orchestration and
+reverse proxies can probe them on a trusted LAN. Their payloads are minimal by
+design; anything richer requires a session (see `/api/diagnostics`):
+
+- `/api/health/live` — `{status, version, buildSha, buildDate}`: process
+  liveness plus build identity. No topology, no state.
+- `/api/health/ready` — `{status, checks: {db, hub, scheduler}, …}`: coarse
+  booleans only, plus the informational DUMB connection state
+  (`connected`/`disconnected`/…). Never reveals credentials, URLs or service
+  detail.
+- `/api/health` — `{status, dumb, version}`: legacy aggregate used by older
+  monitors.
+
+The redacted diagnostics bundle (`/api/diagnostics`) — session counts, DB
+schema version, stack topology — sits behind the same authentication as every
+other authenticated API.
+
 ## Reporting a vulnerability
 
 Please open a GitHub security advisory (Security → Report a vulnerability) or

@@ -10,5 +10,11 @@ import type { RequestHandler } from './$types';
  * restarts the container when it stops answering.
  */
 export const GET: RequestHandler = async () => {
-	return jsonOk({ status: 'live', version: appInfo().version });
+	const info = appInfo();
+	return jsonOk({
+		status: 'live',
+		version: info.version,
+		buildSha: info.buildSha,
+		buildDate: info.buildDate
+	});
 };

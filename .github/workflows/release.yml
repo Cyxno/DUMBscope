@@ -48,9 +48,31 @@ jobs:
           labels: ${{ steps.image.outputs.labels }}
           build-args: |
             BUILD_SHA=${{ steps.meta.outputs.sha }}
-            BUILD_TIME=${{ steps.meta.outputs.time }}
+            BUILD_DATE=${{ steps.meta.outputs.time }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # Provenance verification: the same Dockerfile/args path must yield an
+      # image whose runtime reports EXACTLY the release commit. Built locally
+      # (single-arch, --load) purely as a wiring check for the pushed tags.
+      - name: Verify image reports the release commit
+        run: |
+          docker build --load \
+            --build-arg BUILD_SHA=${{ steps.meta.outputs.sha }} \
+            --build-arg BUILD_DATE=${{ steps.meta.outputs.time }} \
+            -t dumbscope:provenance .
+          docker run -d --name dumbscope-provenance -p 8091:8091 dumbscope:provenance
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8091/api/health/live >/dev/null 2>&1 && break
+            sleep 1
+          done
+          reported="$(curl -sf http://127.0.0.1:8091/api/health/live | jq -r '.buildSha')"
+          docker rm -f dumbscope-provenance > /dev/null
+          if [ "$reported" != "${{ steps.meta.outputs.sha }}" ]; then
+            echo "::error::image reports buildSha='$reported' but release commit is '${{ steps.meta.outputs.sha }}'"
+            exit 1
+          fi
+          echo "image provenance OK: buildSha=$reported"
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2

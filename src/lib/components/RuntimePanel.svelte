@@ -76,6 +76,25 @@
 	let payload = $state<RuntimePayload | null>(null);
 	let timer: ReturnType<typeof setInterval> | null = null;
 
+	// Build provenance from /api/health/live: version + short SHA visible,
+	// full SHA + build date in the tooltip. Fetched once; absent metadata
+	// (local/dev builds) renders version only.
+	interface BuildInfo {
+		version: string;
+		buildSha: string | null;
+		buildDate: string | null;
+	}
+	let build = $state<BuildInfo | null>(null);
+
+	async function loadBuild() {
+		try {
+			const response = await fetch('/api/health/live');
+			if (response.ok) build = (await response.json()) as BuildInfo;
+		} catch {
+			// line simply stays hidden
+		}
+	}
+
 	async function load() {
 		try {
 			const response = await fetch('/api/runtime?hours=26');
@@ -86,6 +105,7 @@
 	}
 
 	onMount(() => {
+		void loadBuild();
 		void load();
 		timer = setInterval(() => void load(), 15_000);
 		return () => {
@@ -352,5 +372,16 @@
 				</p>
 			</div>
 		</div>
+	{/if}
+	{#if build}
+		<p
+			class="tnum mt-3 border-t border-border-subtle pt-2 text-[10px] text-text-faint"
+			title={build.buildSha
+				? `build ${build.buildSha}${build.buildDate ? ` · ${build.buildDate}` : ''}`
+				: undefined}
+		>
+			DUMBscope {build.version}{#if build.buildSha}
+				· build <span class="font-mono">{build.buildSha.slice(0, 7)}</span>{/if}
+		</p>
 	{/if}
 </Card>

@@ -4,7 +4,7 @@
  * dependencies (database, hub, scheduler heartbeat) and explicitly never
  * fails because DUMB itself is offline.
  */
-import { describe, expect, it, beforeEach, afterAll } from 'vitest';
+import { describe, expect, it, beforeEach, afterAll, afterEach, vi } from 'vitest';
 import { GET as live } from '../src/routes/api/health/live/+server';
 import { GET as ready } from '../src/routes/api/health/ready/+server';
 import { getHub, resetHub } from '../src/lib/server/telemetry/hub';
@@ -16,6 +16,65 @@ describe('GET /api/health/live', () => {
 		const body = (await response.json()) as { status: string; version: string };
 		expect(body.status).toBe('live');
 		expect(body.version).toBeTruthy();
+	});
+});
+
+describe('GET /api/health/live build provenance', () => {
+	const PREV = {
+		BUILD_SHA: process.env.BUILD_SHA,
+		BUILD_DATE: process.env.BUILD_DATE,
+		BUILD_TIME: process.env.BUILD_TIME
+	};
+
+	afterEach(() => {
+		for (const [key, value] of Object.entries(PREV)) {
+			if (value === undefined) delete process.env[key as keyof typeof PREV];
+			else process.env[key as keyof typeof PREV] = value;
+		}
+		vi.resetModules();
+	});
+
+	async function liveBody() {
+		vi.resetModules();
+		const { GET } = await import('../src/routes/api/health/live/+server');
+		const response = await GET({} as never);
+		expect(response.status).toBe(200);
+		return (await response.json()) as {
+			status: string;
+			version: string;
+			buildSha: string | null;
+			buildDate: string | null;
+		};
+	}
+
+	it('reports build metadata when injected (production image path)', async () => {
+		process.env.BUILD_SHA = 'abcdef1234567890abcdef1234567890abcdef12';
+		process.env.BUILD_DATE = '2026-09-25T00:00:00Z';
+		const body = await liveBody();
+		expect(body.status).toBe('live');
+		expect(body.version).toBeTruthy();
+		expect(body.buildSha).toBe('abcdef1234567890abcdef1234567890abcdef12');
+		expect(body.buildDate).toBe('2026-09-25T00:00:00Z');
+	});
+
+	it('degrades to null (not a placeholder) when metadata is absent (local/dev path)', async () => {
+		delete process.env.BUILD_SHA;
+		delete process.env.BUILD_DATE;
+		delete process.env.BUILD_TIME;
+		const body = await liveBody();
+		expect(body.status).toBe('live');
+		expect(body.version).toBeTruthy();
+		expect(body.buildSha).toBeNull();
+		expect(body.buildDate).toBeNull();
+	});
+
+	it('accepts the legacy BUILD_TIME name and normalizes placeholder SHAs to null', async () => {
+		process.env.BUILD_SHA = 'unknown';
+		delete process.env.BUILD_DATE;
+		process.env.BUILD_TIME = '2026-01-01T00:00:00Z';
+		const body = await liveBody();
+		expect(body.buildSha).toBeNull();
+		expect(body.buildDate).toBe('2026-01-01T00:00:00Z');
 	});
 });
 

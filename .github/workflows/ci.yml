@@ -86,10 +86,13 @@ jobs:
           context: .
           load: true
           tags: dumbscope:smoke
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+            BUILD_DATE=${{ github.event.head_commit.timestamp }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Smoke test (boots, setup code printed, health OK)
+      - name: Smoke test (boots, setup code printed, health + provenance OK)
         run: |
           docker run -d --name dumbscope-smoke -p 8091:8091 dumbscope:smoke
           for i in $(seq 1 30); do
@@ -98,4 +101,10 @@ jobs:
           done
           curl -sf http://127.0.0.1:8091/api/health | grep -q '"status":"ok"'
           docker logs dumbscope-smoke 2>&1 | grep -q 'Setup code'
+          # The container must report the exact commit it was built from.
+          reported="$(curl -sf http://127.0.0.1:8091/api/health/live | jq -r '.buildSha')"
+          if [ "$reported" != "${{ github.sha }}" ]; then
+            echo "::error::smoke image reports buildSha='$reported', expected '${{ github.sha }}'"
+            exit 1
+          fi
           docker rm -f dumbscope-smoke > /dev/null

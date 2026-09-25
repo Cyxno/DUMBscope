@@ -573,6 +573,8 @@ export interface IntegrationActionView {
 export interface AppInfo {
 	version: string;
 	buildSha: string | null;
+	buildDate: string | null;
+	/** Legacy alias of buildDate (pre-0.9.2 env name, kept for consumers). */
 	buildTime: string | null;
 	nodeVersion: string;
 }

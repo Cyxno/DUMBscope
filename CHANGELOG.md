@@ -4,6 +4,22 @@ All notable changes to DUMBscope are documented here. Releases follow
 [semver](https://semver.org/); database migrations are additive, versioned and
 run transactionally on startup.
 
+## [0.9.2] — 2026-09-25
+
+Build provenance: every production image now reports exactly which commit it
+was built from.
+
+### Added
+
+- **Build provenance at runtime** — the image build injects `BUILD_SHA` and
+  `BUILD_DATE` (the release commit and UTC build timestamp; no git inside the
+  image). `/api/health/live` returns them next to `version`
+  (`{"status":"live","version":"0.9.2","buildSha":"…","buildDate":"…"}`), and
+  System → DUMBscope Runtime shows `version · build <short sha>` with the full
+  SHA and build date in the tooltip. Local/dev builds without build args
+  degrade gracefully to version-only. CI's docker smoke test and the release
+  pipeline now verify the reported SHA matches the built commit.
+
 ## [0.9.0] — 2026-09-23
 
 Deep DUMB-stack observability: DUMBscope becomes the central technical

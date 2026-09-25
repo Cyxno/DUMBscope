@@ -67,6 +67,7 @@ describe('release branch guard', () => {
 		const { status, output } = runGuard(dir);
 		expect(status).toBe(0);
 		expect(output).toContain('hardening/merged (fully merged');
+		expect(output).toContain('release-guard summary: scanned=1 merged=1 ignored=0 blocking=0');
 		expect(output).toContain('release-guard: PASS');
 	});
 
@@ -155,5 +156,76 @@ describe('release branch guard', () => {
 		const { status, output } = runGuard(dir, { RELEASE_GUARD_BASELINE: 'origin/nonexistent' });
 		expect(status).toBe(2);
 		expect(output).toContain('SETUP ERROR');
+	});
+
+	it('blocks an unmerged fix branch and an unmerged release-blocker branch', () => {
+		const dir = initRepo();
+		const base = git(dir, 'rev-parse', 'HEAD').trim();
+
+		git(dir, 'checkout', '-b', 'fix/urgent', '--quiet');
+		const fixSha = commit(dir, 'fix: unmerged fix');
+		git(dir, 'checkout', 'main', '--quiet');
+
+		git(dir, 'checkout', '-b', 'release-blocker/ops', '--quiet');
+		const blockerSha = commit(dir, 'release-blocker: unmerged ops fix');
+		git(dir, 'checkout', 'main', '--quiet');
+
+		publishAsOrigin(dir, 'fix/urgent', fixSha);
+		publishAsOrigin(dir, 'release-blocker/ops', blockerSha);
+		publishAsOrigin(dir, 'main', base);
+
+		const { status, output } = runGuard(dir);
+		expect(status).toBe(1);
+		expect(output).toContain('Branch: fix/urgent');
+		expect(output).toContain('Branch: release-blocker/ops');
+		expect(output).toContain('release-guard summary: scanned=2 merged=0 ignored=0 blocking=2');
+	});
+
+	it('ignores irrelevant feature branches entirely', () => {
+		const dir = initRepo();
+		const base = git(dir, 'rev-parse', 'HEAD').trim();
+		git(dir, 'checkout', '-b', 'feature/ui-rewrite', '--quiet');
+		const sha = commit(dir, 'feature: speculative work, out of scope for the guard');
+		git(dir, 'checkout', 'main', '--quiet');
+		publishAsOrigin(dir, 'feature/ui-rewrite', sha);
+		publishAsOrigin(dir, 'main', base);
+
+		const { status, output } = runGuard(dir);
+		expect(status).toBe(0);
+		expect(output).not.toContain('feature/ui-rewrite');
+		expect(output).toContain('release-guard summary: scanned=0 merged=0 ignored=0 blocking=0');
+		expect(output).toContain('release-guard: PASS');
+	});
+
+	it('rejects a malformed allowlist entry instead of broadening the match', () => {
+		const dir = initRepo();
+		const base = git(dir, 'rev-parse', 'HEAD').trim();
+		git(dir, 'checkout', '-b', 'fix/parked', '--quiet');
+		const sha = commit(dir, 'fix: parked');
+		git(dir, 'checkout', 'main', '--quiet');
+		publishAsOrigin(dir, 'fix/parked', sha);
+		publishAsOrigin(dir, 'main', base);
+
+		const allowlist = path.join(os.tmpdir(), `allowlist-${fileSeq++}.txt`);
+		// Whitespace would word-split into unrelated patterns — must be rejected.
+		fs.writeFileSync(allowlist, 'fix/parked extra-token\n');
+
+		const { status, output } = runGuard(dir, { RELEASE_GUARD_ALLOWLIST: allowlist });
+		expect(status).toBe(2);
+		expect(output).toContain('malformed allowlist entry');
+	});
+
+	it('fails closed on a shallow clone instead of passing on partial history', () => {
+		const dir = initRepo();
+		const tip = commit(dir, 'hardening: real fix');
+		publishAsOrigin(dir, 'main', tip);
+
+		const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'dumbscope-shallow-'));
+		const shallow = path.join(parent, 'clone');
+		git(parent, 'clone', '--depth', '1', `file://${dir}`, shallow, '--quiet');
+
+		const { status, output } = runGuard(shallow);
+		expect(status).toBe(2);
+		expect(output).toContain('shallow clone cannot judge ancestry');
 	});
 });

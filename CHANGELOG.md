@@ -4,6 +4,31 @@ All notable changes to DUMBscope are documented here. Releases follow
 [semver](https://semver.org/); database migrations are additive, versioned and
 run transactionally on startup.
 
+## [0.9.4] — 2026-09-25
+
+Rate-based repeat-acquisition detection: severity now follows the request rate
+over sliding time windows instead of an absolute count inside a 72 h ledger
+horizon. Release tooling hardening (release-guard robustness, tag/version/
+changelog identity validation, validate→publish split with GHCR immutability
+and post-publish verification, pinned actions) also ships in this release.
+
+### Fixed
+
+- **Repeated-acquisition detector rebuilt (`media-repeat`)** — two grabs hours
+  apart while an earlier request never imported (the classic quality-upgrade
+  shape: 720p superseded by 1080p) no longer open a warning; they stay below
+  the rate thresholds and surface only in the flow's audit state. Tiers now:
+  2 grabs within 1 h → info (audit, likely upgrade); ≥3 within 1 h or ≥4
+  within 3 h → warning; ≥5 within 1 h or ≥6 within 3 h → critical (sustained
+  loop). The verified active-work condition (missing / queued / recent
+  activity) is unchanged, so stale history echoes still resolve on their own.
+  Regression: the 2026-09-25 "Dark Matter S02E06" warning fired on exactly 2
+  grabs 7.2 h apart while the superseded grab sat `grabbed` in the ledger.
+- **e2e fixture vs namespace guard** — the reliability spec's broken-symlink
+  fixture pointed targets outside the walked mount root, which the namespace
+  guard (correctly) classifies unresolvable; stale targets now live inside
+  the reachable tree so the systemic-broken signal is exercised conclusively.
+
 ## [0.9.3] — 2026-09-25
 
 Merge the `hardening/symlink-namespace-guard` fixes into main. v0.9.1/v0.9.2

@@ -151,4 +151,31 @@ describe('incident engine with unresolvable-only samples', () => {
 		const finding = engine.getActive().find((r) => r.fingerprint === fp);
 		expect(finding).toBeUndefined();
 	});
+
+	it('hydration safety net: finding of a removed target resolves as obsolete', () => {
+		const engine = new IncidentEngine({}, () => Date.now());
+		const monitor = makeMonitor();
+		// pre-open the finding (old target still configured at the time)
+		applySample(engine, monitor, {
+			sampled: 24, valid: 0, broken: 24, unreadable: 0, unresolvable: 0,
+			entriesScanned: 400, truncated: false
+		});
+		expect(engine.getActive().some((r) => r.fingerprint === fp && r.status === 'active')).toBe(true);
+
+		// the target is now removed from the monitor list: its fingerprint is
+		// no longer produced, and a restarted process has no identity for it —
+		// exactly the state the hydration safety net must clean up.
+		const known = new Set<string>([
+			Fingerprints.mountUnhealthy(target.path),
+			Fingerprints.symlinksBroken(target.path),
+			Fingerprints.mountUnhealthy('/mnt/debrid/decypharr'),
+			Fingerprints.symlinksBroken('/mnt/vm_storage/symlinks/Movies')
+		]);
+		const retired = engine.resolveMountFindingsExcept(
+			new Set([...known].filter((f) => f !== fp)),
+			Date.now()
+		);
+		expect(retired).toBe(1);
+		expect(engine.getActive().some((r) => r.fingerprint === fp)).toBe(false);
+	});
 });

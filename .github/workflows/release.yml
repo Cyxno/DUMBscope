@@ -70,6 +70,16 @@ jobs:
       - name: Production build
         run: pnpm build
 
+      # E2E belongs in the release gate: the only check that caught the
+      # symlink-guard regression shipped in v0.9.3 was the e2e suite (the
+      # unit suite stayed green — its fixtures had been updated, the e2e
+      # fixture had not).
+      - name: Install Playwright browser
+        run: pnpm exec playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: pnpm e2e
+
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
       - name: Build release image (single-arch, loaded locally)

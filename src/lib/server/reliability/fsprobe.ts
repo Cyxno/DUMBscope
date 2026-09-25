@@ -98,12 +98,40 @@ async function listDir(path, entryBudget, depth, linkSampleCap) {
 	const stride = links.length > linkSampleCap ? Math.floor(links.length / linkSampleCap) : 1;
 	const picked = [];
 	for (let i = 0; i < links.length && picked.length < linkSampleCap; i += stride) picked.push(links[i]);
-	const sample = { sampled: 0, valid: 0, broken: 0, unreadable: 0, entriesScanned: scanned, truncated };
+	const sample = { sampled: 0, valid: 0, broken: 0, unreadable: 0, unresolvable: 0, entriesScanned: scanned, truncated };
 	for (const link of picked) {
 		try { await fsp.lstat(link); } catch { sample.unreadable++; continue; }
+		let conclusive = true;
 		try { await fsp.stat(link); sample.valid++; }
-		catch (err) { if (err && err.code === 'ENOENT') sample.broken++; else sample.unreadable++; }
-		sample.sampled++;
+		catch (err) {
+			if (err && err.code === 'ENOENT') {
+				// Namespace guard: a symlink target behind a mount this container
+				// does not have (the usenet rclone mount lives only inside the DUMB
+				// container) is ENOENT here regardless of the release's health.
+				// If the first missing directory of the target path lies outside
+				// the walked tree, this probe cannot judge the link — count it as
+				// unresolvable instead of broken so healthy libraries never alarm.
+				let target = null;
+				try { target = fs.readlinkSync(link); } catch {}
+				if (target !== null) {
+					const abs = target.startsWith('/') ? target : link.replace(/[^/]*$/, '') + target;
+					const segs = abs.split('/').filter(Boolean);
+					let cur = '';
+					let missingDir = abs;
+					for (const seg of segs) {
+						cur += '/' + seg;
+						if (!fs.existsSync(cur)) { missingDir = cur; break; }
+					}
+					const underWalkRoot = missingDir === path || missingDir.startsWith(path + '/');
+					if (!underWalkRoot && !fs.existsSync(missingDir)) {
+						conclusive = false;
+						sample.unresolvable++;
+					}
+				}
+				if (conclusive) sample.broken++;
+			} else { sample.unreadable++; }
+		}
+		if (conclusive) sample.sampled++;
 	}
 	return { ok: true, latencyMs: ms(t0), entriesScanned: scanned, truncated, sample };
 }

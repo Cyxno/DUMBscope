@@ -197,6 +197,24 @@ export class IncidentEngine {
 	 * (target/monitor/integration) is provably gone — this is NOT a recovery.
 	 * Returns the number of resolved incidents.
 	 */
+	/**
+	 * Resolve mount/symlink findings whose fingerprint is no longer covered by
+	 * any configured monitor target (retired target, renamed path, hydration
+	 * leftover whose identity the new process never knew). Unlike the
+	 * identity-based retire this also catches hydrated rows whose
+	 * affectedServices are empty, which would otherwise stay active forever.
+	 */
+	resolveMountFindingsExcept(knownFingerprints: ReadonlySet<string>, now: number): number {
+		return this.resolveWhere(
+			(incident) =>
+				(incident.fingerprint.startsWith('mount:') ||
+					incident.fingerprint.startsWith('symlinks:')) &&
+				!knownFingerprints.has(incident.fingerprint),
+			() => 'Resolved: monitored mount removed from the configuration',
+			now
+		);
+	}
+
 	resolveWhere(
 		predicate: (incident: Incident) => boolean,
 		reasonFor: (incident: Incident) => string,
@@ -796,7 +814,7 @@ export class IncidentEngine {
 					summary: `${sample.broken} of ${sample.sampled} sampled links point at missing targets — the storage behind this root looks unavailable.${report.target.consumers.length > 0 ? ` May be affected: ${report.target.consumers.join(', ')}.` : ''}`,
 					service: null,
 					identity: path,
-					evidenceMessage: `sampled=${sample.sampled} valid=${sample.valid} broken=${sample.broken} unreadable=${sample.unreadable}`,
+					evidenceMessage: `sampled=${sample.sampled} valid=${sample.valid} broken=${sample.broken} unreadable=${sample.unreadable}${sample.unresolvable ? ` unresolvable=${sample.unresolvable}` : ''}`,
 					source: 'reliability',
 					refreshSummary: true
 				});

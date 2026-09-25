@@ -31,6 +31,7 @@ import { appInfo } from '$lib/shared/app-info';
 import { configDir } from '../database/db';
 import { splitLines, parseLogLine } from '../logs/parse';
 import { IncidentEngine } from '../incidents/engine';
+import { Fingerprints } from '../incidents/fingerprint';
 import { handleIncidentChange, setPublicBaseUrl } from '../notifications/engine';
 import { buildTopology } from '../topology/graph';
 import { onActivity, recordActivity, recentActivity, type ActivityEntry } from './activity';
@@ -1085,6 +1086,16 @@ export class Hub {
 					now
 				);
 			}
+			// Hydration safety net: a mount/symlink finding whose fingerprint no
+			// configured target produces (removed target, renamed path, or an
+			// identity the restarted process never knew) can never see a healthy
+			// round and would stay active forever — retire it as obsolete too.
+			const knownMountFingerprints = new Set<string>();
+			for (const t of targets) {
+				knownMountFingerprints.add(Fingerprints.mountUnhealthy(t.path));
+				knownMountFingerprints.add(Fingerprints.symlinksBroken(t.path));
+			}
+			this.engine.resolveMountFindingsExcept(knownMountFingerprints, now);
 			// Dependency evidence for correlation: mount path → consumer keys.
 			this.engine.setMountConsumerIndex(new Map(targets.map((t) => [t.path, t.consumers])));
 			this.lastMountedPaths = new Set(targets.map((t) => t.path));

@@ -628,6 +628,12 @@ export interface SymlinkSample {
 	broken: number;
 	/** lstat/stat failed in a non-ENOENT way (permissions, I/O, timeout). */
 	unreadable: number;
+	/**
+	 * ENOENT, but this container cannot see the target's mount root (e.g. the
+	 * rclone mount lives in the DUMB container's namespace), so the link could
+	 * not be judged at all. Never counted as broken.
+	 */
+	unresolvable: number;
 	/** How many filesystem entries the bounded listing saw (≤ cap). */
 	entriesScanned: number;
 	/** True when the listing hit its entry cap (sampling from a subset). */

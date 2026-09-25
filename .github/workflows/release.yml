@@ -4,89 +4,228 @@ on:
   push:
     tags: ['v*.*.*']
 
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# The validate job only reads. The publish job (which needs validate) is the
+# only place holding contents:write / packages:write.
 permissions:
-  contents: write
-  packages: write
+  contents: read
 
 jobs:
-  release:
+  validate:
     runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.meta.outputs.version }}
+      major_minor: ${{ steps.meta.outputs.major_minor }}
+      sha: ${{ steps.meta.outputs.sha }}
+      date: ${{ steps.meta.outputs.date }}
+      image: ${{ steps.meta.outputs.image }}
     steps:
       # Full history + all remote branches: the release guard needs to compare
       # the fix/hardening branches against main before anything is published.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
           fetch-depth: 0
 
-      # Release guard (v0.9.3): fail before ANY build/publish step while a
-      # fix/*, hardening/* or release-blocker/* branch carries commits that
-      # never reached main — that is how v0.9.1/v0.9.2 shipped without the
-      # symlink namespace-guard and regressed production. Additive: the
-      # provenance check below stays in place.
+      # Release guard (v0.9.3): fail while a fix/*, hardening/* or
+      # release-blocker/* branch carries commits that never reached main.
       - name: Release guard — fix/hardening branches merged or allowlisted
         run: scripts/check-release-branches.sh
 
-      - name: Gather build metadata
+      # One release, one identity: tag ↔ package.json version ↔ CHANGELOG
+      # entry ↔ mainline ancestry, all before anything is built.
+      - name: Validate release identity (tag ↔ package ↔ changelog ↔ main)
+        run: scripts/validate-release-metadata.sh
+
+      - name: Resolve release identity
         id: meta
         run: |
           echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
-          echo "time=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
+          echo "date=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "$GITHUB_OUTPUT"
           echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          echo "major_minor=$(echo "${GITHUB_REF_NAME#v}" | cut -d. -f1-2)" >> "$GITHUB_OUTPUT"
+          echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
 
-      - uses: docker/setup-buildx-action@v3
+      - uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa # v4
 
-      - uses: docker/login-action@v3
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Typecheck
+        run: pnpm check
+
+      - name: Unit & integration tests
+        run: pnpm test
+
+      - name: Production build
+        run: pnpm build
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      - name: Build release image (single-arch, loaded locally)
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          load: true
+          tags: dumbscope:release-validate
+          build-args: |
+            BUILD_SHA=${{ steps.meta.outputs.sha }}
+            BUILD_DATE=${{ steps.meta.outputs.date }}
+
+      # Smoke: the image must boot, report the exact release identity on
+      # /api/health/live and reach readiness on /api/health/ready.
+      - name: Smoke test (boot, liveness identity, readiness)
+        run: |
+          set -euo pipefail
+          docker run -d --name dumbscope-release-smoke -p 8091:8091 dumbscope:release-validate
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:8091/api/health/live >/dev/null 2>&1 && break
+            sleep 1
+          done
+          live="$(curl -sf http://127.0.0.1:8091/api/health/live)"
+          echo "$live"
+          [ "$(echo "$live" | jq -r .status)" = "live" ]
+          [ "$(echo "$live" | jq -r .version)" = "${{ steps.meta.outputs.version }}" ]
+          [ "$(echo "$live" | jq -r .buildSha)" = "${{ steps.meta.outputs.sha }}" ]
+          [ -n "$(echo "$live" | jq -r .buildDate)" ] && [ "$(echo "$live" | jq -r .buildDate)" != "null" ]
+          ready=0
+          for i in $(seq 1 45); do
+            if curl -sf http://127.0.0.1:8091/api/health/ready | grep -q '"status":"ready"'; then ready=1; break; fi
+            sleep 1
+          done
+          [ "$ready" = "1" ] || { echo "::error::readiness never became ready"; exit 1; }
+          curl -sf http://127.0.0.1:8091/api/health/ready
+          docker rm -f dumbscope-release-smoke > /dev/null
+
+  publish:
+    needs: validate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    env:
+      IMAGE: ${{ needs.validate.outputs.image }}
+      VERSION: ${{ needs.validate.outputs.version }}
+      MAJOR_MINOR: ${{ needs.validate.outputs.major_minor }}
+      RELEASE_SHA: ${{ needs.validate.outputs.sha }}
+      RELEASE_DATE: ${{ needs.validate.outputs.date }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+
+      # Login happens only now: after every blocking validation, just before
+      # the registry is touched.
+      - name: Login to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - id: image
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/${{ github.repository }}
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=raw,value=latest,enable=${{ !contains(github.ref_name, '-') }}
+      # Exact release tags are immutable. If the version was ever published
+      # before, fail instead of overwriting it. Moving aliases (x.y, latest)
+      # are the only tags allowed to advance.
+      - name: Refuse to overwrite an already-published exact version
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          repo="${IMAGE#ghcr.io/}"
+          token="$(curl -sf -u "${{ github.actor }}:${GH_TOKEN}" "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" | jq -r .token)"
+          [ -n "$token" ] && [ "$token" != "null" ]
+          code="$(curl -s -o /dev/null -w '%{http_code}' \
+            -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.list.v2+json, application/vnd.docker.distribution.manifest.v2+json' \
+            "https://ghcr.io/v2/${repo}/manifests/${VERSION}")"
+          case "$code" in
+            404) echo "exact tag ${VERSION} not yet published — safe to release" ;;
+            200) echo "::error::${IMAGE}:${VERSION} already exists — exact release tags are immutable; publish a new version instead"; exit 1 ;;
+            *) echo "::error::cannot verify immutability (HTTP $code) — failing closed"; exit 1 ;;
+          esac
 
+      # Provenance: the image is built from THIS checkout with THIS commit as
+      # BUILD_SHA; the smoke test above proved the runtime reports it.
       - name: Build and push multi-arch image
-        uses: docker/build-push-action@v6
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: ${{ steps.image.outputs.tags }}
-          labels: ${{ steps.image.outputs.labels }}
+          tags: |
+            ${{ env.IMAGE }}:${{ env.VERSION }}
+            ${{ env.IMAGE }}:${{ env.MAJOR_MINOR }}
+            ${{ env.IMAGE }}:latest
           build-args: |
-            BUILD_SHA=${{ steps.meta.outputs.sha }}
-            BUILD_DATE=${{ steps.meta.outputs.time }}
+            BUILD_SHA=${{ env.RELEASE_SHA }}
+            BUILD_DATE=${{ env.RELEASE_DATE }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Provenance verification: the same Dockerfile/args path must yield an
-      # image whose runtime reports EXACTLY the release commit. Built locally
-      # (single-arch, --load) purely as a wiring check for the pushed tags.
-      - name: Verify image reports the release commit
+      # Verify the PUBLISHED artifact (not a local rebuild): the exact tag and
+      # both moving aliases must resolve to the pushed digest, the index must
+      # carry both promised platforms, and the pulled image must report the
+      # release identity. Never mutates the published tag on failure: a failed
+      # post-publish verification means a NEW patch version, not a re-tag.
+      - name: Post-publish verification (digest, aliases, platforms, runtime)
         run: |
-          docker build --load \
-            --build-arg BUILD_SHA=${{ steps.meta.outputs.sha }} \
-            --build-arg BUILD_DATE=${{ steps.meta.outputs.time }} \
-            -t dumbscope:provenance .
-          docker run -d --name dumbscope-provenance -p 8091:8091 dumbscope:provenance
+          set -euo pipefail
+          expected="${{ steps.build.outputs.digest }}"
+          [ -n "$expected" ]
+          actual="$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '/^Digest:/ {print $2; exit}')"
+          [ "$actual" = "$expected" ] || { echo "::error::published $IMAGE:$VERSION digest $actual != built $expected"; exit 1; }
+          for alias in "$MAJOR_MINOR" latest; do
+            alias_digest="$(docker buildx imagetools inspect "$IMAGE:$alias" | awk '/^Digest:/ {print $2; exit}')"
+            [ "$alias_digest" = "$expected" ] || { echo "::error::alias $alias digest $alias_digest != $expected"; exit 1; }
+          done
+          platforms="$(docker buildx imagetools inspect --raw "$IMAGE:$VERSION" | jq -r '[.manifests[].platform | "\(.os)/\(.architecture)"] | unique | join(",")')"
+          echo "platforms: $platforms"
+          [[ "$platforms" == *"linux/amd64"* && "$platforms" == *"linux/arm64"* ]] || { echo "::error::multi-arch index incomplete"; exit 1; }
+          docker pull --platform linux/amd64 "$IMAGE:$VERSION" >/dev/null
+          docker run -d --name dumbscope-postverify -p 8091:8091 "$IMAGE:$VERSION"
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:8091/api/health/live >/dev/null 2>&1 && break
             sleep 1
           done
-          reported="$(curl -sf http://127.0.0.1:8091/api/health/live | jq -r '.buildSha')"
-          docker rm -f dumbscope-provenance > /dev/null
-          if [ "$reported" != "${{ steps.meta.outputs.sha }}" ]; then
-            echo "::error::image reports buildSha='$reported' but release commit is '${{ steps.meta.outputs.sha }}'"
-            exit 1
-          fi
-          echo "image provenance OK: buildSha=$reported"
+          live="$(curl -sf http://127.0.0.1:8091/api/health/live)"
+          echo "$live"
+          [ "$(echo "$live" | jq -r .version)" = "$VERSION" ]
+          [ "$(echo "$live" | jq -r .buildSha)" = "$RELEASE_SHA" ]
+          [ -n "$(echo "$live" | jq -r .buildDate)" ] && [ "$(echo "$live" | jq -r .buildDate)" != "null" ]
+          docker rm -f dumbscope-postverify > /dev/null
+          echo "post-publish verification OK"
 
-      - name: Create GitHub release
-        uses: softprops/action-gh-release@v2
+      # Machine-readable answer to "what exact source produced this image?" —
+      # generated from workflow-authoritative values only.
+      - name: Write release manifest
+        run: |
+          set -euo pipefail
+          registry_digest="$(docker buildx imagetools inspect "$IMAGE:$VERSION" | awk '/^Digest:/ {print $2; exit}')"
+          [ -n "$registry_digest" ]
+          jq -n \
+            --arg version "$VERSION" --arg tag "${GITHUB_REF_NAME}" --arg commit "$RELEASE_SHA" \
+            --arg buildDate "$RELEASE_DATE" --arg image "$IMAGE:$VERSION" --arg digest "$registry_digest" \
+            --arg generatedAt "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+            '{version: $version, tag: $tag, commit: $commit, buildDate: $buildDate, image: $image, digest: $digest, generatedAt: $generatedAt}' \
+            > release-manifest.json
+          jq -e '.version == $v and .tag == $t and .digest == $d' \
+            --arg v "$VERSION" --arg t "${GITHUB_REF_NAME}" --arg d "$registry_digest" \
+            release-manifest.json >/dev/null
+          cat release-manifest.json
+
+      - name: Create GitHub release (with manifest)
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
           generate_release_notes: true
+          files: release-manifest.json

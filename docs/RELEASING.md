@@ -41,7 +41,15 @@ The `publish` job then pushes the multi-arch image and verifies the _published_
 artifact: the exact tag and both aliases resolve to the pushed digest, the
 index carries `linux/amd64` and `linux/arm64`, and a pulled container reports
 the release identity. The build-provenance rule is unchanged: the image is
-built with `BUILD_SHA=<tag commit>` and must report exactly that.
+built with `BUILD_SHA=<tag commit>` and must report exactly that; the same
+identity is applied as OCI labels (`org.opencontainers.image.revision`) so
+`docker inspect` alone maps a running container back to its release commit.
+
+This pipeline was first validated end-to-end with a real tag-triggered release
+on **v0.9.7** (validate → publish → post-publish verification → manifest →
+GitHub Release, all green). Post-publish registry reads retry with backoff and
+fall back to a plain registry HTTP call, because `docker buildx imagetools`
+intermittently fails on hosted runners with an opaque exit-255.
 
 Each release publishes a machine-readable `release-manifest.json` (version,
 tag, commit, buildDate, image, digest, generatedAt) as a GitHub release asset,

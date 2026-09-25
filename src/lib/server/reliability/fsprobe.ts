@@ -45,6 +45,7 @@ export interface ProbeOpResult {
 		valid: number;
 		broken: number;
 		unreadable: number;
+		unresolvable: number;
 		entriesScanned: number;
 		truncated: boolean;
 	} | null;

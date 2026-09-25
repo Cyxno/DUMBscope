@@ -56,7 +56,13 @@ async function sample(): Promise<{
 	);
 	const list = round.results[1] as {
 		ok: boolean;
-		sample: { sampled: number; valid: number; broken: number; unreadable: number; unresolvable: number } | null;
+		sample: {
+			sampled: number;
+			valid: number;
+			broken: number;
+			unreadable: number;
+			unresolvable: number;
+		} | null;
 	};
 	if (!list.ok || !list.sample) throw new Error('list probe failed');
 	return list.sample;
@@ -122,7 +128,10 @@ describe('incident engine with unresolvable-only samples', () => {
 		// Shape the report exactly the way a real healthy-stat round would (the
 		// mount root itself is fine — only the symlink targets are in question).
 		const monitorInternal = monitor as unknown as {
-			targets: Map<string, { report: { symlink: unknown; state: string; statLatencyMs: number | null } }>;
+			targets: Map<
+				string,
+				{ report: { symlink: unknown; state: string; statLatencyMs: number | null } }
+			>;
 		};
 		const report = monitorInternal.targets.get(target.id)!.report;
 		report.state = 'healthy';
@@ -136,15 +145,27 @@ describe('incident engine with unresolvable-only samples', () => {
 		const monitor = makeMonitor();
 		// pre-open the finding the way the pre-fix build would have
 		applySample(engine, monitor, {
-			sampled: 24, valid: 0, broken: 24, unreadable: 0, unresolvable: 0,
-			entriesScanned: 400, truncated: false
+			sampled: 24,
+			valid: 0,
+			broken: 24,
+			unreadable: 0,
+			unresolvable: 0,
+			entriesScanned: 400,
+			truncated: false
 		});
-		expect(engine.getActive().some((r) => r.fingerprint === fp && r.status === 'active')).toBe(true);
+		expect(engine.getActive().some((r) => r.fingerprint === fp && r.status === 'active')).toBe(
+			true
+		);
 
 		// post-fix reality: the same library samples as fully unresolvable
 		const unresolvableSample = {
-			sampled: 0, valid: 0, broken: 0, unreadable: 0, unresolvable: 24,
-			entriesScanned: 400, truncated: false
+			sampled: 0,
+			valid: 0,
+			broken: 0,
+			unreadable: 0,
+			unresolvable: 24,
+			entriesScanned: 400,
+			truncated: false
 		};
 		applySample(engine, monitor, unresolvableSample);
 		applySample(engine, monitor, unresolvableSample); // second clean round
@@ -157,10 +178,17 @@ describe('incident engine with unresolvable-only samples', () => {
 		const monitor = makeMonitor();
 		// pre-open the finding (old target still configured at the time)
 		applySample(engine, monitor, {
-			sampled: 24, valid: 0, broken: 24, unreadable: 0, unresolvable: 0,
-			entriesScanned: 400, truncated: false
+			sampled: 24,
+			valid: 0,
+			broken: 24,
+			unreadable: 0,
+			unresolvable: 0,
+			entriesScanned: 400,
+			truncated: false
 		});
-		expect(engine.getActive().some((r) => r.fingerprint === fp && r.status === 'active')).toBe(true);
+		expect(engine.getActive().some((r) => r.fingerprint === fp && r.status === 'active')).toBe(
+			true
+		);
 
 		// the target is now removed from the monitor list: its fingerprint is
 		// no longer produced, and a restarted process has no identity for it —

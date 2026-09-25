@@ -355,6 +355,7 @@ describe('detector-specific close semantics', () => {
 			valid: 0,
 			broken: 10,
 			unreadable: 0,
+			unresolvable: 0,
 			entriesScanned: 100,
 			truncated: false
 		};
@@ -373,6 +374,7 @@ describe('detector-specific close semantics', () => {
 			valid: 3,
 			broken: 0,
 			unreadable: 0,
+			unresolvable: 0,
 			entriesScanned: 30,
 			truncated: false
 		};
@@ -393,6 +395,7 @@ describe('detector-specific close semantics', () => {
 			valid: 1,
 			broken: 11,
 			unreadable: 0,
+			unresolvable: 0,
 			entriesScanned: 120,
 			truncated: false
 		};
@@ -409,6 +412,7 @@ describe('detector-specific close semantics', () => {
 			valid: 0,
 			broken: 0,
 			unreadable: 0,
+			unresolvable: 0,
 			entriesScanned: 50,
 			truncated: false
 		};

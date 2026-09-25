@@ -796,7 +796,7 @@ export class IncidentEngine {
 					summary: `${sample.broken} of ${sample.sampled} sampled links point at missing targets — the storage behind this root looks unavailable.${report.target.consumers.length > 0 ? ` May be affected: ${report.target.consumers.join(', ')}.` : ''}`,
 					service: null,
 					identity: path,
-					evidenceMessage: `sampled=${sample.sampled} valid=${sample.valid} broken=${sample.broken} unreadable=${sample.unreadable}`,
+					evidenceMessage: `sampled=${sample.sampled} valid=${sample.valid} broken=${sample.broken} unreadable=${sample.unreadable}${sample.unresolvable ? ` unresolvable=${sample.unresolvable}` : ''}`,
 					source: 'reliability',
 					refreshSummary: true
 				});

@@ -25,8 +25,12 @@ function makeSymlinkTree(): { root: string; broken: number; valid: number } {
 			for (let link = 0; link < 4; link++) {
 				const name = `episode.${show}.${season}.${link}.mkv`;
 				const stale = (show + season + link) % 6 !== 0;
+				// Stale target INSIDE the reachable tree: a target behind a mount
+				// this container lacks (e.g. /nonexistent/debrid/...) is ENOENT
+				// regardless of the release's health and is classified
+				// unresolvable by the namespace guard, not broken.
 				const target = stale
-					? `/nonexistent/debrid/${show}/${season}/${link}`
+					? path.join(root, 'gone', `${show}-${season}-${link}.mkv`)
 					: path.join(root, 'real-target.txt');
 				if (stale) broken++;
 				else valid++;

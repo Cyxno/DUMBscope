@@ -4,6 +4,26 @@ All notable changes to DUMBscope are documented here. Releases follow
 [semver](https://semver.org/); database migrations are additive, versioned and
 run transactionally on startup.
 
+## [0.9.3] — 2026-09-25
+
+Merge the `hardening/symlink-namespace-guard` fixes into main. v0.9.1/v0.9.2
+were cut from main, which never received this branch — deploying 0.9.2
+regressed the TV/Movies symlink-root monitoring back to counting ENOENT
+behind the DUMB-only rclone mount as broken (23/24, 20/24), re-opening both
+systemic findings for healthy libraries.
+
+### Fixed
+
+- **Symlink targets behind foreign mounts are unresolvable, not broken**
+  (b2af2aa) — fsprobe classifies ENOENT whose first missing directory lies
+  outside the walked tree as `unresolvable`; unresolvable links are not
+  conclusive evidence (not counted in `sampled`) and cannot trip the systemic
+  finding. Existing findings resolve via the normal clean-round hysteresis.
+- **Hydrated mount findings of removed targets retire** (21366fb) — the
+  lifecycle pass resolves any mount/symlink finding whose fingerprint no
+  configured target produces; identity-based retire alone could never match
+  findings hydrated after a restart.
+
 ## [0.9.2] — 2026-09-25
 
 Build provenance: every production image now reports exactly which commit it

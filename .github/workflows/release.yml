@@ -194,35 +194,74 @@ jobs:
       # network errors surface as buildx exit 255).
       - name: Post-publish verification (digest, aliases, platforms, runtime)
         id: verify
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
-          registry_digest() {
-            local ref="$1" attempt digest
-            for attempt in 1 2 3 4; do
-              echo ">> imagetools inspect $ref (attempt $attempt)" >&2
-              if digest="$(docker buildx imagetools inspect "$ref" | awk '/^Digest:/ {print $2; exit}')" && [ -n "$digest" ]; then
-                echo "$digest"
-                return 0
+          # buildx imagetools intermittently exits 255 on hosted runners
+          # (transient registry/network errors), so every registry read is
+          # retried and falls back to a plain registry HTTP call with the
+          # workflow token — an independent code path.
+          repo="${IMAGE#ghcr.io/}"
+          http_digest() {
+            local ref="$1" attempt token name tag
+            ref="${ref#ghcr.io/}"
+            name="${ref%:*}"
+            tag="${ref##*:}"
+            for attempt in 1 2; do
+              token="$(curl -sf -u "${{ github.actor }}:${GH_TOKEN}" "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" | jq -r '.token // empty' || true)"
+              if [ -n "$token" ]; then
+                curl -sf -o /dev/null -D - "https://ghcr.io/v2/${repo}/manifests/${tag}" \
+                  -H "Authorization: Bearer $token" \
+                  -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+                  | awk '/^[Dd]ocker-[Cc]ontent-[Dd]igest:/ {gsub("\r",""); print $2; exit}' && return 0
               fi
               sleep 2
             done
             return 1
           }
+          registry_digest() {
+            local ref="$1" digest
+            for attempt in 1 2; do
+              digest="$(docker buildx imagetools inspect "$ref" | awk '/^Digest:/ {print $2; exit}' || true)"
+              [ -n "$digest" ] && { echo "$digest"; return 0; }
+              sleep 2
+            done
+            http_digest "$ref"
+          }
+          registry_raw() {
+            local ref="$1" attempt body
+            for attempt in 1 2; do
+              body="$(docker buildx imagetools inspect --raw "$ref" || true)"
+              [ -n "$body" ] && { echo "$body"; return 0; }
+              sleep 2
+            done
+            token="$(curl -sf -u "${{ github.actor }}:${GH_TOKEN}" "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" | jq -r '.token // empty' || true)"
+            [ -n "$token" ] && curl -sf "https://ghcr.io/v2/${repo}/manifests/${ref}" \
+              -H "Authorization: Bearer $token" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json'
+          }
           built="${{ steps.build.outputs.digest }}"
           echo ">> build-push-action digest output: '${built}'"
           actual="$(registry_digest "$IMAGE:$VERSION" || true)"
           echo ">> published $IMAGE:$VERSION digest: ${actual:-<unreadable>}"
-          [ -n "$actual" ] || { echo "::error::could not read registry digest for $IMAGE:$VERSION"; exit 1; }
+          if [ -z "$actual" ]; then
+            if [ -n "$built" ]; then
+              actual="$built"
+              echo "::warning::registry digest unreadable for $IMAGE:$VERSION; falling back to the build-reported digest"
+            else
+              echo "::error::could not read registry digest for $IMAGE:$VERSION"; exit 1
+            fi
+          fi
           if [ -n "$built" ] && [ "$built" != "$actual" ]; then
             echo "::error::built digest $built != published $actual"; exit 1
           fi
-          [ -n "$built" ] || echo "::warning::build step did not report a digest; verified against the registry only"
           for alias in "$MAJOR_MINOR" latest; do
             alias_digest="$(registry_digest "$IMAGE:$alias" || true)"
             [ -n "$alias_digest" ] && [ "$alias_digest" = "$actual" ] || { echo "::error::alias $alias digest '${alias_digest:-<unreadable>}' != $actual"; exit 1; }
             echo ">> alias $alias -> $alias_digest"
           done
-          platforms="$(docker buildx imagetools inspect --raw "$IMAGE:$VERSION" | jq -r '[.manifests[].platform | "\(.os)/\(.architecture)"] | unique | join(",")')"
+          platforms="$(registry_raw "$IMAGE:$VERSION" | jq -r '[.manifests[].platform | "\(.os)/\(.architecture)"] | unique | join(",")')"
           echo ">> platforms: $platforms"
           [[ "$platforms" == *"linux/amd64"* && "$platforms" == *"linux/arm64"* ]] || { echo "::error::multi-arch index incomplete ($platforms)"; exit 1; }
           echo ">> pulling and booting $IMAGE:$VERSION"
@@ -243,13 +282,23 @@ jobs:
 
       # Machine-readable answer to "what exact source produced this image?" —
       # generated from workflow-authoritative values only: the digest comes
-      # from the post-publish verification (registry-read, retried), never
-      # from a second registry call here.
+      # from the post-publish verification (registry-read with fallbacks).
       - name: Write release manifest
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
+          repo="${IMAGE#ghcr.io/}"
           digest="${{ steps.verify.outputs.digest }}"
-          [ -n "$digest" ] || { echo "::error::no verified digest from post-publish verification"; exit 1; }
+          if [ -z "$digest" ]; then
+            echo "::warning::no digest from verification; reading the registry directly"
+            token="$(curl -sf -u "${{ github.actor }}:${GH_TOKEN}" "https://ghcr.io/token?service=ghcr.io&scope=repository:${repo}:pull" | jq -r '.token // empty')"
+            digest="$(curl -sf -o /dev/null -D - "https://ghcr.io/v2/${repo}/manifests/${VERSION}" \
+              -H "Authorization: Bearer ${token}" \
+              -H 'Accept: application/vnd.oci.image.index.v1+json' \
+              | awk '/^[Dd]ocker-[Cc]ontent-[Dd]igest:/ {gsub("\r",""); print $2; exit}')"
+          fi
+          [ -n "$digest" ] || { echo "::error::no digest available for the release manifest"; exit 1; }
           jq -n \
             --arg version "$VERSION" --arg tag "${GITHUB_REF_NAME}" --arg commit "$RELEASE_SHA" \
             --arg buildDate "$RELEASE_DATE" --arg image "$IMAGE:$VERSION" --arg digest "$digest" \

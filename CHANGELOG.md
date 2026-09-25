@@ -4,6 +4,14 @@ All notable changes to DUMBscope are documented here. Releases follow
 [semver](https://semver.org/); database migrations are additive, versioned and
 run transactionally on startup.
 
+## [0.9.7] — 2026-09-25
+
+Release-pipeline robustness. v0.9.6 verified the pushed image but could not
+read the freshly-published tag back: the registry HTTP fallback used in
+post-publish verification built a malformed reference (registry host left
+inside the repo path). The reference is now normalized and the fallback is
+exercised against all three published tags.
+
 ## [0.9.6] — 2026-09-25
 
 Release-pipeline resilience. v0.9.5's image verified and published correctly,

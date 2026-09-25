@@ -121,7 +121,7 @@ describe('media flow correlation', () => {
 		);
 	});
 
-	it('repeated request while active: warning finding with count', async () => {
+	it('two rapid re-grabs while active: info notice (audit), not a warning', async () => {
 		loader = async () => ({
 			sources: [
 				observation('sonarr-a', {
@@ -134,7 +134,9 @@ describe('media flow correlation', () => {
 		await tick();
 		const repeat = findings.find((f) => f.fingerprint.startsWith('media-repeat:'));
 		expect(repeat).toBeDefined();
+		expect(repeat!.severity).toBe('info');
 		expect(repeat!.summary).toContain('2 requests');
+		expect(repeat!.summary).toContain('quality upgrade');
 	});
 
 	it('a request after a completed acquisition is NOT a repeat (shield, brief §20)', async () => {
@@ -161,9 +163,11 @@ describe('media flow correlation', () => {
 		expect(findings.find((f) => f.fingerprint.startsWith('media-repeat:'))).toBeUndefined();
 	});
 
-	it('re-grab after completion while STILL missing: the production loop (repeat)', async () => {
+	it('re-grab loop after completion while STILL missing: warning at loop rate', async () => {
 		// The complaint shape: an acquisition completed but the item never
-		// imported cleanly, so it stays missing and gets re-offered.
+		// imported cleanly, so it stays missing and keeps being re-offered.
+		// Four grabs inside the 3 h loop horizon (≈45-min cadence) escalate to
+		// a warning; a single re-grab would stay silent (normal upgrade).
 		loader = async () => ({
 			sources: [
 				observation('sonarr-a', {
@@ -178,7 +182,10 @@ describe('media flow correlation', () => {
 							event: 'downloadFolderImported',
 							at: now - 118 * MIN
 						},
-						grab('sonarr-a', 1, 'req-2', 5)
+						grab('sonarr-a', 1, 'req-2', 120),
+						grab('sonarr-a', 1, 'req-3', 55),
+						grab('sonarr-a', 1, 'req-4', 30),
+						grab('sonarr-a', 1, 'req-5', 5)
 					]
 				})
 			],
@@ -187,7 +194,8 @@ describe('media flow correlation', () => {
 		await tick();
 		const repeat = findings.find((f) => f.fingerprint.startsWith('media-repeat:'));
 		expect(repeat).toBeDefined();
-		expect(repeat!.summary).toContain('2 requests');
+		expect(repeat!.severity).toBe('warning');
+		expect(repeat!.summary).toContain('3 requests within 60 min');
 		// Stable id-based key, never a title key (brief §10).
 		expect(correlator.snapshot().items[0]!.mediaKey).toBe('sonarr:sonarr-a:episode:1');
 	});
@@ -438,6 +446,123 @@ describe('acquisition ledger', () => {
 			.all() as { request_id: string }[];
 		expect(rows.map((r) => r.request_id)).not.toContain('old');
 		expect(rows.map((r) => r.request_id)).toContain('fresh');
+	});
+});
+
+describe('repeat detector rate tiers (2026-09-25 Dark Matter S02E06 regression)', () => {
+	let now: number;
+	let findings: MediaFinding[];
+	let resolved: string[];
+	let sources: ArrObservation[];
+	let correlator: MediaFlowCorrelator;
+
+	beforeEach(() => {
+		now = 1_750_000_000_000;
+		findings = [];
+		resolved = [];
+		sources = [];
+		getDb().prepare('DELETE FROM media_acquisitions').run();
+		getDb().prepare('DELETE FROM remediation_actions').run();
+		correlator = new MediaFlowCorrelator({
+			now: () => now,
+			loader: async () => ({ sources, complete: true }),
+			onFinding: (f) => findings.push(f),
+			onResolve: (fp) => resolved.push(fp)
+		});
+		(correlator as unknown as { t: Record<string, number> }).t.cycleMs = 0;
+	});
+
+	async function tick(): Promise<void> {
+		await correlator.tick({ mountUnhealthy: false, mountLabel: null });
+	}
+
+	const grabAt = (n: number, ageMin: number): ArrObservation['events'][number] => ({
+		requestId: `req-${n}`,
+		mediaKey: episodeKey('sonarr-a', 145),
+		title: 'Dark Matter S02E06',
+		client: 'qBittorrent',
+		event: 'grabbed',
+		at: now - ageMin * MIN
+	});
+
+	it('2 requests hours apart while acquisition stays active → NO warning (upgrade shape)', async () => {
+		// The exact production false positive: a 720p grab superseded 7.2 h
+		// later by a 1080p upgrade; the superseded request never saw a
+		// terminal event so the ledger showed it still "active".
+		sources = [
+			observation('sonarr-a', {
+				missing: [{ mediaKey: episodeKey('sonarr-a', 145), title: 'Dark Matter', mediaId: 145 }],
+				events: [grabAt(1, 452), grabAt(2, 2)]
+			})
+		];
+		await tick();
+		expect(findings.find((f) => f.fingerprint.startsWith('media-repeat:'))).toBeUndefined();
+	});
+
+	it('2 requests within 10 min → info notice, never a warning', async () => {
+		sources = [
+			observation('sonarr-a', {
+				missing: [{ mediaKey: episodeKey('sonarr-a', 145), title: 'Dark Matter', mediaId: 145 }],
+				events: [grabAt(1, 10), grabAt(2, 2)]
+			})
+		];
+		await tick();
+		const repeat = findings.find((f) => f.fingerprint.startsWith('media-repeat:'));
+		expect(repeat).toBeDefined();
+		expect(repeat!.severity).toBe('info');
+	});
+
+	it('3 requests within 30–60 min → warning', async () => {
+		sources = [
+			observation('sonarr-a', {
+				missing: [{ mediaKey: episodeKey('sonarr-a', 145), title: 'Dark Matter', mediaId: 145 }],
+				events: [grabAt(1, 55), grabAt(2, 40), grabAt(3, 5)]
+			})
+		];
+		await tick();
+		const repeat = findings.find((f) => f.fingerprint.startsWith('media-repeat:'));
+		expect(repeat).toBeDefined();
+		expect(repeat!.severity).toBe('warning');
+	});
+
+	it('fast continuous loop → critical (urgent)', async () => {
+		sources = [
+			observation('sonarr-a', {
+				missing: [{ mediaKey: episodeKey('sonarr-a', 145), title: 'Dark Matter', mediaId: 145 }],
+				events: [
+					grabAt(1, 50),
+					grabAt(2, 40),
+					grabAt(3, 30),
+					grabAt(4, 20),
+					grabAt(5, 10),
+					grabAt(6, 2)
+				]
+			})
+		];
+		await tick();
+		const repeat = findings.find((f) => f.fingerprint.startsWith('media-repeat:'));
+		expect(repeat).toBeDefined();
+		expect(repeat!.severity).toBe('critical');
+		expect(repeat!.summary).toContain('keeps looping');
+	});
+
+	it('recovers when the acquisition stops (activity ages out of the acquiring grace)', async () => {
+		sources = [
+			observation('sonarr-a', {
+				missing: [{ mediaKey: episodeKey('sonarr-a', 145), title: 'Dark Matter', mediaId: 145 }],
+				events: [grabAt(1, 10), grabAt(2, 2)]
+			})
+		];
+		await tick();
+		const fp = findings.find((f) => f.fingerprint.startsWith('media-repeat:'))!.fingerprint;
+		expect(fp).toBeTruthy();
+
+		// 31 min later: no longer missing, nothing queued, last activity is
+		// past the 30-min acquiring grace — the repeat must resolve itself.
+		now += 31 * MIN;
+		sources = [];
+		await tick();
+		expect(resolved).toContain(fp);
 	});
 });
 

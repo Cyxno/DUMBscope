@@ -46,8 +46,20 @@ export const MEDIA_FLOW_TUNING = {
 	completionShieldMs: 4 * 60 * 60_000,
 	/** Failures before "acquisition keeps failing" opens. */
 	failingThreshold: 3,
-	/** Requests per item within this horizon count as the repeat cluster. */
+	/** Ledger horizon for the repeat cluster (fetch + context, not a threshold). */
 	repeatWindowMs: 72 * 60 * 60_000,
+	/**
+	 * Rapid re-grab burst window. Grab counts INSIDE this window decide the
+	 * repeat tier: 2 = info (likely a quality upgrade), ≥3 = warning,
+	 * ≥5 = critical.
+	 */
+	repeatBurstMs: 60 * 60_000,
+	/**
+	 * Sustained-loop horizon. Re-grabs spread wider than the burst window
+	 * still escalate when the rate stays high: ≥3 within this window = info,
+	 * ≥4 = warning, ≥6 = critical (production loop shapes: hourly re-offers).
+	 */
+	repeatLoopMs: 3 * 60 * 60_000,
 	/** Ledger window for flow construction. */
 	ledgerWindowMs: 72 * 60 * 60_000,
 	/** Enough propagation samples for median/p95. */
@@ -76,11 +88,25 @@ export interface ArrObservation {
 
 export interface MediaFinding {
 	fingerprint: string;
-	severity: 'warning' | 'info';
+	severity: 'info' | 'warning' | 'critical';
 	title: string;
 	summary: string;
 	evidence: string;
 	mediaKey: string | null;
+}
+
+/** Severity tiers for the rate-based repeat detector (info → critical). */
+export type RepeatTier = 'info' | 'warning' | 'critical';
+
+export interface RepeatHit {
+	/** Total requests inside the ledger window (context, not the threshold). */
+	count: number;
+	/** Requests inside the rapid burst window (repeatBurstMs). */
+	burst: number;
+	/** Requests inside the sustained-loop horizon (repeatLoopMs). */
+	loop: number;
+	tier: RepeatTier;
+	clusterStart: number;
 }
 
 export interface MediaFlowContext {
@@ -339,12 +365,18 @@ export class MediaFlowCorrelator {
 
 			if (repeated) {
 				activeFingerprints.add(repeatFp);
+				const summary =
+					repeated.tier === 'critical'
+						? `${repeated.loop} requests in ${relDuration(this.t.repeatLoopMs)} with no import — acquisition keeps looping`
+						: repeated.tier === 'warning'
+							? `${repeated.burst >= 3 ? repeated.burst : repeated.loop} requests within ${relDuration(repeated.burst >= 3 ? this.t.repeatBurstMs : this.t.repeatLoopMs)} while an acquisition is still active`
+							: `${repeated.burst} requests within ${relDuration(this.t.repeatBurstMs)} while an acquisition is still active — likely a quality upgrade, audit only`;
 				this.onFinding({
 					fingerprint: repeatFp,
-					severity: 'warning',
+					severity: repeated.tier,
 					title: `${w.title}: repeated acquisition request`,
-					summary: `${repeated.count} requests in ${relDuration(now - repeated.clusterStart)} while an acquisition was still active`,
-					evidence: `${sorted.length} total requests in the ledger window · latest "${last.lastEvent}" via ${last.client ?? '?'} · ${
+					summary,
+					evidence: `burst=${repeated.burst} in ${relDuration(this.t.repeatBurstMs)} · ${repeated.loop} in ${relDuration(this.t.repeatLoopMs)} · ${repeated.count} total in the ledger window · latest "${last.lastEvent}" via ${last.client ?? '?'} · ${
 						context.mountUnhealthy
 							? `storage mount unhealthy (${context.mountLabel}) — likely storage availability issue`
 							: 'no acquisition completed yet'
@@ -464,10 +496,8 @@ export class MediaFlowCorrelator {
 		sorted: MediaAcquisition[],
 		now: number,
 		w: FlowWork
-	): { count: number; clusterStart: number } | null {
+	): RepeatHit | null {
 		if (sorted.length < 2) return null;
-		const inWindow = sorted.filter((a) => now - a.firstSeen <= this.t.repeatWindowMs);
-		if (inWindow.length < 2) return null;
 		const latest = sorted[sorted.length - 1]!;
 		const previous = sorted[sorted.length - 2]!;
 		const latestIsNew = (latest.acceptedAt ?? latest.firstSeen) - previous.firstSeen > 60_000;
@@ -483,11 +513,14 @@ export class MediaFlowCorrelator {
 			// (brief §20). Give quick propagation the mismatch grace first.
 			if (!w.isMissing) return null;
 			if (now - previous.completedAt < this.t.mismatchGraceMs) return null;
-			return { count: inWindow.length, clusterStart: inWindow[0]!.firstSeen };
-		}
-		// Previous request never completed: still active inside the window?
-		if ((latest.acceptedAt ?? latest.firstSeen) - previous.firstSeen > this.t.repeatWindowMs)
+		} else if (
+			(latest.acceptedAt ?? latest.firstSeen) - previous.firstSeen >
+			this.t.repeatWindowMs
+		) {
+			// Previous request never completed, but the follow-up came days
+			// later: outside any repeat horizon — not a cluster.
 			return null;
+		}
 		// Active-work verification: missing in the Arr, in the queue, or
 		// recent grab/failure activity keeps the repeat alive; a silent
 		// cluster resolves instead of lingering for the whole window.
@@ -499,7 +532,19 @@ export class MediaFlowCorrelator {
 		);
 		const activeWork = w.isMissing || inQueue || now - lastActivity <= this.t.acquiringGraceMs;
 		if (!activeWork) return null;
-		return { count: inWindow.length, clusterStart: inWindow[0]!.firstSeen };
+
+		// Rate-based tiers over sliding windows, NOT an absolute count: a
+		// second grab hours after the first is a normal quality upgrade (the
+		// 2026-09-25 Dark Matter S02E06 false positive: 2 grabs 7.2 h apart),
+		// a burst inside the hour is suspect, a sustained loop is a problem.
+		const grabbedAt = (a: MediaAcquisition): number => a.acceptedAt ?? a.firstSeen;
+		const burst = sorted.filter((a) => now - grabbedAt(a) < this.t.repeatBurstMs).length;
+		const loop = sorted.filter((a) => now - grabbedAt(a) < this.t.repeatLoopMs).length;
+		if (burst < 2 && loop < 3) return null;
+		const tier: RepeatTier =
+			burst >= 5 || loop >= 6 ? 'critical' : burst >= 3 || loop >= 4 ? 'warning' : 'info';
+		const inWindow = sorted.filter((a) => now - a.firstSeen <= this.t.repeatWindowMs);
+		return { count: inWindow.length, burst, loop, tier, clusterStart: inWindow[0]!.firstSeen };
 	}
 
 	private detectMismatch(w: FlowWork, sorted: MediaAcquisition[], now: number): boolean {

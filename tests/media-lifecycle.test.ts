@@ -82,7 +82,8 @@ describe('complete-cycle close sweep', () => {
 		const h = build();
 		const mediaKey = episodeKey('sonarr-a', 7);
 
-		// Cycle 1: two grabs, previous never completed, item missing → repeat.
+		// Cycle 1: rapid re-grab burst (both inside the burst window),
+		// previous never completed, item missing → repeat opens (info tier).
 		await h.correlator.tick({
 			mountUnhealthy: false,
 			mountLabel: null
@@ -91,7 +92,7 @@ describe('complete-cycle close sweep', () => {
 		const sources = () => [
 			observation({
 				missing: [{ mediaKey, title: 'Show', mediaId: 7 }],
-				events: [grab(7, 'req-1', 90), grab(7, 'req-2', 5)]
+				events: [grab(7, 'req-1', 40), grab(7, 'req-2', 5)]
 			})
 		];
 		(h.correlator as unknown as { loader: () => Promise<ArrSourceBatch> }).loader = async () => ({
@@ -133,7 +134,7 @@ describe('repeat active-work verification', () => {
 			sources: [
 				observation({
 					missing: [{ mediaKey, title: 'Show', mediaId: 3 }],
-					events: [grab(3, 'req-1', 200), grab(3, 'req-2', 100)]
+					events: [grab(3, 'req-1', 160), grab(3, 'req-2', 55), grab(3, 'req-3', 5)]
 				})
 			],
 			complete: true
@@ -148,10 +149,11 @@ describe('repeat active-work verification', () => {
 				observation({
 					missing: [],
 					events: [
-						grab(3, 'req-1', 220),
-						grab(3, 'req-2', 120),
+						grab(3, 'req-1', 180),
+						grab(3, 'req-2', 75),
+						grab(3, 'req-3', 25),
 						{
-							requestId: 'req-2',
+							requestId: 'req-3',
 							mediaKey,
 							title: 'Show',
 							client: 'SABnzbd',

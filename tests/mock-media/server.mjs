@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * Mock Sonarr/Radarr/Bazarr servers for library-intelligence e2e tests.
- * One process per role (MOCK_ROLE=sonarr|radarr|bazarr, MOCK_PORT=…).
+ * Mock Sonarr/Radarr/Bazarr/Plex servers for library-intelligence e2e tests
+ * and the screenshot lab.
+ * One process per role (MOCK_ROLE=sonarr|radarr|bazarr|plex|seerr, MOCK_PORT=…).
  *
  * Data is coherent (brief §99): TV ~97% complete with 14 missing episodes in
  * mixed backlog-age buckets and 1 failed import; Movies ~92% complete with
@@ -73,16 +74,52 @@ const movies = [
 	{ id: 6, title: 'Falling Stars', year: 2023, hasFile: false, isAvailable: true, ageDays: 3 },
 	{ id: 7, title: 'Gentle Rain', year: 2024, hasFile: true, isAvailable: true }
 ];
-// Pad to 40 movies, all with files.
-for (let i = 8; i <= 40; i++) {
+// Pad to 40 movies, all with files. Plausible fictional filler titles so
+// screenshots and QA runs never show template stubs.
+const FILLER_MOVIES = [
+	['Ghostwriter', 2008],
+	['Northern Passage', 2009],
+	['The Long Ferry', 2010],
+	['Salt & Cedar', 2011],
+	['Winter Harvest', 2012],
+	['Paper Lanterns', 2013],
+	['The Quiet Mile', 2014],
+	['Ironwood', 2015],
+	['Small Mercies', 2016],
+	['Harbormaster', 2016],
+	['Field Notes', 2017],
+	['The Last Cartographer', 2017],
+	['Slow Water', 2018],
+	['Cardinal Direction', 2018],
+	['Understory', 2019],
+	['The Orchard Locksmith', 2019],
+	['Half Light', 2020],
+	['Driftwood Coast', 2020],
+	['The Cartographers Wife', 2020],
+	['Signal Fires', 2021],
+	['Meridian Line', 2021],
+	['Cold Harbor Road', 2021],
+	['The Birdwatcher', 2022],
+	['Tidewater', 2022],
+	['Static & Stars', 2022],
+	['The Reconstruction of A. Bell', 2023],
+	['Pine Hollow', 2023],
+	['Everything the River Keeps', 2023],
+	['Lantern Bay', 2024],
+	['The Understudy', 2024],
+	['Fermata', 2024],
+	['Glasshouse', 2024],
+	['The Night Post', 2025]
+];
+FILLER_MOVIES.forEach(([title, year], idx) => {
 	movies.push({
-		id: i,
-		title: `Library Movie ${i}`,
-		year: 2000 + i,
+		id: 8 + idx,
+		title,
+		year,
 		hasFile: true,
 		isAvailable: true
 	});
-}
+});
 // 2 upcoming (not yet available), excluded from backlog.
 movies.push({
 	id: 41,
@@ -102,20 +139,25 @@ movies.push({
 });
 
 // Release-QA additions: XSS-shaped titles must render as plain text (§28).
-series.push({
-	id: 13,
-	title: '<img src=x onerror=alert(1)>',
-	epCount: 10,
-	fileCount: 10,
-	missing: 0
-});
-movies.push({
-	id: 43,
-	title: '<script>alert(1)</script>',
-	year: 2024,
-	hasFile: true,
-	isAvailable: true
-});
+// MOCK_NO_XSS=1 skips them — used by the screenshot lab so documentation
+// shots show plausible fictional titles instead of injection canaries.
+const NO_XSS = process.env.MOCK_NO_XSS === '1';
+if (!NO_XSS) {
+	series.push({
+		id: 13,
+		title: '<img src=x onerror=alert(1)>',
+		epCount: 10,
+		fileCount: 10,
+		missing: 0
+	});
+	movies.push({
+		id: 43,
+		title: '<script>alert(1)</script>',
+		year: 2024,
+		hasFile: true,
+		isAvailable: true
+	});
+}
 
 // Minimal valid 1x1 PNG served by the MediaCover endpoints (§60).
 const POSTER_PNG = Buffer.from(
@@ -769,7 +811,70 @@ const bazarrHandler = (req, res, url) => {
 	res.writeHead(404).end();
 };
 
-const handlers = { sonarr: sonarrHandler, radarr: radarrHandler, bazarr: bazarrHandler };
+// Minimal Plex mock (screenshot lab): the app polls /identity and
+// /status/sessions with an X-Plex-Token header and plain-JSON responses.
+// Two fictional sessions — one direct play, one transcode — fill the
+// Overview media card without claiming anything about real Plex behavior.
+const plexHandler = (req, res, url) => {
+	if (req.headers['x-plex-token'] !== API_KEY) {
+		res.writeHead(401, { 'content-type': 'application/json' });
+		res.end(JSON.stringify({ error: 'Unauthorized' }));
+		return;
+	}
+	if (url.pathname === '/identity') {
+		return json(res, { MediaContainer: { version: '1.41.0.8994-mock' } });
+	}
+	if (url.pathname === '/status/sessions') {
+		return json(res, {
+			MediaContainer: {
+				size: 2,
+				Metadata: [
+					{
+						title: 'Lighthouse Bay · S02E04',
+						Media: [{ videoDecision: 'direct play' }],
+						Player: [{ state: 'playing' }]
+					},
+					{
+						title: 'Granite Peak (2019)',
+						Media: [{ videoDecision: 'transcode' }],
+						Player: [{ state: 'paused' }]
+					}
+				]
+			}
+		});
+	}
+	res.writeHead(404).end();
+};
+
+// Minimal Overseerr mock (screenshot lab): the app validates against
+// /api/v1/settings/main and polls /api/v1/request with X-Api-Key. A handful
+// of fictional requests fill the Overview requests card.
+const seerrHandler = (req, res, url) => {
+	if (!authorize(req, res)) return;
+	if (url.pathname === '/api/v1/settings/main') {
+		return json(res, { appVersion: '2.7.3-mock' });
+	}
+	if (url.pathname === '/api/v1/request') {
+		return json(res, {
+			pageInfo: { total: 4 },
+			results: [
+				{ id: 1, status: 2, title: 'Harbor Lights' },
+				{ id: 2, status: 2, title: 'Quarry Lane' },
+				{ id: 3, status: 1, title: 'Meridian' },
+				{ id: 4, status: 2, title: 'Northbound' }
+			]
+		});
+	}
+	res.writeHead(404).end();
+};
+
+const handlers = {
+	sonarr: sonarrHandler,
+	radarr: radarrHandler,
+	bazarr: bazarrHandler,
+	plex: plexHandler,
+	seerr: seerrHandler
+};
 const handler = handlers[ROLE];
 if (!handler) {
 	console.error(`[mock-media] unknown role ${ROLE}`);

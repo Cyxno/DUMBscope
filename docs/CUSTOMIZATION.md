@@ -9,7 +9,7 @@ Settings is organized into sections (pill navigation at the top of the page):
 
 ```text
 Connection · Appearance · Dashboard · Navigation · Library
-Reliability · Data display · Accessibility · Integrations · About
+Reliability · Notifications · Data display · Accessibility · Integrations · About
 ```
 
 No section is a settings-form-wall: each uses card-based selectors with live

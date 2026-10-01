@@ -51,10 +51,22 @@ src/
 │   │   ├── integrations/
 │   │   │   ├── registry.ts       adapter registry, generic fallback
 │   │   │   └── catalog.ts (shared/) known-service metadata
+│   │   ├── library/              TV/movies/subtitles browsing + intelligence
+│   │   ├── media/                acquisition ledger + media-flow correlation
+│   │   ├── metrics/              retention tiers for DUMB + cgroup metrics
+│   │   ├── notifications/        destinations, rules, dedupe, delivery queue
+│   │   ├── actions/              Safe Actions registry + audited manager
+│   │   ├── reconciliation/       deterministic library verification cycles
+│   │   ├── reliability/          mount/symlink probes (fsprobe), memory
+│   │   │                         anomalies, cgroup analysis, thermal,
+│   │   │                         InfiniDysk, timeline, SLO, remediation
+│   │   ├── runtime/              self-monitoring sampler + anomaly watchdogs
+│   │   ├── lifecycle.ts          incident hydration/retirement passes
 │   │   ├── logs/parse.ts         DUMB log line parser
 │   │   ├── database/             node:sqlite, versioned migrations
 │   │   ├── security/             scrypt, AES-256-GCM, sessions, rate limit,
 │   │   │                         origin checks, setup-session signing
+│   │   ├── setup.ts              first-run setup codes (30 min TTL)
 │   │   └── config/settings.ts    DB-backed settings (+ DUMB_URL env seed)
 │   ├── stores/live.svelte.ts     client SSE state (capped buffers)
 │   ├── components/               design system + shell + topology + charts
@@ -109,10 +121,11 @@ src/
   (`DUMBSCOPE_TRUST_PROXY=true` + `X-Forwarded-Proto: https`).
 - Every response carries hardening headers; SvelteKit CSP runs in hash mode.
 - Mutating API requests are checked for same-origin in addition to cookies.
-- Control-plane actions towards DUMB are allowlisted to three Safe Actions
-  (search-again, refresh, restart for a managed Sonarr/Radarr; docs/ACTIONS.md)
-  plus DUMB's own single-service restart route behind the remediation manager.
-  Each requires an admin session, same-origin and confirmation, and is
+- Control-plane actions towards DUMB are allowlisted to the Safe Actions
+  registry (targeted Sonarr/Radarr search/refresh commands, `Open {Service}`
+  deep links, and a confirmed restart of a managed service via DUMB's own
+  restart route behind the remediation manager; docs/ACTIONS.md). Each
+  requires an admin session, same-origin and confirmation, and is
   audit-first; everything else stays read-only.
 
 ## Health semantics
@@ -145,9 +158,10 @@ supervision (the liveness HEALTHCHECK + container restart policy).
 `resolution_kind`, `resolution_reason`), `incident_events`,
 `health_transitions`, `service_events`, `integrations`, `activity`,
 `media_snapshots`, `memory_samples` (+ `instance_key` and
-`_5m`/`_30m` aggregate tiers), `media_acquisitions`,
-`remediation_actions`, `notification_*`, `integration_actions`,
-`runtime_samples` (+ `_5m`/`_30m` tiers), `schema_version`. Migrations
+`_5m`/`_30m` aggregate tiers), `media_acquisitions`, `remediation_actions`, `notification_*`,
+`integration_actions`, `runtime_samples` (+ `_5m`/`_30m` tiers),
+`cgroup_samples` (+ `_5m`/`_30m` tiers), `observability_events`,
+`schema_version`. Migrations
 are versioned, transactional and run automatically on startup. Log content and
 media titles are never persisted; DUMB's own log redaction is applied before
 DUMBscope ever sees bytes.

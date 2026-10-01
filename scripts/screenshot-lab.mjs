@@ -112,11 +112,20 @@ async function main() {
 		MOCK_SCENARIO: 'healthy'
 	});
 	await waitFor(`${MOCK_URL}/api/health`);
-	for (const [role, port] of Object.entries({ sonarr: 4211, radarr: 4212, bazarr: 4213 })) {
+	for (const [role, port] of Object.entries({
+		sonarr: 4211,
+		radarr: 4212,
+		bazarr: 4213,
+		plex: 4214,
+		seerr: 4215
+	})) {
 		start('mock-media-' + role, ['tests/mock-media/server.mjs'], {
 			MOCK_ROLE: role,
 			MOCK_PORT: String(port),
-			MOCK_MEDIA_KEY: 'media-test-key'
+			MOCK_MEDIA_KEY: 'media-test-key',
+			// Documentation shots show plausible fictional titles; the XSS
+			// canaries stay on for the e2e suite (§28) via its own harness.
+			MOCK_NO_XSS: '1'
 		});
 		await waitFor(`http://127.0.0.1:${port}/health`);
 	}
@@ -151,7 +160,9 @@ async function main() {
 	for (const target of [
 		{ type: 'sonarr', url: 'http://127.0.0.1:4211' },
 		{ type: 'radarr', url: 'http://127.0.0.1:4212' },
-		{ type: 'bazarr', url: 'http://127.0.0.1:4213' }
+		{ type: 'bazarr', url: 'http://127.0.0.1:4213' },
+		{ type: 'plex', url: 'http://127.0.0.1:4214' },
+		{ type: 'seerr', url: 'http://127.0.0.1:4215' }
 	]) {
 		const created = await fetch(`${APP_URL}/api/integrations`, {
 			method: 'POST',
@@ -177,6 +188,15 @@ async function main() {
 		await wait(1000);
 	}
 
+	// The System page's self-monitoring charts plot persisted runtime samples
+	// (one row per minute). Wait for a few minutes of uptime so the charts
+	// carry real data instead of empty axes.
+	for (let i = 0; i < 60; i++) {
+		const runtime = await fetch(`${APP_URL}/api/runtime`, { headers }).then((r) => r.json());
+		if ((runtime.series?.rss?.length ?? 0) >= 3) break;
+		await wait(10_000);
+	}
+
 	const browser = await (await loadChromium()).launch({ headless: true });
 	const context = await browser.newContext({
 		viewport: { width: 1920, height: 1080 },
@@ -195,6 +215,7 @@ async function main() {
 		'activity-1920': '/activity',
 		'logs-1920': '/logs',
 		'system-1920': '/system',
+		'observability-1920': '/observability',
 		'library-tv-1920': '/library?view=tv',
 		'library-movies-1920': '/library?view=movies',
 		'library-subtitles-1920': '/library?view=subtitles',
@@ -210,8 +231,28 @@ async function main() {
 				.click();
 			await page.waitForTimeout(800);
 		}
-		await page.screenshot({ path: path.join(OUT, `${name}.png`) });
-		console.log('shot', name);
+		// The app scrolls inside <main> (fixed shell), so fullPage alone cannot
+		// exceed the viewport. Grow the viewport to the content height instead:
+		// documentation shots must show complete cards, never a mid-card cut.
+		// Deferred renders (charts, posters) grow <main> after the first
+		// measurement, so iterate until stable — then keep a small tail pad so
+		// the last card's border and shadow always fit inside the frame.
+		let target = 0;
+		for (let i = 0; i < 4; i++) {
+			const h = await page.evaluate(() => {
+				const main = document.querySelector('main');
+				return main ? Math.ceil(main.scrollHeight) : 0;
+			});
+			if (h > 0 && h === target) break;
+			target = h;
+			await page.setViewportSize({ width: 1920, height: Math.min(h + 24, 8000) });
+			await page.waitForTimeout(700);
+		}
+		await page.setViewportSize({ width: 1920, height: Math.min(target + 120, 8000) });
+		await page.waitForTimeout(300);
+		// Full page: the whole view is the artifact.
+		await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true });
+		console.log('shot', name, `(${target}px)`);
 	}
 
 	// Mobile shot.
@@ -219,8 +260,21 @@ async function main() {
 	await mobile.setViewportSize({ width: 390, height: 844 });
 	await mobile.goto(`${APP_URL}/library?view=tv`, { waitUntil: 'load' });
 	await mobile.waitForTimeout(2000);
-	await mobile.screenshot({ path: path.join(OUT, 'library-mobile-390.png') });
-	console.log('shot library-mobile-390');
+	let mobileTarget = 0;
+	for (let i = 0; i < 4; i++) {
+		const h = await mobile.evaluate(() => {
+			const main = document.querySelector('main');
+			return main ? Math.ceil(main.scrollHeight) : 0;
+		});
+		if (h > 0 && h === mobileTarget) break;
+		mobileTarget = h;
+		await mobile.setViewportSize({ width: 390, height: Math.min(h + 24, 8000) });
+		await mobile.waitForTimeout(700);
+	}
+	await mobile.setViewportSize({ width: 390, height: Math.min(mobileTarget + 120, 8000) });
+	await mobile.waitForTimeout(300);
+	await mobile.screenshot({ path: path.join(OUT, 'library-mobile-390.png'), fullPage: true });
+	console.log('shot library-mobile-390', `(${mobileTarget}px)`);
 
 	await browser.close();
 	await new Promise((resolve) => {

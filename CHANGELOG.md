@@ -4,6 +4,31 @@ All notable changes to DUMBscope are documented here. Releases follow
 [semver](https://semver.org/); database migrations are additive, versioned and
 run transactionally on startup.
 
+## [Unreleased]
+
+Documentation, screenshots and QA tooling polish — no application changes.
+
+### Changed
+
+- **README refreshed against the current implementation** — documents the
+  previously missing `DUMBSCOPE_MOUNT_INTERVAL_MS` (mount probe cadence) and
+  the test-only `DUMBSCOPE_RELIABILITY_FAST` clock, links the library-browser
+  and library-intelligence deep-dive docs, and lists the Observability
+  screenshot.
+- **Documentation screenshots regenerated** from the current UI via
+  `scripts/screenshot-lab.mjs` (local mock stack, fictional data only), now
+  covering the v0.9.0 Observability page (`observability-1920.png`).
+
+### Fixed
+
+- **Screenshot lab realism** — the lab no longer shows the mock's XSS-canary
+  titles (new `MOCK_NO_XSS` knob on `tests/mock-media`; the canaries stay on
+  for the e2e suite), replaces the mock's `Library Movie N` filler titles
+  with plausible fictional ones, adds minimal mock Plex + Overseerr
+  integrations so the Overview media/requests cards render, and waits for
+  persisted runtime samples so the System page's self-monitoring charts plot
+  real data.
+
 ## [0.9.7] — 2026-09-25
 
 Release-pipeline robustness. v0.9.6 verified the pushed image but could not
@@ -103,6 +128,23 @@ was built from.
   degrade gracefully to version-only. CI's docker smoke test and the release
   pipeline now verify the reported SHA matches the built commit.
 
+## [0.9.1] — 2026-09-25
+
+Hotfix from a real homeserver incident (2026-09-25): the TV/Movies symlink
+roots point into a mount that exists only inside the DUMB container, so every
+sampled link was ENOENT from DUMBscope's namespace and was counted as broken
+(TV 23/24, Movies 20/24) — re-opening systemic findings for a healthy library.
+
+### Fixed
+
+- **Symlink targets behind foreign mounts are unresolvable, not broken** —
+  the fsprobe worker now classifies ENOENT whose first missing directory lies
+  outside the walked tree as `unresolvable`; unresolvable links are excluded
+  from `sampled`, cannot trip the systemic broken-symlink finding, and are
+  surfaced as `unresolvable=N` in the evidence string. Existing findings
+  resolve via the normal clean-round hysteresis. Full post-mortem in
+  [docs/RELEASE-NOTES-v0.9.1.md](docs/RELEASE-NOTES-v0.9.1.md).
+
 ## [0.9.0] — 2026-09-23
 
 Deep DUMB-stack observability: DUMBscope becomes the central technical
@@ -192,6 +234,10 @@ always: nothing in this release sends notifications — external alerting
 
 - Reconciliation: safe recovery from a stuck cycle — cancellable, self-healing.
 
+> Release-artifact note: no git tag or GitHub Release exists for **0.8.0** and
+> **0.8.1** — their release commits (`bc0e6b6`, `3c7922a`) are part of `main`,
+> but the first tagged release carrying their changes is **0.8.2**.
+
 ## [0.8.1] — 2026-09-23
 
 - Health semantics: liveness/readiness endpoints, Docker `HEALTHCHECK`,
@@ -204,6 +250,106 @@ always: nothing in this release sends notifications — external alerting
   operator ack/archive), self-monitoring with rolling baselines and robust
   trends, SLO panel, operator lifecycle UI.
 
-## [0.7.2] — and earlier
+## [0.7.2] — 2026-09-18
 
-See the git history (`git log --oneline`) for the pre-changelog era.
+- **Deterministic library reconciliation** — read-only verification that what
+  Sonarr/Radarr and Plex claim is actually true on the filesystem, with
+  findings flowing into the incident model. See
+  [docs/RELEASE-NOTES-v0.7.2.md](docs/RELEASE-NOTES-v0.7.2.md).
+
+## [0.7.1] — 2026-09-18
+
+- **Reliability fix**: probe workers were only reaped on deadline overrun, so
+  every healthy round leaked one idle worker isolate (~8 MB RSS). See
+  [docs/RELEASE-NOTES-v0.7.1.md](docs/RELEASE-NOTES-v0.7.1.md).
+
+## [0.7.0] — 2026-09-16
+
+- **Safe Actions control plane** — the deliberately narrow, allowlist-only
+  write layer: targeted Sonarr/Radarr search/refresh commands from the
+  Library, `Open {Service}` deep links and a confirmed service restart, all
+  audited and capability-gated. See
+  [docs/RELEASE-NOTES-v0.7.0.md](docs/RELEASE-NOTES-v0.7.0.md).
+
+## [0.6.1] — 2026-09-15
+
+- **Compatibility audit** — every service DUMB's registry can report is
+  recognized with canonical name, icon, category and pipeline stage, plus an
+  honest machine-readable support matrix. See
+  [docs/RELEASE-NOTES-v0.6.1.md](docs/RELEASE-NOTES-v0.6.1.md).
+
+## [0.6.0] — 2026-09-15
+
+- **Alerts & notifications** — findings, warnings, incidents and recoveries
+  forwarded to Browser, Discord and Telegram, with per-rule filters, dedupe
+  with cooldown, quiet hours, per-destination rate caps and a bounded
+  delivery queue. See [docs/RELEASE-NOTES-v0.6.0.md](docs/RELEASE-NOTES-v0.6.0.md).
+
+## [0.5.2] — 2026-09-15
+
+- Sidebar navigation fix: navigation regression from the v0.5.0 customization
+  work, plus hardening of stored navigation preferences. See
+  [docs/RELEASE-NOTES-v0.5.2.md](docs/RELEASE-NOTES-v0.5.2.md).
+
+## [0.5.1] — 2026-09-15
+
+- Library tab navigation fix with a hard regression suite. See
+  [docs/RELEASE-NOTES-v0.5.1.md](docs/RELEASE-NOTES-v0.5.1.md).
+
+## [0.5.0] — 2026-09-14
+
+- **Reliability & operations**: read-only mount/symlink health probes,
+  memory-anomaly detection, media-flow correlation foundation, connectivity
+  state machine, and per-browser customization (appearance, dashboard,
+  navigation, library preferences). See
+  [docs/RELEASE-NOTES-v0.5.0.md](docs/RELEASE-NOTES-v0.5.0.md).
+
+## [0.4.0] — 2026-09-12
+
+- **Library browser** — unified read-only Sonarr TV / Radarr movies / Bazarr
+  subtitles browsing with library intelligence, race-free poster rendering,
+  and TTL/poll-jitter safety margins across pollers.
+
+## [0.3.0] — 2026-09-11
+
+- **Pipeline UX overhaul** — honest edge semantics for the dependency graph,
+  redesigned overview summary, services grouping and drawer copy, plus an
+  interaction e2e suite.
+
+## [0.2.4] — 2026-09-11
+
+- Hardening: bounded log lines, a rate-limit sweep and bounded poller error
+  messages.
+
+## [0.2.3] — 2026-09-11
+
+- Fixed false stopped-incident reconciliation for processes outside the
+  managed registry, plus discovery refresh.
+
+## [0.2.2] — 2026-09-10
+
+- Technical audit fixes: poller overlap-death, NaN query guards, probe
+  timeouts and CI permissions hardening.
+
+## [0.2.1] — 2026-09-10
+
+- Patch release with discovery-gate test cleanup.
+
+## [0.2.0] — 2026-09-10
+
+- Deep integrations, activity feed v0.2, overview bento grid, daily in-process
+  retention job (activity 14d, transitions 30d, incidents 90d) and reliability
+  fixes.
+
+## [0.1.1] — 2026-09-10
+
+- DUMB access-token refresh so WebSocket streams recover after a DUMB
+  restart, stale-stream bounce, `DUMBSCOPE_HTTPS`/Secure-cookie
+  documentation, and a pinned `cookie` dependency override
+  (GHSA-pxg6-pf52-xh8x).
+
+## [0.1.0] — 2026-09-09
+
+- Initial release: observability control center for the DUMB media stack —
+  live service monitoring, pipeline view, incident detection and realtime
+  logs in one container.

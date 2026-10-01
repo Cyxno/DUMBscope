@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose an improvement. Read the priorities first — data correctness, security, stability, UI/UX, simplicity, performance.
+labels: ['enhancement']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        DUMBscope is deliberately narrow: observation-first, one container,
+        no Docker socket, an allowlisted control plane. Features that widen
+        the write surface or break the one-container constraint are usually
+        declined — explaining how your idea respects those boundaries helps a
+        lot.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can you not do, or what is unclear or noisy today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should change, at what layer (observation, incident, action, UI)?
+    validations:
+      required: true
+  - type: checkboxes
+    id: constraints
+    attributes:
+      label: Boundaries
+      options:
+        - label: This keeps DUMBscope one container with one /config volume
+        - label: This does not add write access beyond the Safe Actions allowlist (or argues explicitly why it should)

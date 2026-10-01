@@ -1,0 +1,16 @@
+# Release note categories (softprops/action-gh-release, generate_release_notes)
+
+# Labels group PRs in the auto-generated release notes. Commits without
+# labels land in "Other Changes" — the CHANGELOG.md entry stays the
+# authoritative summary (docs/RELEASING.md).
+categories:
+  - title: 'Security'
+    labels: ['security']
+  - title: 'Bug fixes'
+    labels: ['bug', 'fix']
+  - title: 'Improvements'
+    labels: ['enhancement', 'feature']
+  - title: 'Documentation'
+    labels: ['documentation', 'docs']
+  - title: 'Tests & tooling'
+    labels: ['tests', 'ci']

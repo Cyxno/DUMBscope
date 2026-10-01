@@ -1,0 +1,44 @@
+name: Bug report
+description: Something in DUMBscope is wrong, broken or misleading.
+labels: ['bug']
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. Please include what you
+        saw and what you expected — **Copy diagnostics** (Settings) produces
+        a redacted bundle that answers most version questions.
+  - type: input
+    id: version
+    attributes:
+      label: DUMBscope version
+      description: From the System page footer or `GET /api/health/live` (`version` + `buildSha`).
+      placeholder: 'e.g. 0.9.8 (build a1b2c3d4)'
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What you saw, what you expected instead, and whether it recovers on its own.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Exact steps from a clean state, if possible.
+    validations:
+      required: true
+  - type: textarea
+    id: stack
+    attributes:
+      label: Stack context
+      description: >
+        Which services DUMB manages here (Sonarr/Radarr/Bazarr/Plex/…, mounts),
+        roughly. No credentials, no URLs with tokens.
+  - type: input
+    id: deployment
+    attributes:
+      label: Deployment
+      placeholder: 'e.g. Unraid CA; docker compose behind Nginx with DUMBSCOPE_TRUST_PROXY=true'

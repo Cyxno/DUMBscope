@@ -221,60 +221,106 @@ async function main() {
 		'library-subtitles-1920': '/library?view=subtitles',
 		'settings-notifications-1920': '/settings'
 	};
-	for (const [name, urlPath] of Object.entries(shots)) {
-		await page.goto(`${APP_URL}${urlPath}`, { waitUntil: 'load' });
-		await page.waitForTimeout(2500);
+
+	// Navigate, wait for live data, grow the viewport to the content height
+	// (the app scrolls inside <main>, so fullPage alone cannot exceed the
+	// viewport), and capture the whole view. Deferred renders (charts,
+	// posters) grow <main> after the first measurement, so iterate until
+	// stable — then keep a small tail pad so the last card's border and
+	// shadow always fit inside the frame.
+	async function captureView(browserPage, name, urlPath, width) {
+		await browserPage.setViewportSize({ width, height: 1080 });
+		await browserPage.goto(`${APP_URL}${urlPath}`, { waitUntil: 'load' });
+		await browserPage.waitForTimeout(2500);
 		if (urlPath === '/settings') {
-			await page
+			await browserPage
 				.getByRole('navigation', { name: 'Settings sections' })
 				.getByText('Notifications', { exact: true })
 				.click();
-			await page.waitForTimeout(800);
+			await browserPage.waitForTimeout(800);
 		}
-		// The app scrolls inside <main> (fixed shell), so fullPage alone cannot
-		// exceed the viewport. Grow the viewport to the content height instead:
-		// documentation shots must show complete cards, never a mid-card cut.
-		// Deferred renders (charts, posters) grow <main> after the first
-		// measurement, so iterate until stable — then keep a small tail pad so
-		// the last card's border and shadow always fit inside the frame.
 		let target = 0;
 		for (let i = 0; i < 4; i++) {
-			const h = await page.evaluate(() => {
+			const h = await browserPage.evaluate(() => {
 				const main = document.querySelector('main');
 				return main ? Math.ceil(main.scrollHeight) : 0;
 			});
 			if (h > 0 && h === target) break;
 			target = h;
-			await page.setViewportSize({ width: 1920, height: Math.min(h + 24, 8000) });
-			await page.waitForTimeout(700);
+			await browserPage.setViewportSize({ width, height: Math.min(h + 24, 8000) });
+			await browserPage.waitForTimeout(700);
 		}
-		await page.setViewportSize({ width: 1920, height: Math.min(target + 120, 8000) });
-		await page.waitForTimeout(300);
+		await browserPage.setViewportSize({ width, height: Math.min(target + 120, 8000) });
+		await browserPage.waitForTimeout(300);
 		// Full page: the whole view is the artifact.
-		await page.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true });
+		await browserPage.screenshot({ path: path.join(OUT, `${name}.png`), fullPage: true });
 		console.log('shot', name, `(${target}px)`);
 	}
 
-	// Mobile shot.
-	const mobile = await context.newPage();
-	await mobile.setViewportSize({ width: 390, height: 844 });
-	await mobile.goto(`${APP_URL}/library?view=tv`, { waitUntil: 'load' });
-	await mobile.waitForTimeout(2000);
-	let mobileTarget = 0;
-	for (let i = 0; i < 4; i++) {
-		const h = await mobile.evaluate(() => {
-			const main = document.querySelector('main');
-			return main ? Math.ceil(main.scrollHeight) : 0;
-		});
-		if (h > 0 && h === mobileTarget) break;
-		mobileTarget = h;
-		await mobile.setViewportSize({ width: 390, height: Math.min(h + 24, 8000) });
-		await mobile.waitForTimeout(700);
+	for (const [name, urlPath] of Object.entries(shots)) {
+		await captureView(page, name, urlPath, 1920);
 	}
-	await mobile.setViewportSize({ width: 390, height: Math.min(mobileTarget + 120, 8000) });
-	await mobile.waitForTimeout(300);
-	await mobile.screenshot({ path: path.join(OUT, 'library-mobile-390.png'), fullPage: true });
-	console.log('shot library-mobile-390', `(${mobileTarget}px)`);
+
+	// UI-QA widths (optional): AUDIT_WIDTHS=1440,1280 captures the core views
+	// at additional desktop widths into <name>-<width>.png — responsive
+	// regression auditing without touching the canonical documentation set.
+	const auditViews = [
+		['overview', '/'],
+		['pipeline', '/pipeline'],
+		['services', '/services'],
+		['incidents', '/incidents'],
+		['system', '/system'],
+		['settings-notifications', '/settings'],
+		['library-tv', '/library?view=tv'],
+		['observability', '/observability']
+	];
+	const auditWidths = (process.env.AUDIT_WIDTHS ?? '')
+		.split(',')
+		.map((w) => parseInt(w.trim(), 10))
+		.filter((w) => Number.isFinite(w) && w >= 320);
+	for (const width of auditWidths) {
+		const auditPage = await context.newPage();
+		for (const [name, urlPath] of auditViews) {
+			await captureView(auditPage, `${name}-${width}`, urlPath, width);
+		}
+		await auditPage.close();
+	}
+
+	// Mobile shots. 390 is the canonical documentation shot; extra widths
+	// (AUDIT_MOBILE_WIDTHS=430) capture the same view for responsive QA.
+	const mobileWidths = [
+		390,
+		...(process.env.AUDIT_MOBILE_WIDTHS ?? '')
+			.split(',')
+			.map((w) => parseInt(w.trim(), 10))
+			.filter((w) => Number.isFinite(w) && w >= 320)
+	];
+	for (const mobileWidth of mobileWidths) {
+		const mobile = await context.newPage();
+		await mobile.setViewportSize({ width: mobileWidth, height: 844 });
+		await mobile.goto(`${APP_URL}/library?view=tv`, { waitUntil: 'load' });
+		await mobile.waitForTimeout(2000);
+		let mobileTarget = 0;
+		for (let i = 0; i < 4; i++) {
+			const h = await mobile.evaluate(() => {
+				const main = document.querySelector('main');
+				return main ? Math.ceil(main.scrollHeight) : 0;
+			});
+			if (h > 0 && h === mobileTarget) break;
+			mobileTarget = h;
+			await mobile.setViewportSize({ width: mobileWidth, height: Math.min(h + 24, 8000) });
+			await mobile.waitForTimeout(700);
+		}
+		await mobile.setViewportSize({
+			width: mobileWidth,
+			height: Math.min(mobileTarget + 120, 8000)
+		});
+		await mobile.waitForTimeout(300);
+		const mobileName = mobileWidth === 390 ? 'library-mobile-390' : `library-mobile-${mobileWidth}`;
+		await mobile.screenshot({ path: path.join(OUT, `${mobileName}.png`), fullPage: true });
+		console.log('shot', mobileName, `(${mobileTarget}px)`);
+		await mobile.close();
+	}
 
 	await browser.close();
 	await new Promise((resolve) => {

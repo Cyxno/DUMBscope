@@ -385,9 +385,9 @@ Deeper docs: [architecture](docs/architecture.md) ·
 
 ## Contributing
 
-Issues and PRs are welcome. Keep the priorities in order: **data correctness →
-security → stability → UI/UX → simplicity → performance**. Ask before adding
-dependencies, and keep the one-container constraint.
+Issues and PRs are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the
+priorities (data correctness → security → stability → UI/UX → simplicity →
+performance), the one-container ground rules and the development setup.
 
 **Release rule:** releases are cut from `main` by pushing a `vX.Y.Z` tag. The
 release CI enforces that no `fix/*`, `hardening/*` or `release-blocker/*`

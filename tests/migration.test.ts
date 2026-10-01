@@ -240,6 +240,48 @@ describe('v0.3.0 → current migration (release rehearsal)', () => {
  * has migration 4 (as a Library Intelligence preview install would) must be
  * a no-op on upgrade — no duplicate tables/indexes/version rows.
  */
+/**
+ * First start on a truly empty database — the most common production path —
+ * must land on the current schema in one shot: every migration applies
+ * cleanly in order, with no fixture data anywhere.
+ */
+describe('empty database → current schema (first start)', () => {
+	it('applies all migrations to a brand-new database file', () => {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dumbscope-empty-'));
+		const file = path.join(dir, 'dumbscope.db');
+		const db = new DatabaseSync(file);
+		expect(currentVersion(db)).toBe(0);
+		runMigrations(db);
+		const version = currentVersion(db);
+		const versionRows = db
+			.prepare('SELECT version FROM schema_version ORDER BY version')
+			.all()
+			.map((r) => (r as { version: number }).version);
+		const tables = db
+			.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
+			.all()
+			.map((r) => (r as { name: string }).name);
+		const activeActions = db
+			.prepare("SELECT COUNT(*) c FROM integration_actions WHERE state IN ('requested','accepted')")
+			.get() as { c: number };
+		// The claim index exists from the very first boot.
+		const indexes = db
+			.prepare("SELECT name FROM sqlite_master WHERE type='index'")
+			.all()
+			.map((r) => (r as { name: string }).name);
+		db.close();
+		expect(version).toBe(11);
+		expect(versionRows).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
+		expect(tables).toContain('users');
+		expect(tables).toContain('incidents');
+		expect(tables).toContain('integration_actions');
+		expect(tables).toContain('cgroup_samples');
+		expect(tables).toContain('observability_events');
+		expect(indexes).toContain('idx_integration_actions_active_claim');
+		expect(activeActions.c).toBe(0);
+	});
+});
+
 describe('already-current schema is a no-op (idempotence)', () => {
 	it('re-running migrations changes nothing', () => {
 		const file = createV030Fixture();

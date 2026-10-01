@@ -566,6 +566,7 @@ export function startLibrarySnapshots(): void {
 			);
 		}
 	}, 60 * 60_000);
+	snapshotTimer.unref?.();
 }
 
 /** Trend points for one kind over a window, downsampled for charting. */

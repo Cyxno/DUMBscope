@@ -4,30 +4,54 @@ All notable changes to DUMBscope are documented here. Releases follow
 [semver](https://semver.org/); database migrations are additive, versioned and
 run transactionally on startup.
 
-## [Unreleased]
+## [0.9.8]
 
-Documentation, screenshots and QA tooling polish — no application changes.
-
-### Changed
-
-- **README refreshed against the current implementation** — documents the
-  previously missing `DUMBSCOPE_MOUNT_INTERVAL_MS` (mount probe cadence) and
-  the test-only `DUMBSCOPE_RELIABILITY_FAST` clock, links the library-browser
-  and library-intelligence deep-dive docs, and lists the Observability
-  screenshot.
-- **Documentation screenshots regenerated** from the current UI via
-  `scripts/screenshot-lab.mjs` (local mock stack, fictional data only), now
-  covering the v0.9.0 Observability page (`observability-1920.png`).
+Safe Actions concurrency correctness, plus repository polish.
 
 ### Fixed
 
-- **Screenshot lab realism** — the lab no longer shows the mock's XSS-canary
-  titles (new `MOCK_NO_XSS` knob on `tests/mock-media`; the canaries stay on
-  for the e2e suite), replaces the mock's `Library Movie N` filler titles
-  with plausible fictional ones, adds minimal mock Plex + Overseerr
-  integrations so the Overview media/requests cards render, and waits for
-  persisted runtime samples so the System page's self-monitoring charts plot
-  real data.
+- **Atomic suppression of simultaneous duplicate Safe Actions** — the logical
+  action identity is (integration instance, action id, normalized target).
+  The cooldown check, the in-flight duplicate check and the audit-first
+  INSERT now run inside one `BEGIN IMMEDIATE` SQLite transaction, backed by a
+  partial UNIQUE index on active claims (migration v11): concurrent identical
+  requests serialize at the database layer and exactly one reaches upstream —
+  eight simultaneous identical requests used to produce eight accepted rows
+  and eight upstream commands. Losers receive a deterministic
+  "already in progress" rejection and are audited; no UI debounce or
+  process-local lock is involved.
+- **Stale action reconciliation after interrupted execution** — rows left
+  `requested`/`accepted` by a dead process used to sit in flight forever.
+  At startup (and self-healing inside every claim) in-flight rows older than
+  a conservative 60 s bound settle to **`unconfirmed`** — the outcome is
+  unknown, never labeled "failed" — keeping the recorded upstream command id
+  and never re-executing anything. Fresh requests and terminal rows are
+  untouched; reconciliation is idempotent. Migration v11 performs the same
+  settlement for existing rows before creating the claim index, so the
+  upgrade is safe against already-duplicated production rows.
+- Rejected attempts (unknown instance, wrong type, disabled, keyless) now
+  record the claimed integration, action and target in the audit trail
+  instead of anonymous rows.
+
+### Improved
+
+- Repository documentation: README refreshed against the implementation
+  (full environment-variable table, Observability screenshot, deep-doc
+  links); CHANGELOG reconstructed down to v0.1.0 from tags, in-repo release
+  notes and git history; architecture.md's component tree, Safe Actions
+  description and database schema brought current; ACTIONS.md documents the
+  real action guarantees (atomic suppression, cooldown semantics per prior
+  outcome, crash honesty); SECURITY.md documents the controlled-action
+  guarantees and the read-only host-visibility model (config dir,
+  operator-configured mount probes such as a read-only `/plexdb` Plex
+  database directory, and read-only container-cgroup visibility such as
+  `/mnt/cgroup-docker`).
+- Screenshots regenerated from the current UI via the local mock stack,
+  including the previously missing Observability view; screenshot-mock
+  fidelity improved (mock Plex + Overseerr integrations so the Overview
+  cards render, plausible fictional filler titles instead of template stubs,
+  XSS canaries excluded from documentation shots via the new `MOCK_NO_XSS`
+  mock knob — they stay on for the e2e suite).
 
 ## [0.9.7] — 2026-09-25
 

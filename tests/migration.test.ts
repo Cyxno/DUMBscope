@@ -82,7 +82,7 @@ describe('v0.1.1 → v0.2 migration', () => {
 
 	it('applies migration 3 and reports the current version (media snapshots, memory samples, acquisition ledger, notifications)', () => {
 		const db = new DatabaseSync(file, { readOnly: true });
-		expect(currentVersion(db)).toBe(10);
+		expect(currentVersion(db)).toBe(11);
 		const tables = db
 			.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")
 			.all()
@@ -164,12 +164,12 @@ describe('v0.3.0 → current migration (release rehearsal)', () => {
 
 	it('applies migration 4 exactly once and reports the current version', () => {
 		const db = new DatabaseSync(file, { readOnly: true });
-		expect(currentVersion(db)).toBe(10);
+		expect(currentVersion(db)).toBe(11);
 		const rows = db
 			.prepare('SELECT version, COUNT(*) c FROM schema_version GROUP BY version ORDER BY version')
 			.all() as { version: number; c: number }[];
 		db.close();
-		expect(rows.map((r) => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+		expect(rows.map((r) => r.version)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
 		expect(rows.every((r) => r.c === 1)).toBe(true);
 	});
 
@@ -263,6 +263,91 @@ describe('already-current schema is a no-op (idempotence)', () => {
 		db.close();
 		expect(objectsAfter).toEqual(objectsBefore);
 		expect(versionRowsAfter).toEqual(versionRowsBefore);
-		expect(version).toBe(10);
+		expect(version).toBe(11);
+	});
+});
+
+/**
+ * v0.9.7 → v0.11 migration: a database left with in-flight Safe Actions rows
+ * by a crashed process — including two ACTIVE rows for the same logical
+ * action, which the pre-v0.11 executor could produce under concurrency —
+ * must migrate cleanly: in-flight rows settle to an honest 'unconfirmed'
+ * BEFORE the active-claim UNIQUE index is created, so the index can never
+ * fail on existing production rows, and duplicate claims become
+ * structurally impossible afterwards.
+ */
+describe('v0.9.7 → v0.11 migration (interrupted Safe Actions settlement)', () => {
+	function createCrashedActionsFixture(): string {
+		const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'dumbscope-v0911-'));
+		const file = path.join(dir, 'dumbscope.db');
+		const db = new DatabaseSync(file);
+		runMigrations(db, 8); // integration_actions exists from migration 8 on
+		const t = 1_700_000_000_000;
+		db.exec(`
+			INSERT INTO integration_actions (id, action, integration_id, target, target_key, actor, state, requested_at)
+				VALUES ('dup-1', 'sonarr.searchEpisode', 'sonarr-main', 'episode:42', 'sonarr.searchEpisode:episode:42', 'admin', 'requested', ${t});
+			INSERT INTO integration_actions (id, action, integration_id, target, target_key, actor, state, requested_at)
+				VALUES ('dup-2', 'sonarr.searchEpisode', 'sonarr-main', 'episode:42', 'sonarr.searchEpisode:episode:42', 'admin', 'requested', ${t + 5});
+			INSERT INTO integration_actions (id, action, integration_id, target, target_key, actor, state, message, upstream_command_id, requested_at)
+				VALUES ('acc-1', 'sonarr.searchEpisode', 'sonarr-main', 'episode:7', 'sonarr.searchEpisode:episode:7', 'admin', 'accepted', 'Search requested (command 99)', 99, ${t});
+			INSERT INTO integration_actions (id, action, integration_id, target, target_key, actor, state, message, requested_at, finished_at)
+				VALUES ('done-1', 'sonarr.refreshSeries', 'sonarr-main', 'series:3', 'sonarr.refreshSeries:series:3', 'admin', 'completed', 'Refresh: upstream command completed', ${t}, ${t + 1000});
+		`);
+		db.close();
+		return file;
+	}
+
+	it('settles interrupted rows to unconfirmed, keeps terminal rows, then enforces the claim index', () => {
+		const file = createCrashedActionsFixture();
+		const db = new DatabaseSync(file);
+		runMigrations(db);
+		expect(currentVersion(db)).toBe(11);
+
+		const rows = db
+			.prepare(
+				'SELECT id, state, message, upstream_command_id, finished_at FROM integration_actions ORDER BY id'
+			)
+			.all() as {
+			id: string;
+			state: string;
+			message: string | null;
+			upstream_command_id: number | null;
+			finished_at: number | null;
+		}[];
+
+		// Both halves of the pre-migration duplicate are settled honestly.
+		const dup1 = rows.find((r) => r.id === 'dup-1')!;
+		const dup2 = rows.find((r) => r.id === 'dup-2')!;
+		expect(dup1.state).toBe('unconfirmed');
+		expect(dup2.state).toBe('unconfirmed');
+		expect(dup1.message).toBe('Interrupted by restart before a final state was recorded');
+		expect(dup1.finished_at).not.toBeNull();
+
+		// The accepted row keeps its recorded upstream command id (evidence,
+		// not fabrication) and settles to the same honest state.
+		const acc = rows.find((r) => r.id === 'acc-1')!;
+		expect(acc.state).toBe('unconfirmed');
+		expect(acc.upstream_command_id).toBe(99);
+
+		// Terminal rows are untouched.
+		const done = rows.find((r) => r.id === 'done-1')!;
+		expect(done.state).toBe('completed');
+		expect(done.message).toBe('Refresh: upstream command completed');
+
+		// The claim index exists and rejects a SECOND active row for the same
+		// logical action — the structural half of §13a. (After settlement the
+		// first insert is legal: no other active row holds the claim.)
+		const indexes = db
+			.prepare("SELECT name FROM sqlite_master WHERE type='index'")
+			.all()
+			.map((r) => r.name);
+		expect(indexes).toContain('idx_integration_actions_active_claim');
+		const claim = db.prepare(
+			`INSERT INTO integration_actions (id, action, integration_id, target, target_key, actor, state, requested_at)
+			 VALUES (?, 'sonarr.searchEpisode', 'sonarr-main', 'episode:42', 'sonarr.searchEpisode:episode:42', 'admin', 'requested', 9999999999999)`
+		);
+		expect(() => claim.run('dup-3')).not.toThrow();
+		expect(() => claim.run('dup-4')).toThrow(/UNIQUE constraint failed/);
+		db.close();
 	});
 });

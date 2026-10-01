@@ -95,6 +95,12 @@ Every action is:
    name an arbitrary URL, endpoint, process or command.
 6. **API-key safe** — the upstream key is decrypted server-side for the
    request and never stored in the audit, logged, or sent to the browser.
+7. **Audited and atomically deduplicated** — every attempt (rejections
+   included) is persisted before any upstream I/O; simultaneous identical
+   requests collapse to exactly one execution at the SQLite layer (see
+   _Atomic duplicate suppression_ below); rows interrupted by a crash settle
+   to `unconfirmed` at startup — they are never labeled "failed" and never
+   re-executed (see _Crash outcomes become `unconfirmed`_ below).
 
 ## Cooldowns
 
@@ -105,8 +111,45 @@ safety gate:
 - refreshes: 120 s
 - restarts: the remediation layer's existing 6 h cooldown + 2 attempts/24 h
 
-A rejected cooldown attempt is audited as `rejected` but never extends the
-cooldown. The UI surfaces remaining cooldown in the error message.
+A rejected attempt is audited as `rejected` but never extends a cooldown.
+The UI surfaces remaining cooldown in the error message.
+
+Exact repeat semantics per prior outcome:
+
+| Prior outcome                       | Immediate repeat                 | Why                                                |
+| ----------------------------------- | -------------------------------- | -------------------------------------------------- |
+| simultaneous duplicate (in flight)  | rejected — `already in progress` | atomic claim, not a cooldown effect                |
+| accepted (command running upstream) | rejected — cooldown              | the accepted command owns the target               |
+| completed                           | rejected — cooldown              | cooldown runs from the completion timestamp        |
+| failed (upstream/transport error)   | allowed                          | a failed attempt starts no cooldown                |
+| unconfirmed (outcome unknown)       | allowed                          | unknown ≠ failure; retrying is the operator's call |
+| rejected                            | allowed                          | rejections never start cooldowns                   |
+
+## Atomic duplicate suppression (§13a)
+
+The logical action identity is **(integration instance, action id, normalized
+target)** — `target_key` embeds the action id, so the pair
+`(integration_id, target_key)` is the claim key. Before any upstream I/O, the
+executor runs the cooldown check, the in-flight dedupe check and the
+audit-first INSERT inside **one `BEGIN IMMEDIATE` SQLite transaction**, and a
+partial `UNIQUE` index on active claims (`state IN ('requested','accepted')`,
+migration v11) makes a second active claim for the same logical action
+structurally impossible. Eight concurrent identical requests therefore produce
+**exactly one upstream command**; every loser receives the same deterministic
+`rejected — already in progress` result and is audited. No UI debounce or
+process-local lock is involved — the guarantee lives in the database and
+survives restarts.
+
+## Crash outcomes become `unconfirmed` (§13b)
+
+If the process dies while an action is `requested` or `accepted` (its
+follow-up timers die with it), the outcome is genuinely unknown. At startup
+the executor settles in-flight rows older than a conservative bound (60 s —
+the follow-up window is ~20 s) to **`unconfirmed`** — never `failed` — keeping
+the recorded upstream command id, and never re-executes anything. The same
+self-heal runs inside the claim path, so an orphan can never block a fresh
+request for its target. Fresh requests and terminal rows are untouched; the
+reconciliation is idempotent.
 
 ## Audit & history
 
@@ -166,7 +209,14 @@ Never built, by design:
 - `tests/actions.test.ts` — registry allowlist + target validation, audit
   ordering, multi-instance routing, cross-type rejection, cooldowns, honest
   upstream error naming, bounded follow-up to `unconfirmed`, secret-free
-  audit, link building and scheme guards.
+  audit, link building and scheme guards; atomic duplicate suppression
+  (2/8/20 concurrent identical requests → exactly one upstream call, with a
+  deterministic barrier), the partial UNIQUE claim index, cooldown semantics
+  per prior outcome, and startup reconciliation (stale → `unconfirmed`,
+  fresh/terminal untouched, never re-executed).
+- `tests/migration.test.ts` — the v0.11 migration settles a crashed
+  process's in-flight rows (including duplicate active claims) before the
+  claim index is created.
 - `tests/e2e/actions.spec.ts` — Library flows (episode search → accepted →
   history entry; movie search + deep link), service drawer (open link,
   confirmed restart) — all against the mock stack.

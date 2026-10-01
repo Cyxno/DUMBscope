@@ -517,6 +517,34 @@ const MIGRATIONS: Migration[] = [
 			CREATE INDEX IF NOT EXISTS idx_observability_events_kind_at
 				ON observability_events(kind, at);
 		`
+	},
+	{
+		version: 11,
+		name: 'safe actions: atomic duplicate suppression (active-claim index)',
+		sql: `
+			-- Migration-time settlement (§13b): this runs at boot, before any
+			-- request is served, so every row still in flight belongs to the
+			-- previous process — its outcome is unknown. The honest terminal
+			-- state is 'unconfirmed' (never 'failed'), keeping the recorded
+			-- upstream command id. Idempotent: terminal rows never match.
+			UPDATE integration_actions
+			   SET state = 'unconfirmed',
+			       message = 'Interrupted by restart before a final state was recorded',
+			       finished_at = COALESCE(finished_at,
+			           CAST((julianday('now') - 2440587.5) * 86400000 AS INTEGER))
+			 WHERE state IN ('requested', 'accepted');
+
+			-- Structural claim (§13a): at most ONE active execution per logical
+			-- action (integration instance + action id + normalized target —
+			-- target_key embeds the action id). The executor additionally
+			-- serializes check+INSERT in a BEGIN IMMEDIATE transaction; this
+			-- partial UNIQUE index makes a duplicate active claim impossible at
+			-- the storage layer. Safe to create here because the UPDATE above
+			-- left no active rows; idempotent via IF NOT EXISTS.
+			CREATE UNIQUE INDEX IF NOT EXISTS idx_integration_actions_active_claim
+				ON integration_actions(integration_id, target_key)
+				WHERE state IN ('requested', 'accepted');
+		`
 	}
 ];
 export function currentVersion(db: DatabaseSync): number {

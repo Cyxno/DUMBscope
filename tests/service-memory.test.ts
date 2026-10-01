@@ -167,3 +167,33 @@ describe('full view build', () => {
 		expect(view.uptimeSeconds).toBe(1234);
 	});
 });
+
+// ---------------------------------------------------------------------------
+// Adversarial classification guards (from the v0.9.7 audit probes): shapes
+// that must NEVER render as a leak, and degraded sampling that must still
+// classify. Regression guard for false positives, not a tuning spec.
+// ---------------------------------------------------------------------------
+describe('adversarial classification guards', () => {
+	it('a tiny sub-threshold growth (2 MB/h) is flat, never a leak', () => {
+		const points = series((i) => (100 + i * 1) * MB, 48); // ~2 MB/h over 24h
+		const verdict = classifyServiceMemory(deriveServiceMemoryFeatures(points));
+		expect(verdict).not.toBe('possible-leak');
+	});
+
+	it('a single early spike polluting the baseline is not a leak', () => {
+		// First hour ≈ 900 MB, then flat 150 MB: ugly input, honest answer.
+		const points = series((i) => (i < 2 ? 900 * MB : 150 * MB), 48);
+		const verdict = classifyServiceMemory(deriveServiceMemoryFeatures(points));
+		expect(verdict).not.toBe('possible-leak');
+	});
+
+	it('sparse hourly sampling still classifies instead of giving up', () => {
+		const points: MemoryPoint[] = [];
+		const now = 1_800_000_000_000;
+		for (let i = 0; i <= 30; i++) {
+			points.push({ at: now - (30 - i) * 3_600_000, bytes: (100 + i * 25) * MB });
+		}
+		const verdict = classifyServiceMemory(deriveServiceMemoryFeatures(points));
+		expect(verdict).not.toBe('insufficient-history');
+	});
+});

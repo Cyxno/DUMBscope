@@ -15,6 +15,7 @@ import {
 import {
 	ActionsManager,
 	ACTIONS_TUNING,
+	getActionsManager,
 	resetActionsManager,
 	upstreamErrorMessage
 } from '$lib/server/actions/manager';
@@ -426,6 +427,398 @@ describe('actions manager', () => {
 			expect(row.actor.length).toBeGreaterThan(0);
 			expect(row.requestedAt).toBeGreaterThan(0);
 		}
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Atomic duplicate suppression (§13a) — the claim is decided at the SQLite
+// layer: one BEGIN IMMEDIATE transaction around cooldown check, in-flight
+// dedupe check and audit-first INSERT, backed by a partial UNIQUE index on
+// active claims (migration v11). Regression: 8 concurrent identical requests
+// must produce exactly ONE upstream command, not eight.
+// ---------------------------------------------------------------------------
+
+describe('atomic duplicate suppression (§13a)', () => {
+	/**
+	 * Deterministic concurrency barrier: arms `n` identical executions and
+	 * releases them together, so they interleave exactly like simultaneous
+	 * HTTP requests — every caller is in flight before any upstream answer
+	 * arrives.
+	 */
+	async function raceIdentical(
+		h: ReturnType<typeof makeHarness>,
+		integrationId: string,
+		n: number
+	): Promise<Awaited<ReturnType<ActionsManager['execute']>>[]> {
+		let release!: () => void;
+		const gate = new Promise<void>((resolve) => {
+			release = resolve;
+		});
+		const attempts = Array.from({ length: n }, () => {
+			return (async () => {
+				await gate;
+				return h.manager.execute({
+					actionId: 'sonarr.searchEpisode',
+					integrationId,
+					target: { episodeIds: [42] },
+					actor: 'admin'
+				});
+			})();
+		});
+		release();
+		return Promise.all(attempts);
+	}
+
+	it.each([2, 8, 20])(
+		'%i concurrent identical requests → exactly one upstream call, losers rejected deterministically',
+		async (n) => {
+			const h = makeHarness();
+			seedIntegration('sonarr-race', 'sonarr');
+			const results = await raceIdentical(h, 'sonarr-race', n);
+
+			const accepted = results.filter((r) => r.state === 'accepted');
+			const rejected = results.filter((r) => r.state === 'rejected');
+			expect(accepted).toHaveLength(1);
+			expect(rejected).toHaveLength(n - 1);
+			expect(h.clients.get('sonarr-race')!.calls).toHaveLength(1);
+			expect(h.clients.get('sonarr-race')!.calls[0]?.command).toBe('EpisodeSearch');
+
+			// Losers: deterministic conflict result — same message, no upstream
+			// command id, no cooldown claim of their own.
+			for (const loser of rejected) {
+				expect(loser.message).toBe('An identical action is already in progress for this target');
+				expect(loser.upstreamCommandId).toBeNull();
+				expect(loser.cooldownRemainingMs).toBe(0);
+			}
+			// Every attempt is audited (audit-first includes rejections), and no
+			// row leaks secrets: actor + ids + plain language only. The winner
+			// has already settled to 'accepted' (its upstream answer arrived).
+			const rows = getDb()
+				.prepare('SELECT state, target_key, actor FROM integration_actions')
+				.all() as { state: string; target_key: string; actor: string }[];
+			expect(rows).toHaveLength(n);
+			expect(rows.filter((r) => r.state === 'accepted')).toHaveLength(1);
+			expect(rows.filter((r) => r.state === 'rejected')).toHaveLength(n - 1);
+			for (const row of rows) {
+				expect(row.target_key).toBe('sonarr.searchEpisode:episode:42');
+				expect(row.actor).toBe('admin');
+			}
+		}
+	);
+
+	it('the partial UNIQUE index is the structural backstop — a second active claim cannot exist', () => {
+		const h = makeHarness();
+		seedIntegration('sonarr-claim', 'sonarr');
+		const now = h.now();
+		const insert = (id: string) =>
+			getDb()
+				.prepare(
+					`INSERT INTO integration_actions
+						(id, action, integration_id, target, target_key, actor, state, requested_at)
+					 VALUES (?, 'sonarr.searchEpisode', 'sonarr-claim', 'episode-42', 'sonarr.searchEpisode:episode-42', 'admin', 'requested', ?)`
+				)
+				.run(id, now);
+		insert('first');
+		expect(() => insert('second')).toThrow(/UNIQUE constraint failed/);
+	});
+
+	it('a live in-flight claim blocks a new request even past a manual INSERT (check + index agree)', async () => {
+		const h = makeHarness();
+		seedIntegration('sonarr-live', 'sonarr');
+		const first = await h.manager.execute({
+			actionId: 'sonarr.searchEpisode',
+			integrationId: 'sonarr-live',
+			target: { episodeIds: [7] },
+			actor: 'admin'
+		});
+		expect(first.state).toBe('accepted');
+		// The accepted row is inside the follow window; the cooldown also
+		// counts it (requested_at starts the window). Either way: no upstream.
+		const dup = await h.manager.execute({
+			actionId: 'sonarr.searchEpisode',
+			integrationId: 'sonarr-live',
+			target: { episodeIds: [7] },
+			actor: 'admin'
+		});
+		expect(dup.state).toBe('rejected');
+		expect(h.clients.get('sonarr-live')!.calls).toHaveLength(1);
+	});
+
+	it('rejections carry the claimed integration/action for the audit trail', async () => {
+		const h = makeHarness();
+		await h.manager.execute({
+			actionId: 'sonarr.searchEpisode',
+			integrationId: 'sonarr-ghost',
+			target: { episodeIds: [1] },
+			actor: 'admin'
+		});
+		const rows = getDb()
+			.prepare(
+				"SELECT action, integration_id, target_key, state FROM integration_actions WHERE state = 'rejected'"
+			)
+			.all() as { action: string; integration_id: string; target_key: string; state: string }[];
+		expect(rows).toHaveLength(1);
+		expect(rows[0]).toEqual({
+			action: 'sonarr.searchEpisode',
+			integration_id: 'sonarr-ghost',
+			target_key: 'sonarr.searchEpisode:episode:1',
+			state: 'rejected'
+		});
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Cooldown semantics (§13a interaction) — what a repeat after each outcome
+// does. The six-hour remediation cooldown (reliability layer) is untouched.
+// ---------------------------------------------------------------------------
+
+describe('action repeat semantics per prior outcome', () => {
+	it('simultaneous duplicate → rejected as in progress; after success → cooldown; after expiry → allowed', async () => {
+		const h = makeHarness();
+		seedIntegration('sonarr-sem', 'sonarr');
+		const first = await h.manager.execute({
+			actionId: 'sonarr.searchEpisode',
+			integrationId: 'sonarr-sem',
+			target: { episodeIds: [9] },
+			actor: 'admin'
+		});
+		expect(first.state).toBe('accepted');
+
+		// 1. Simultaneous duplicate (still in the follow window): in-progress.
+		const dup = await h.manager.execute({
+			actionId: 'sonarr.searchEpisode',
+			integrationId: 'sonarr-sem',
+			target: { episodeIds: [9] },
+			actor: 'admin'
+		});
+		expect(dup.state).toBe('rejected');
+
+		// 2. Repeat immediately after upstream success: cooldown.
+		h.clients.get('sonarr-sem')!.statuses = ['started', 'completed'];
+		await h.flushFollows();
+		expect(
+			getDb().prepare('SELECT state FROM integration_actions WHERE id = ?').get(first.id)
+		).toMatchObject({ state: 'completed' });
+		const afterSuccess = await h.manager.execute({
+			actionId: 'sonarr.searchEpisode',
+			integrationId: 'sonarr-sem',
+			target: { episodeIds: [9] },
+			actor: 'admin'
+		});
+		expect(afterSuccess.state).toBe('rejected');
+		expect(afterSuccess.message).toContain('Cooldown');
+
+		// 3. Repeat after the cooldown expired: allowed again.
+		h.advance(61_000);
+		const later = await h.manager.execute({
+			actionId: 'sonarr.searchEpisode',
+			integrationId: 'sonarr-sem',
+			target: { episodeIds: [9] },
+			actor: 'admin'
+		});
+		expect(later.state).toBe('accepted');
+	});
+
+	it('repeat after upstream failure is allowed immediately — a failed attempt starts no cooldown', async () => {
+		seedIntegration('sonarr-fail', 'sonarr');
+		const client = new FakeClient();
+		let throwing = true;
+		const throwingClient: ArrCommandClient = {
+			commandStatus: (id) => client.commandStatus(id),
+			commandEpisodeSearch: async (...args) => {
+				if (throwing) throw new Error('connection refused');
+				return client.commandEpisodeSearch(...args);
+			},
+			commandSeasonSearch: (...args) => client.commandSeasonSearch(...args),
+			commandSeriesSearch: (...args) => client.commandSeriesSearch(...args),
+			commandRefreshSeries: (...args) => client.commandRefreshSeries(...args),
+			commandMoviesSearch: (...args) => client.commandMoviesSearch(...args),
+			commandRefreshMovie: (...args) => client.commandRefreshMovie(...args)
+		};
+		const manager = new ActionsManager({ clientFactory: () => throwingClient });
+
+		const first = await manager.execute({
+			actionId: 'sonarr.searchEpisode',
+			integrationId: 'sonarr-fail',
+			target: { episodeIds: [5] },
+			actor: 'admin'
+		});
+		expect(first.state).toBe('failed');
+
+		throwing = false;
+		const retry = await manager.execute({
+			actionId: 'sonarr.searchEpisode',
+			integrationId: 'sonarr-fail',
+			target: { episodeIds: [5] },
+			actor: 'admin'
+		});
+		expect(retry.state).toBe('accepted');
+		expect(client.calls.filter((c) => c.command === 'EpisodeSearch')).toHaveLength(1);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// Startup reconciliation (§13b) — rows orphaned by a dead process settle to
+// `unconfirmed`, never "failed", never re-executed, fresh + terminal untouched.
+// ---------------------------------------------------------------------------
+
+describe('startup reconciliation (§13b)', () => {
+	function seedRow(overrides: {
+		id: string;
+		state: string;
+		ageMs: number;
+		upstreamCommandId?: number | null;
+		finishedAt?: number | null;
+		message?: string | null;
+	}): void {
+		const now = 1_700_000_000_000;
+		getDb()
+			.prepare(
+				`INSERT INTO integration_actions
+					(id, action, integration_id, target, target_key, actor, state, message, upstream_command_id, requested_at, finished_at)
+				 VALUES (?, 'sonarr.searchEpisode', 'sonarr-recon', ?, ?, 'admin', ?, ?, ?, ?, ?)`
+			)
+			.run(
+				overrides.id,
+				`episode:${overrides.id}`,
+				`sonarr.searchEpisode:episode:${overrides.id}`,
+				overrides.state,
+				overrides.message ?? null,
+				overrides.upstreamCommandId ?? null,
+				now - overrides.ageMs,
+				overrides.finishedAt ?? null
+			);
+	}
+
+	function rowOf(id: string): {
+		state: string;
+		message: string | null;
+		upstream_command_id: number | null;
+		finished_at: number | null;
+	} {
+		return getDb()
+			.prepare(
+				'SELECT state, message, upstream_command_id, finished_at FROM integration_actions WHERE id = ?'
+			)
+			.get(id) as never;
+	}
+
+	it('settles stale requested/accepted rows to unconfirmed — fresh and terminal rows untouched', () => {
+		const h = makeHarness();
+		seedRow({ id: 'stale-requested', state: 'requested', ageMs: 10 * 60_000 });
+		seedRow({
+			id: 'stale-accepted',
+			state: 'accepted',
+			ageMs: 10 * 60_000,
+			upstreamCommandId: 4242,
+			message: 'Search requested (command 4242)'
+		});
+		seedRow({ id: 'fresh-requested', state: 'requested', ageMs: 5_000 });
+		seedRow({
+			id: 'done',
+			state: 'completed',
+			ageMs: 10 * 60_000,
+			finishedAt: h.now() - 9 * 60_000,
+			message: 'done'
+		});
+		seedRow({
+			id: 'failed-row',
+			state: 'failed',
+			ageMs: 10 * 60_000,
+			finishedAt: h.now() - 9 * 60_000,
+			message: 'boom'
+		});
+		seedRow({
+			id: 'rejected-row',
+			state: 'rejected',
+			ageMs: 10 * 60_000,
+			finishedAt: h.now() - 9 * 60_000,
+			message: 'no'
+		});
+		seedRow({
+			id: 'unconfirmed-row',
+			state: 'unconfirmed',
+			ageMs: 10 * 60_000,
+			finishedAt: h.now() - 9 * 60_000,
+			message: 'earlier window'
+		});
+
+		const settled = h.manager.reconcileInterrupted(h.now());
+		expect(settled).toBe(2);
+
+		const staleReq = rowOf('stale-requested');
+		expect(staleReq.state).toBe('unconfirmed');
+		expect(staleReq.message).toBe('Interrupted by restart before a final state was recorded');
+		expect(staleReq.finished_at).toBe(h.now());
+
+		const staleAcc = rowOf('stale-accepted');
+		expect(staleAcc.state).toBe('unconfirmed');
+		// The recorded upstream command id survives — evidence, not fabrication.
+		expect(staleAcc.upstream_command_id).toBe(4242);
+		expect(staleAcc.finished_at).toBe(h.now());
+
+		expect(rowOf('fresh-requested').state).toBe('requested');
+		expect(rowOf('done').state).toBe('completed');
+		expect(rowOf('failed-row').state).toBe('failed');
+		expect(rowOf('rejected-row').state).toBe('rejected');
+		const untouched = rowOf('unconfirmed-row');
+		expect(untouched.state).toBe('unconfirmed');
+		expect(untouched.message).toBe('earlier window');
+
+		// Idempotent: a second pass matches nothing.
+		expect(h.manager.reconcileInterrupted(h.now())).toBe(0);
+	});
+
+	it('never re-executes a settled action — no client is constructed, no upstream call happens', () => {
+		let clientsBuilt = 0;
+		const manager = new ActionsManager({
+			clientFactory: () => {
+				clientsBuilt++;
+				return new FakeClient();
+			}
+		});
+		getDb()
+			.prepare(
+				`INSERT INTO integration_actions
+					(id, action, integration_id, target, target_key, actor, state, requested_at)
+				 VALUES ('orphan', 'sonarr.searchEpisode', 'sonarr-recon', 'episode:3', 'sonarr.searchEpisode:episode:3', 'admin', 'requested', ?)`
+			)
+			.run(Date.now() - 10 * 60_000);
+		const settled = manager.reconcileInterrupted();
+		expect(settled).toBe(1);
+		expect(clientsBuilt).toBe(0);
+	});
+
+	it('the singleton reconciles on first creation, and the claim is unblocked afterwards', async () => {
+		resetActionsManager();
+		getDb().prepare('DELETE FROM integration_actions').run();
+		seedIntegration('sonarr-recon', 'sonarr');
+		getDb()
+			.prepare(
+				`INSERT INTO integration_actions
+					(id, action, integration_id, target, target_key, actor, state, requested_at)
+				 VALUES ('orphan-block', 'sonarr.searchEpisode', 'sonarr-recon', 'episode:3', 'sonarr.searchEpisode:episode:3', 'admin', 'requested', ?)`
+			)
+			.run(Date.now() - 10 * 60_000);
+
+		// First touch of the subsystem in this "process": reconciliation runs
+		// before any execute.
+		const manager = getActionsManager();
+		expect(rowOf('orphan-block').state).toBe('unconfirmed');
+
+		// F1 ↔ F2 interaction: the settled orphan no longer blocks a fresh
+		// request for the same logical action. The singleton's default client
+		// factory points at the unreachable integration URL, so the attempt
+		// fails fast upstream — the point is that it got PAST the claim (a
+		// blocked duplicate would be 'rejected', never reach upstream).
+		const result = await manager.execute({
+			actionId: 'sonarr.searchEpisode',
+			integrationId: 'sonarr-recon',
+			target: { episodeIds: [3] },
+			actor: 'admin'
+		});
+		expect(result.state).toBe('failed');
+		resetActionsManager();
 	});
 });
 

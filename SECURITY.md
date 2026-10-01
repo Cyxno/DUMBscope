@@ -76,19 +76,53 @@ longer strictly read-only: it ships a deliberately narrow control plane
 ("Safe Actions", v0.7.0 — see docs/ACTIONS.md). Every guarantee below was
 part of the original read-only design and carries over:
 
-- **Allowlist only.** Three actions exist (search-again, refresh, restart for
-  a managed Sonarr/Radarr) plus DUMB's own single-service restart route for
-  remediation. There are no start/stop, config-write, or arbitrary endpoints;
-  the browser can never name a URL, command or path.
+- **Structurally allowlisted.** The registry defines exactly: targeted media
+  commands for Sonarr/Radarr (search episode, search season, refresh series,
+  search movie, refresh movie — through the Arr command API), `Open {Service}`
+  deep links (pure browser navigation, nothing proxied), and a confirmed
+  restart of a managed service via DUMB's own restart route for remediation.
+  There are no start/stop, config-write, shell or arbitrary endpoints; the
+  browser can never name a URL, command or path.
 - **Explicit operator intent.** Every action requires an authenticated admin
   session, a same-origin check, per-session rate limiting and a confirmation
   step in the UI.
 - **Audit-first.** The audit row is written before the upstream request goes
   out; cooldowns and per-target attempt limits are enforced server-side.
+  Every attempt is audited — rejections included.
+- **Atomic duplicate suppression.** Simultaneous identical requests are
+  deduplicated at the SQLite layer (transactional claim + a partial UNIQUE
+  index on active claims): exactly one upstream command runs, every loser
+  gets a deterministic "already in progress" rejection. No UI debounce or
+  process-local lock is involved.
+- **Honest crash outcomes.** Rows left in flight by a dead process settle to
+  `unconfirmed` at startup — never "failed", never silently re-executed.
 - **Capability detection.** Actions surface only when the target integration
   exposes the capability.
 - Integration API keys never reach the browser, are encrypted at rest
   (AES-256-GCM) and are never logged.
+
+### Host visibility & mounts (read-only by design)
+
+DUMBscope touches the host filesystem only through three doors, all
+read-only:
+
+- **`/config`** — its own state directory (database, `secret.key`).
+- **Operator-configured mount probes** (`DUMBSCOPE_MOUNTS`, Reliability
+  settings) — bounded `stat`/symlink-sampling probes of paths you attach,
+  e.g. your debrid mount or symlink roots. On the reference stack this
+  includes mounts such as a **Plex database directory (`/plexdb`)**: such
+  sensitive mounts must be attached read-only (`:ro`) — DUMBscope never
+  writes outside `/config`, has no file-serving or file-browsing routes, and
+  the probes only record existence/link/symlink counts, never file contents.
+- **Container cgroups** (`DUMBSCOPE_DUMB_CGROUP_PATH` /
+  `DUMBSCOPE_DUMB_CGROUP_PARENT`, e.g. the host's `/sys/fs/cgroup/docker`
+  mounted read-only at `/mnt/cgroup-docker`) — read-only memory accounting
+  for the DUMB container (Observability). Parent-dir visibility sees every
+  container's cgroup statistics; DUMBscope reads only the DUMB container's
+  directory, can start or stop nothing, and this visibility never grants any
+  control over containers.
+- Plus `/sys/class/thermal` temperature zones (read-only) for thermal
+  correlation. No Docker socket is mounted, in any documented deployment.
 
 ### Privacy
 

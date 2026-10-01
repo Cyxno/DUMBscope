@@ -4,6 +4,50 @@ All notable changes to DUMBscope are documented here. Releases follow
 [semver](https://semver.org/); database migrations are additive, versioned and
 run transactionally on startup.
 
+## [1.0.0]
+
+The 1.0 marker: the observation surface, the Safe Actions guarantees and the
+configuration surface (environment variables, `/config` layout) are considered
+stable. Future breaking changes follow semver and get migration notes. This
+release ships the v1.0 readiness audit: security regression coverage,
+release hardening and public-repository polish — no new features, no schema
+changes.
+
+### Added
+
+- **HTTP-level API security regression suite** — runs against the production
+  server in CI: every non-public `/api` route rejects anonymous access (17
+  reads + 4 writes), the health endpoints stay the only public surface with
+  minimal payloads, foreign-origin writes are rejected (403) while
+  own-origin requests pass, malformed bodies produce clean error objects
+  (never stack traces or internal paths), the login rate limit locks the
+  source after repeated failures (the correct password included), and the
+  session cookie is pinned as HttpOnly + SameSite=Lax.
+- **GitHub public-release polish** — bug-report and feature-request
+  templates (with the project's boundary checkboxes), release-note
+  categories for the auto-generated notes, and a CONTRIBUTING.md carrying
+  the priorities, ground rules and development setup.
+
+### Fixed
+
+- Safe Action rejections now carry a stable machine `reason` code;
+  cooldown and simultaneous-duplicate rejections map to `409 Conflict`
+  instead of the route guessing from display text.
+- The hourly library snapshot interval no longer pins the event loop
+  (`.unref()`, like every other background interval) — graceful shutdown no
+  longer leans on the failsafe exit for it.
+- First start on a truly empty database is covered by an explicit migration
+  test (schema v11 in one pass, claim index present from the first boot).
+- Dropped a stale pre-0.3 fallback in SvelteKit's internal version name.
+
+### Improved
+
+- Screenshot lab supports multi-viewport capture (`AUDIT_WIDTHS`,
+  `AUDIT_MOBILE_WIDTHS`) for responsive regression auditing; the 1440/1280
+  desktop and 430 mobile widths were audited against the live UI. Known
+  intentional behavior: the desktop pipeline scrolls horizontally between
+  `lg` and ~1440 px when all five stages cannot fit.
+
 ## [0.9.8]
 
 Safe Actions concurrency correctness, plus repository polish.

@@ -313,6 +313,7 @@ describe('actions manager', () => {
 			actor: 'admin'
 		});
 		expect(spam.state).toBe('rejected');
+		expect(spam.reason).toBe('cooldown');
 		expect(spam.message).toContain('Cooldown');
 		expect(spam.cooldownRemainingMs).toBeGreaterThan(0);
 		// Rejected attempts never start a cooldown of their own.
@@ -483,13 +484,15 @@ describe('atomic duplicate suppression (§13a)', () => {
 			expect(h.clients.get('sonarr-race')!.calls).toHaveLength(1);
 			expect(h.clients.get('sonarr-race')!.calls[0]?.command).toBe('EpisodeSearch');
 
-			// Losers: deterministic conflict result — same message, no upstream
-			// command id, no cooldown claim of their own.
+			// Losers: deterministic conflict result — same message, same machine
+			// reason, no upstream command id, no cooldown claim of their own.
 			for (const loser of rejected) {
 				expect(loser.message).toBe('An identical action is already in progress for this target');
+				expect(loser.reason).toBe('duplicate');
 				expect(loser.upstreamCommandId).toBeNull();
 				expect(loser.cooldownRemainingMs).toBe(0);
 			}
+			expect(accepted[0]?.reason).toBeNull();
 			// Every attempt is audited (audit-first includes rejections), and no
 			// row leaks secrets: actor + ids + plain language only. The winner
 			// has already settled to 'accepted' (its upstream answer arrived).

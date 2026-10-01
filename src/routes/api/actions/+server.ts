@@ -44,10 +44,11 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	});
 
 	if (result.state === 'rejected') {
-		return jsonError(
-			result.message ?? 'Action rejected',
-			result.message?.includes('Cooldown') ? 409 : 400
-		);
+		// Conflict-class rejections (cooldown, simultaneous duplicate) are 409;
+		// everything else is a client error. reason is a stable machine code,
+		// never matched from display text.
+		const conflict = result.reason === 'cooldown' || result.reason === 'duplicate';
+		return jsonError(result.message ?? 'Action rejected', conflict ? 409 : 400);
 	}
 	if (result.state === 'failed') {
 		return jsonError(result.message ?? 'Action failed upstream', 502);

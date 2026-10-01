@@ -81,6 +81,8 @@ export interface ActionExecuteResult {
 	id: string;
 	state: IntegrationActionState;
 	message: string | null;
+	/** Stable machine reason for rejections ('cooldown', 'duplicate', …); null otherwise. */
+	reason: string | null;
 	upstreamCommandId: number | null;
 	cooldownRemainingMs: number;
 }
@@ -189,7 +191,14 @@ export class ActionsManager {
 		} catch (err) {
 			const message = upstreamErrorMessage(err);
 			this.finish(id, 'failed', message, null);
-			return { id, state: 'failed', message, upstreamCommandId: null, cooldownRemainingMs: 0 };
+			return {
+				id,
+				state: 'failed',
+				message,
+				reason: null,
+				upstreamCommandId: null,
+				cooldownRemainingMs: 0
+			};
 		}
 
 		const commandId = typeof accepted.id === 'number' ? accepted.id : null;
@@ -211,6 +220,7 @@ export class ActionsManager {
 			id,
 			state: 'accepted',
 			message: action.acceptedMessage,
+			reason: null,
 			upstreamCommandId: commandId,
 			cooldownRemainingMs: action.cooldownMs
 		};
@@ -431,6 +441,7 @@ export class ActionsManager {
 			id: '',
 			state: 'rejected',
 			message: display,
+			reason: message,
 			upstreamCommandId: null,
 			cooldownRemainingMs
 		};

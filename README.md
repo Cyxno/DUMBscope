@@ -398,4 +398,4 @@ and rollback procedure.
 
 ## License
 
-[MIT](LICENSE)
+[AGPL-3.0-only](LICENSE)
